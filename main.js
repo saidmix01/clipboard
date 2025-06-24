@@ -1,73 +1,87 @@
-const { screen } = require('electron');
 const {
   app,
   BrowserWindow,
-  clipboard,
   globalShortcut,
-  ipcMain
+  clipboard,
+  ipcMain,
+  screen
 } = require('electron')
 const path = require('path')
 
 let mainWindow
-let clipboardHistory = []
+const history = []
 
 function createWindow () {
   mainWindow = new BrowserWindow({
-    width: 320,
-    height: 400,
+    width: 400,
+    height: 500,
     frame: false,
-    transparent: false, // desactivamos porque Windows no lo renderiza bien
-    backgroundColor: '#FFFFFF', // fondo blanco estándar
-    alwaysOnTop: false,
+    transparent: false,
+    backgroundColor: '#FFFFFF',
+    alwaysOnTop: true,
     resizable: true,
     show: false,
     webPreferences: {
       preload: path.join(__dirname, 'frontend', 'preload.js'),
-      contextIsolation: true
+      contextIsolation: true,
+      enableRemoteModule: false, // opcional
+      nodeIntegration: false // muy importante
     }
   })
 
+  mainWindow.loadURL('http://localhost:5173')
+
+  // Evitar cerrar: solo ocultar
   mainWindow.on('close', event => {
     event.preventDefault()
     mainWindow.hide()
   })
-
-  mainWindow.loadURL('http://localhost:5173')
 }
 
 app.whenReady().then(() => {
   createWindow()
 
-  let lastText = clipboard.readText()
+  const pollClipboard = () => {
+    let lastText = clipboard.readText()
+    setInterval(() => {
+      const current = clipboard.readText()
+      if (current && current !== lastText) {
+        lastText = current
+        if (!history.includes(current)) {
+          history.unshift(current)
+          if (history.length > 20) history.pop()
+          mainWindow.webContents.send('clipboard-update', history)
+        }
+      }
+    }, 1000)
+  }
 
-  setInterval(() => {
-    const currentText = clipboard.readText()
-    if (
-      currentText &&
-      currentText !== lastText &&
-      !clipboardHistory.includes(currentText)
-    ) {
-      lastText = currentText
-      clipboardHistory.unshift(currentText)
-      if (clipboardHistory.length > 50) clipboardHistory.pop() // Limita el historial
-
-      // Enviamos al frontend
-      mainWindow.webContents.send('clipboard:update', clipboardHistory)
-    }
-  }, 1000) // Verifica el portapapeles cada segundo
+  pollClipboard()
 
   globalShortcut.register('CommandOrControl+Shift+V', () => {
     const mousePos = screen.getCursorScreenPoint()
+    const display = screen.getDisplayNearestPoint(mousePos)
 
-    const windowBounds = mainWindow.getBounds()
+    const windowWidth = 400
+    const windowHeight = 500
 
-    mainWindow.setBounds({
-      x: mousePos.x - windowBounds.width / 2,
-      y: mousePos.y + 20, // Un poco más abajo del cursor
-      width: windowBounds.width,
-      height: windowBounds.height
-    })
+    let x = mousePos.x - windowWidth / 2
+    let y = mousePos.y + 20
 
+    // Asegurar que no se salga de pantalla horizontalmente
+    if (x + windowWidth > display.workArea.x + display.workArea.width) {
+      x = display.workArea.x + display.workArea.width - windowWidth
+    }
+    if (x < display.workArea.x) {
+      x = display.workArea.x
+    }
+
+    // Si no cabe abajo, mostrar arriba
+    if (y + windowHeight > display.workArea.y + display.workArea.height) {
+      y = mousePos.y - windowHeight - 20
+    }
+
+    mainWindow.setBounds({ x, y, width: windowWidth, height: windowHeight })
     mainWindow.show()
     mainWindow.focus()
   })
@@ -80,3 +94,19 @@ app.whenReady().then(() => {
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit()
 })
+
+ipcMain.handle('get-clipboard-history', () => {
+  return history
+})
+
+ipcMain.handle('hide-window', () => {
+  if (mainWindow) {
+    mainWindow.hide()
+  }
+})
+
+ipcMain.on('copy-to-clipboard', (_, text) => {
+  const { clipboard } = require('electron');
+  clipboard.writeText(text);
+});
+
