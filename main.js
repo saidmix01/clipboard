@@ -27,6 +27,7 @@ if (fs.existsSync(historyPath)) {
   }
 }
 
+
 function createWindow () {
   mainWindow = new BrowserWindow({
     width: 400,
@@ -163,6 +164,11 @@ app.whenReady().then(() => {
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit()
+})
+
+app.setLoginItemSettings({
+  openAtLogin: true,
+  path: process.execPath
 })
 
 ipcMain.handle('get-clipboard-history', () => {
