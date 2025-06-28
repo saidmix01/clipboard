@@ -36,6 +36,7 @@ function createWindow () {
     backgroundColor: '#00FFFFFF',
     alwaysOnTop: true,
     resizable: false, // ✅ importante: no redimensionable
+    icon: path.join(__dirname, 'public', 'icon.ico'), // Usa .ico en Windows
     show: false,
     hasShadow: true, // ✅ sombra opcional
     webPreferences: {
@@ -43,6 +44,7 @@ function createWindow () {
       contextIsolation: true
     }
   })
+
 
   if (app.isPackaged) {
     mainWindow.loadFile(path.join(__dirname, 'frontend', 'dist', 'index.html'))

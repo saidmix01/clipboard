@@ -63,6 +63,20 @@ function App () {
     return () => window.removeEventListener('keydown', escListener)
   }, [])
 
+  //dark mode
+  const [darkMode, setDarkMode] = useState(() => {
+    const stored = localStorage.getItem('darkMode')
+    return stored === 'true' // si existe y es "true", activa el modo oscuro
+  })
+
+  useEffect(() => {
+    localStorage.setItem('darkMode', darkMode.toString())
+  }, [darkMode])
+
+  useEffect(() => {
+    document.body.classList.toggle('dark-mode', darkMode)
+  }, [darkMode])
+
   return (
     <>
       <Toaster position='top-center' />
@@ -70,7 +84,7 @@ function App () {
       <div
         className='d-flex justify-content-center'
         style={{
-          background: 'transparent',
+          background: darkMode ? '#121212' : 'transparent',
           width: '100vw',
           height: '100vh',
           margin: 0,
@@ -81,44 +95,95 @@ function App () {
         }}
       >
         <div
-          className='card shadow rounded-4 border border-dark position-relative'
+          className={`card shadow rounded-1 position-relative ${
+            darkMode
+              ? 'bg-dark text-white border-secondary'
+              : 'bg-white border-dark'
+          }`}
           style={{
             width: '400px',
             height: '500px',
             overflow: 'hidden',
             display: 'flex',
-            flexDirection: 'column',
-            backgroundColor: 'white'
+            flexDirection: 'column'
           }}
         >
           {/* Encabezado */}
-          <div className='card-header d-flex justify-content-between align-items-center drag-region bg-white border-bottom'>
-            <h5 className='mb-0'>📋 Copyfy++</h5>
-            <button
-              onClick={() => {
-                ;(window as any).electronAPI?.clearHistory?.()
-                toast.success('Historial eliminado')
-              }}
-              title='Borrar historial'
-              className='btn btn-sm btn-outline-danger no-drag'
+          <div
+            className={`card-header d-flex align-items-center justify-content-between ${
+              darkMode ? 'bg-dark border-secondary' : 'bg-white border-bottom'
+            } p-2`}
+          >
+            <div
+              style={{
+                WebkitAppRegion: 'drag',
+                userSelect: 'none',
+                flexGrow: 1
+              } as any}
             >
-              🗑️
-            </button>
+              <h5 className='mb-0'>📋 Copyfy++</h5>
+            </div>
+
+            <div
+              className='d-flex gap-2'
+              style={{ WebkitAppRegion: 'no-drag' }as any}
+            >
+              <button
+                onClick={() => setDarkMode(prev => !prev)}
+                title='Modo oscuro'
+                className='btn btn-sm btn-outline-primary'
+              >
+                {darkMode ? '🌞' : '🌙'}
+              </button>
+
+              <button
+                onClick={() => {
+                  ;(window as any).electronAPI?.clearHistory?.()
+                  toast.success('Historial eliminado')
+                }}
+                title='Borrar historial'
+                className='btn btn-sm btn-outline-danger'
+              >
+                🗑️
+              </button>
+
+              <button
+                onClick={() => (window as any).electronAPI?.hideWindow?.()}
+                title='Ocultar ventana'
+                className='btn btn-sm btn-outline-secondary'
+              >
+                ❌
+              </button>
+            </div>
           </div>
 
           {/* Buscador */}
-          <div className='p-3 border-bottom bg-white'>
+          <div
+            className={`p-3 border-bottom ${
+              darkMode ? 'bg-dark border-secondary' : 'bg-white'
+            }`}
+          >
             <input
               type='text'
               placeholder='Buscar en el historial...'
               value={search}
               onChange={e => setSearch(e.target.value)}
-              className='form-control form-control-sm'
+              className={`form-control form-control-sm ${
+                darkMode ? 'bg-dark text-white border-secondary' : ''
+              }`}
             />
           </div>
 
           {/* Lista del historial */}
-          <div className='flex-grow-1 overflow-auto p-3 bg-white'>
+          <div
+            className={`flex-grow-1 overflow-auto p-3 ${
+              darkMode ? 'bg-dark text-white' : 'bg-white'
+            }`}
+            style={{
+              scrollbarColor: darkMode ? '#666 #222' : undefined,
+              scrollbarWidth: 'thin'
+            }}
+          >
             {filteredHistory.length === 0 ? (
               <p className='text-muted text-center small mb-0'>
                 Sin coincidencias
@@ -126,11 +191,14 @@ function App () {
             ) : (
               filteredHistory.map((item, idx) => {
                 if (typeof item === 'string' && item.startsWith('data:image')) {
-                  // Imagen
                   return (
                     <div
                       key={idx}
-                      className='mb-2 p-2 border rounded cursor-pointer bg-light'
+                      className={`mb-2 p-2 border rounded cursor-pointer ${
+                        darkMode
+                          ? 'bg-secondary text-white border-light'
+                          : 'bg-light'
+                      }`}
                       onClick={() => {
                         ;(window as any).electronAPI?.copyImage?.(item)
                         toast.success('Imagen copiada al portapapeles')
@@ -147,11 +215,14 @@ function App () {
                     </div>
                   )
                 } else if (typeof item === 'string' && isCodeSnippet(item)) {
-                  // Código
                   return (
                     <div
                       key={idx}
-                      className='mb-2 p-2 border rounded bg-light cursor-pointer'
+                      className={`mb-2 p-2 border rounded cursor-pointer ${
+                        darkMode
+                          ? 'bg-secondary text-white border-light'
+                          : 'bg-light'
+                      }`}
                       onClick={() => {
                         ;(window as any).electronAPI?.copyText(item)
                         toast.success('Código copiado al portapapeles')
@@ -164,14 +235,11 @@ function App () {
                     </div>
                   )
                 } else {
-                  // Texto con botón flotante visible al hover
                   return (
                     <div
                       key={idx}
                       className='position-relative mb-2'
-                      style={{
-                        paddingRight: '36px'
-                      }}
+                      style={{ paddingRight: '36px' }}
                       onMouseEnter={() =>
                         document
                           .getElementById(`translate-btn-${idx}`)
@@ -192,7 +260,7 @@ function App () {
                           right: '4px',
                           transform: 'translateY(-50%)',
                           padding: '2px 4px',
-                          background: 'white',
+                          background: darkMode ? '#222' : 'white',
                           borderRadius: '8px',
                           boxShadow: '0 1px 3px rgba(0,0,0,0.15)',
                           zIndex: 10
@@ -222,7 +290,9 @@ function App () {
                       </button>
 
                       <div
-                        className='list-group-item list-group-item-action rounded cursor-pointer border no-drag'
+                        className={`list-group-item list-group-item-action rounded cursor-pointer border no-drag ${
+                          darkMode ? 'bg-dark text-white border-secondary' : ''
+                        }`}
                         style={{
                           fontSize: '0.875rem',
                           overflowWrap: 'break-word',
