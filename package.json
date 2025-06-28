@@ -3,7 +3,36 @@
   "version": "1.0.0",
   "main": "main.js",
   "scripts": {
-    "dev": "concurrently \"npm run dev --prefix frontend\" \"wait-on http://localhost:5173 && electron .\""
+    "dev": "concurrently \"npm run dev --prefix frontend\" \"wait-on http://localhost:5173 && electron .\"",
+    "build": "npm run build --prefix frontend",
+    "start": "electron .",
+    "dist": "electron-builder"
+  },
+  "build": {
+    "appId": "com.app.copyfy",
+    "productName": "CopyFy",
+    "files": [
+      "frontend/dist/**/*",
+      "dist/**/*",
+      "main.js",
+      "preload.js",
+      "package.json"
+    ],
+    "directories": {
+      "buildResources": "assets"
+    },
+    "win": {
+      "target": [
+        "nsis"
+      ]
+    },
+    "linux": {
+      "target": [
+        "AppImage",
+        "deb"
+      ],
+      "category": "Utility"
+    }
   },
   "keywords": [],
   "author": "",
@@ -12,6 +41,7 @@
   "devDependencies": {
     "concurrently": "^9.2.0",
     "electron": "^36.5.0",
+    "electron-builder": "^26.0.12",
     "wait-on": "^8.0.3"
   },
   "dependencies": {

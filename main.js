@@ -10,7 +10,7 @@ const path = require('path')
 const axios = require('axios')
 const fs = require('fs')
 const os = require('os')
-const qs = require('qs'); // Asegúrate de tenerlo: npm install qs
+const qs = require('qs') // Asegúrate de tenerlo: npm install qs
 const historyPath = path.join(os.homedir(), '.clipboard-history.json')
 
 let mainWindow
@@ -39,12 +39,17 @@ function createWindow () {
     show: false,
     hasShadow: true, // ✅ sombra opcional
     webPreferences: {
-      preload: path.join(__dirname, 'frontend', 'preload.js'),
+      preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true
     }
   })
 
-  mainWindow.loadURL('http://localhost:5173')
+  if (app.isPackaged) {
+    mainWindow.loadFile(path.join(__dirname, 'frontend', 'dist', 'index.html'))
+  } else {
+    mainWindow.loadURL('http://localhost:5173')
+  }
+
   mainWindow.webContents.on('did-finish-load', () => {
     mainWindow.webContents.send('clipboard-update', history)
   })
@@ -199,24 +204,26 @@ ipcMain.on('copy-image', (_, dataUrl) => {
 
 ipcMain.handle('translate-to-english', async (_, text) => {
   try {
-    const params = new URLSearchParams();
-    params.append('text', text);
-    params.append('source_lang', 'ES');
-    params.append('target_lang', 'EN');
+    const params = new URLSearchParams()
+    params.append('text', text)
+    params.append('source_lang', 'ES')
+    params.append('target_lang', 'EN')
 
-    const response = await axios.post('https://api-free.deepl.com/v2/translate', params, {
-      headers: {
-        'Authorization': 'DeepL-Auth-Key 51c9648c-92ca-47d5-9e3f-7382148e6089:fx', // Reemplaza con tu clave real
-        'Content-Type': 'application/x-www-form-urlencoded'
+    const response = await axios.post(
+      'https://api-free.deepl.com/v2/translate',
+      params,
+      {
+        headers: {
+          Authorization:
+            'DeepL-Auth-Key 51c9648c-92ca-47d5-9e3f-7382148e6089:fx', // Reemplaza con tu clave real
+          'Content-Type': 'application/x-www-form-urlencoded'
+        }
       }
-    });
+    )
 
-    return response.data.translations[0].text;
+    return response.data.translations[0].text
   } catch (error) {
-    console.error('Error en traducción:', error.response?.data || error.message);
-    return 'Error de traducción';
+    console.error('Error en traducción:', error.response?.data || error.message)
+    return 'Error de traducción'
   }
-});
-
-
-
+})
