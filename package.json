@@ -1,6 +1,6 @@
 {
   "name": "portapapeles-app",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "main": "main.js",
   "scripts": {
     "dev": "concurrently \"npm run dev --prefix frontend\" \"wait-on http://localhost:5173 && electron .\"",
@@ -10,7 +10,8 @@
   },
   "build": {
     "appId": "com.app.copyfy",
-    "productName": "CopyFy",
+    "productName": "CopyFy++",
+    "icon": "build/icon",
     "files": [
       "frontend/dist/**/*",
       "dist/**/*",
