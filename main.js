@@ -42,7 +42,12 @@ function performPaste (mainWindow) {
   if (platform === 'win32') {
     const exePath = isDev
       ? path.join(__dirname, 'helpers', 'paste.exe')
-      : path.join(process.resourcesPath, 'app.asar.unpacked', 'helpers', 'paste.exe')
+      : path.join(
+          process.resourcesPath,
+          'app.asar.unpacked',
+          'helpers',
+          'paste.exe'
+        )
 
     console.log('📁 Ejecutando:', exePath)
 
@@ -127,6 +132,19 @@ app.whenReady().then(() => {
     let lastText = clipboard.readText()
     let lastImageDataUrl = ''
 
+    // --- Cargar historial desde disco y eliminar duplicados ---
+    if (fs.existsSync(historyPath)) {
+      try {
+        const data = fs.readFileSync(historyPath, 'utf-8')
+        const rawHistory = JSON.parse(data)
+        // Eliminar duplicados manteniendo el orden
+        history = [...new Set(rawHistory)]
+        console.log('✅ Historial cargado:', history.length, 'entradas únicas')
+      } catch (err) {
+        console.error('❌ Error al leer historial:', err)
+      }
+    }
+
     setInterval(() => {
       const image = clipboard.readImage()
       const text = clipboard.readText()
@@ -137,9 +155,9 @@ app.whenReady().then(() => {
         if (dataUrl !== lastImageDataUrl && !history.includes(dataUrl)) {
           lastImageDataUrl = dataUrl
           history.unshift(dataUrl)
-          if (history.length > 200) history.pop()
+          history = [...new Set(history)]
+          if (history.length > 200) history.length = 200
 
-          // Guardar
           try {
             fs.writeFileSync(
               historyPath,
@@ -151,17 +169,17 @@ app.whenReady().then(() => {
           }
 
           mainWindow.webContents.send('clipboard-update', history)
-          return // 🔁 No procesar texto si ya se procesó imagen
+          return // ⚠️ No seguir si ya se procesó imagen
         }
       }
 
       // --- Si hay nuevo texto ---
-      if (text && text !== lastText && !text.startsWith('data:image')) {
+      if (text && !text.startsWith('data:image') && !history.includes(text)) {
         lastText = text
         history.unshift(text)
-        if (history.length > 200) history.pop()
+        history = [...new Set(history)]
+        if (history.length > 200) history.length = 200
 
-        // Guardar
         try {
           fs.writeFileSync(
             historyPath,
