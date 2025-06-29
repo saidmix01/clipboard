@@ -1,6 +1,6 @@
 {
   "name": "portapapeles-app",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "main": "main.js",
   "scripts": {
     "dev": "concurrently \"npm run dev --prefix frontend\" \"wait-on http://localhost:5173 && electron .\"",
@@ -14,10 +14,13 @@
     "icon": "build/icon",
     "files": [
       "frontend/dist/**/*",
-      "dist/**/*",
       "main.js",
       "preload.js",
+      "helpers/**/*",
       "package.json"
+    ],
+    "asarUnpack": [
+      "helpers/paste.exe"
     ],
     "directories": {
       "buildResources": "assets"
@@ -43,13 +46,17 @@
     "concurrently": "^9.2.0",
     "electron": "^36.5.0",
     "electron-builder": "^26.0.12",
+    "node-gyp": "^11.2.0",
     "wait-on": "^8.0.3"
   },
   "dependencies": {
     "axios": "^1.10.0",
     "bootstrap": "^5.3.7",
+    "child_process": "^1.0.2",
     "electron-store": "^10.1.0",
     "highlight.js": "^11.11.1",
+    "node-key-sender": "^1.0.11",
+    "os": "^0.1.2",
     "qs": "^6.14.0",
     "react-hot-toast": "^2.5.2"
   }

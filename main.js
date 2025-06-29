@@ -10,8 +10,8 @@ const path = require('path')
 const axios = require('axios')
 const fs = require('fs')
 const os = require('os')
-const qs = require('qs') // Asegúrate de tenerlo: npm install qs
 const historyPath = path.join(os.homedir(), '.clipboard-history.json')
+const { exec, execFile } = require('child_process')
 
 let mainWindow
 let history = []
@@ -27,6 +27,58 @@ if (fs.existsSync(historyPath)) {
   }
 }
 
+//Pegado de texto
+
+function performPaste (mainWindow) {
+  const platform = process.platform
+  const isDev = !app.isPackaged
+
+  // ✅ Ocultar ventana para devolver foco a la anterior app
+  if (mainWindow && mainWindow.hide) mainWindow.hide()
+
+  console.log(`📌 Plataforma: ${platform}`)
+  console.log(`📦 Entorno: ${isDev ? 'desarrollo' : 'producción'}`)
+
+  if (platform === 'win32') {
+    const exePath = isDev
+      ? path.join(__dirname, 'helpers', 'paste.exe')
+      : path.join(process.resourcesPath, 'app.asar.unpacked', 'helpers', 'paste.exe')
+
+    console.log('📁 Ejecutando:', exePath)
+
+    execFile(exePath, err => {
+      if (err) {
+        console.error('❌ Error al ejecutar paste.exe:', err)
+      } else {
+        console.log('✅ paste.exe ejecutado correctamente')
+      }
+    })
+  } else if (platform === 'darwin') {
+    // macOS: comando AppleScript
+    setTimeout(() => {
+      exec(
+        `osascript -e 'tell application "System Events" to keystroke "v" using command down'`,
+        err => {
+          if (err) console.error('❌ Error ejecutando osascript:', err)
+          else console.log('✅ Comando pegado en macOS')
+        }
+      )
+    }, 300)
+  } else if (platform === 'linux') {
+    // Linux: requiere que xdotool esté instalado
+    setTimeout(() => {
+      exec('xdotool key ctrl+v', err => {
+        if (err) {
+          console.error('❌ Error ejecutando xdotool:', err)
+        } else {
+          console.log('✅ Pegado automático en Linux')
+        }
+      })
+    }, 300)
+  } else {
+    console.warn('⚠️ Plataforma no compatible')
+  }
+}
 
 function createWindow () {
   mainWindow = new BrowserWindow({
@@ -42,10 +94,10 @@ function createWindow () {
     hasShadow: true, // ✅ sombra opcional
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
-      contextIsolation: true
+      contextIsolation: true,
+      nodeIntegration: false // ✅ este debe ser false si usas contextBridge
     }
   })
-
 
   if (app.isPackaged) {
     mainWindow.loadFile(path.join(__dirname, 'frontend', 'dist', 'index.html'))
@@ -185,7 +237,7 @@ ipcMain.on('copy-to-clipboard', (_, text) => {
   const { clipboard } = require('electron')
   clipboard.writeText(text)
 })
-
+//limpiar historial
 ipcMain.handle('clear-history', () => {
   history = []
 
@@ -199,7 +251,7 @@ ipcMain.handle('clear-history', () => {
 })
 
 const { nativeImage } = require('electron')
-
+//copiar imagen
 ipcMain.on('copy-image', (_, dataUrl) => {
   try {
     const image = nativeImage.createFromDataURL(dataUrl)
@@ -209,7 +261,7 @@ ipcMain.on('copy-image', (_, dataUrl) => {
     console.error('❌ Error al copiar imagen:', err)
   }
 })
-
+//Traducir texto
 ipcMain.handle('translate-to-english', async (_, text) => {
   try {
     const params = new URLSearchParams()
@@ -234,4 +286,8 @@ ipcMain.handle('translate-to-english', async (_, text) => {
     console.error('Error en traducción:', error.response?.data || error.message)
     return 'Error de traducción'
   }
+})
+// Cuando se recibe el evento desde el renderer
+ipcMain.on('paste-text', () => {
+  performPaste(mainWindow)
 })

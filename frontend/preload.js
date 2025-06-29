@@ -1,9 +1,9 @@
-const { contextBridge, ipcRenderer } = require('electron')
+const { contextBridge, ipcRenderer  } = require('electron')
 
 contextBridge.exposeInMainWorld('electronAPI', {
   onClipboardUpdate: callback =>
     ipcRenderer.on('clipboard-update', (_, data) => callback(data)),
-
+  
   hideWindow: () => ipcRenderer.invoke('hide-window'),
 
   copyText: text => {
@@ -16,5 +16,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   },
 
   translateToEnglish: text => ipcRenderer.invoke('translate-to-english', text),
+
+  // 👇 ESTA ES LA QUE FALTA
+  pasteText: () => ipcRenderer.send('paste-text')
 
 })
