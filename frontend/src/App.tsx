@@ -115,18 +115,20 @@ function App () {
             } p-2`}
           >
             <div
-              style={{
-                WebkitAppRegion: 'drag',
-                userSelect: 'none',
-                flexGrow: 1
-              } as any}
+              style={
+                {
+                  WebkitAppRegion: 'drag',
+                  userSelect: 'none',
+                  flexGrow: 1
+                } as any
+              }
             >
               <h5 className='mb-0'>📋 Copyfy++</h5>
             </div>
 
             <div
               className='d-flex gap-2'
-              style={{ WebkitAppRegion: 'no-drag' }as any}
+              style={{ WebkitAppRegion: 'no-drag' } as any}
             >
               <button
                 onClick={() => setDarkMode(prev => !prev)}
@@ -225,7 +227,10 @@ function App () {
                       }`}
                       onClick={() => {
                         ;(window as any).electronAPI?.copyText(item)
-                        toast.success('Código copiado al portapapeles')
+                        setTimeout(() => {
+                          ;(window as any).electronAPI?.pasteText()
+                        }, 100)
+                        toast.success('Pegado automáticamente')
                         setTimeout(() => {
                           ;(window as any).electronAPI?.hideWindow?.()
                         }, 500)
@@ -236,59 +241,7 @@ function App () {
                   )
                 } else {
                   return (
-                    <div
-                      key={idx}
-                      className='position-relative mb-2'
-                      style={{ paddingRight: '36px' }}
-                      onMouseEnter={() =>
-                        document
-                          .getElementById(`translate-btn-${idx}`)
-                          ?.classList.remove('d-none')
-                      }
-                      onMouseLeave={() =>
-                        document
-                          .getElementById(`translate-btn-${idx}`)
-                          ?.classList.add('d-none')
-                      }
-                    >
-                      {/* Botón flotante */}
-                      <button
-                        id={`translate-btn-${idx}`}
-                        className='btn btn-sm btn-outline-secondary no-drag position-absolute d-none'
-                        style={{
-                          top: '50%',
-                          right: '4px',
-                          transform: 'translateY(-50%)',
-                          padding: '2px 4px',
-                          background: darkMode ? '#222' : 'white',
-                          borderRadius: '8px',
-                          boxShadow: '0 1px 3px rgba(0,0,0,0.15)',
-                          zIndex: 10
-                        }}
-                        title='Traducir al inglés'
-                        onClick={async e => {
-                          e.stopPropagation()
-                          const translated = await (
-                            window as any
-                          ).electronAPI.translateToEnglish(item)
-                          if (translated && typeof translated === 'string') {
-                            ;(window as any).electronAPI.copyText(translated)
-                            toast.success('Texto traducido y copiado')
-                            setTimeout(() => {
-                              ;(window as any).electronAPI?.hideWindow?.()
-                            }, 500)
-                          } else {
-                            toast.error('Error al traducir')
-                          }
-                        }}
-                      >
-                        <img
-                          src='https://flagcdn.com/w40/gb.png'
-                          alt='Traducir al inglés'
-                          style={{ width: '18px', height: '13px' }}
-                        />
-                      </button>
-
+                    <div key={idx} className='mb-2'>
                       <div
                         className={`list-group-item list-group-item-action rounded cursor-pointer border no-drag ${
                           darkMode ? 'bg-dark text-white border-secondary' : ''
@@ -300,7 +253,10 @@ function App () {
                         }}
                         onClick={() => {
                           ;(window as any).electronAPI?.copyText(item)
-                          toast.success('Copiado al portapapeles')
+                          setTimeout(() => {
+                            ;(window as any).electronAPI?.pasteText()
+                          }, 100)
+                          toast.success('Pegado automáticamente')
                           setTimeout(() => {
                             ;(window as any).electronAPI?.hideWindow?.()
                           }, 500)
