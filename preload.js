@@ -22,4 +22,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   toggleFavorite: (value) => ipcRenderer.send('toggle-favorite', value),
   //Pegar imagen
   pasteImage: () => ipcRenderer.invoke('pasteImage'),
+  //updates
+  forceUpdate: () => ipcRenderer.send('force-update'),
+  onUpdateStatus: callback => ipcRenderer.on('update-status', (_, message) => callback(message))
 })

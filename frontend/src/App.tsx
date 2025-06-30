@@ -266,6 +266,16 @@ function App () {
               style={{ WebkitAppRegion: 'no-drag' } as any}
             >
               <button
+                onClick={() => {
+                  toast('Buscando actualizaciones...')
+                  ;(window as any).electronAPI?.forceUpdate?.()
+                }}
+                title='Buscar actualizaciones'
+                className='btn btn-sm btn-outline-success'
+              >
+                🔄
+              </button>
+              <button
                 onClick={() => setDarkMode(prev => !prev)}
                 title='Modo oscuro'
                 className='btn btn-sm btn-outline-primary'
@@ -336,7 +346,7 @@ function App () {
                       ) {
                         ;(window as any).electronAPI?.copyImage?.(item.value)
                         setTimeout(() => {
-                          (window as any).electronAPI.pasteImage()
+                          ;(window as any).electronAPI.pasteImage()
                         }, 300)
                         toast.success('Imagen copiada al portapapeles')
                       } else {

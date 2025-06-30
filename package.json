@@ -1,6 +1,6 @@
 {
   "name": "portapapeles-app",
-  "version": "1.0.8",
+  "version": "1.0.9",
   "main": "main.js",
   "scripts": {
     "dev": "concurrently \"npm run dev --prefix frontend\" \"wait-on http://localhost:5173 && electron .\"",
@@ -16,7 +16,9 @@
       {
         "provider": "github",
         "owner": "saidmix01",
-        "repo": "clipboard"
+        "repo": "clipboard",
+        "private": false,
+        "token": "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"
       }
     ],
     "files": [
@@ -60,6 +62,7 @@
     "axios": "^1.10.0",
     "bootstrap": "^5.3.7",
     "child_process": "^1.0.2",
+    "electron-log": "^5.4.1",
     "electron-store": "^10.1.0",
     "electron-updater": "^6.6.2",
     "highlight.js": "^11.11.1",
