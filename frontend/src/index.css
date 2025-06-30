@@ -51,6 +51,7 @@ body.dark-mode ::-webkit-scrollbar-thumb:hover {
   border: 1px solid rgba(255, 255, 255, 0.15);
   border-radius: 8px;
   transition: background 0.3s ease, border 0.3s ease;
+  margin: 10px 10px 0px 10px;
 }
 
 

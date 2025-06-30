@@ -176,7 +176,7 @@ function createWindow () {
   })
   mainWindow.once('ready-to-show', () => {
     mainWindow.show()
-    mainWindow.setContentSize(360, 500) // 👈 ajustado al tamaño real del card
+    mainWindow.setContentSize(400, 500) // 👈 ajustado al tamaño real del card
   })
 
   // Evitar cerrar: solo ocultar
@@ -300,8 +300,8 @@ app.whenReady().then(() => {
     const mousePos = screen.getCursorScreenPoint()
     const display = screen.getDisplayNearestPoint(mousePos)
 
-    const windowWidth = 300
-    const windowHeight = 400
+    const windowWidth = 400
+    const windowHeight = 500
 
     let x = mousePos.x - windowWidth / 2
     let y = mousePos.y + 20
@@ -486,4 +486,8 @@ ipcMain.on('toggle-favorite', (event, value) => {
 
 ipcMain.handle('pasteImage', () => {
   performPasteImage(mainWindow)
+})
+
+ipcMain.handle('get-app-version', () => {
+  return app.getVersion()
 })
