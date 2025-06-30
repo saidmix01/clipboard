@@ -77,6 +77,83 @@ function App () {
     document.body.classList.toggle('dark-mode', darkMode)
   }, [darkMode])
 
+  function ExpandableCard ({
+    content,
+    darkMode,
+    search,
+    onCopy
+  }: {
+    content: string
+    darkMode: boolean
+    search: string
+    onCopy: () => void
+  }) {
+    const [expanded, setExpanded] = useState(false)
+
+    const isImage = content.startsWith('data:image')
+    const isCode = isCodeSnippet(content)
+
+    const wrapperStyle: React.CSSProperties = {
+      maxHeight: expanded ? 'none' : '150px',
+      overflow: 'hidden',
+      position: 'relative'
+    }
+
+    const buttonStyle: React.CSSProperties = {
+      position: 'absolute',
+      bottom: 0,
+      left: 0,
+      width: '100%',
+      textAlign: 'center',
+      background: darkMode ? '#333' : '#fff',
+      color: darkMode ? '#ccc' : '#000',
+      fontSize: '0.75rem',
+      cursor: 'pointer'
+    }
+
+    return (
+      <div
+        className={`mb-2 p-2 border rounded position-relative ${
+          darkMode ? 'bg-secondary text-white border-light' : 'bg-light'
+        }`}
+        onClick={onCopy}
+        style={{
+          cursor: 'pointer'
+        }}
+      >
+        <div style={wrapperStyle}>
+          {isImage ? (
+            <img src={content} alt='imagen' style={{ maxWidth: '100%' }} />
+          ) : isCode ? (
+            <CodeBlock code={content} />
+          ) : (
+            <div
+              className={`${darkMode ? 'text-white' : 'text-dark'} small`}
+              style={{
+                overflowWrap: 'break-word',
+                wordBreak: 'break-word'
+              }}
+            >
+              {highlightMatch(content, search)}
+            </div>
+          )}
+        </div>
+
+        {content.length > 300 && (
+          <div
+            style={buttonStyle}
+            onClick={e => {
+              e.stopPropagation()
+              setExpanded(!expanded)
+            }}
+          >
+            {expanded ? '▲ Ver menos' : '▼ Ver más'}
+          </div>
+        )}
+      </div>
+    )
+  }
+
   return (
     <>
       <Toaster position='top-center' />
@@ -84,7 +161,7 @@ function App () {
       <div
         className='d-flex justify-content-center'
         style={{
-          background: darkMode ? '#121212' : 'transparent',
+          background: darkMode ? '#161616' : 'transparent',
           width: '100vw',
           height: '100vh',
           margin: 0,
@@ -95,10 +172,8 @@ function App () {
         }}
       >
         <div
-          className={`card shadow rounded-1 position-relative ${
-            darkMode
-              ? 'bg-dark text-white border-secondary'
-              : 'bg-white border-dark'
+          className={`card shadow rounded-1 position-relative card-glass ${
+            darkMode ? 'text-white border-secondary' : 'text-dark border-dark'
           }`}
           style={{
             width: '400px',
@@ -110,9 +185,9 @@ function App () {
         >
           {/* Encabezado */}
           <div
-            className={`card-header d-flex align-items-center justify-content-between ${
-              darkMode ? 'bg-dark border-secondary' : 'bg-white border-bottom'
-            } p-2`}
+            className={`card-header d-flex align-items-center justify-content-between card-glass p-2 ${
+              darkMode ? 'border-secondary' : 'border-bottom'
+            }`}
           >
             <div
               style={
@@ -160,11 +235,7 @@ function App () {
           </div>
 
           {/* Buscador */}
-          <div
-            className={`p-3 border-bottom ${
-              darkMode ? 'bg-dark border-secondary' : 'bg-white'
-            }`}
-          >
+          <div className={`p-3 border-bottom card-glass`}>
             <input
               type='text'
               placeholder='Buscar en el historial...'
@@ -179,7 +250,7 @@ function App () {
           {/* Lista del historial */}
           <div
             className={`flex-grow-1 overflow-auto p-3 ${
-              darkMode ? 'bg-dark text-white' : 'bg-white'
+              darkMode ? 'text-white' : 'text-dark'
             }`}
             style={{
               scrollbarColor: darkMode ? '#666 #222' : undefined,
@@ -192,84 +263,32 @@ function App () {
               </p>
             ) : (
               filteredHistory.map((item, idx) => {
-                if (typeof item === 'string' && item.startsWith('data:image')) {
-                  return (
-                    <div
-                      key={idx}
-                      className={`mb-2 p-2 border rounded cursor-pointer ${
-                        darkMode
-                          ? 'bg-secondary text-white border-light'
-                          : 'bg-light'
-                      }`}
-                      onClick={() => {
+                return (
+                  <ExpandableCard
+                    key={idx}
+                    content={item}
+                    darkMode={darkMode}
+                    search={search}
+                    onCopy={() => {
+                      if (
+                        typeof item === 'string' &&
+                        item.startsWith('data:image')
+                      ) {
                         ;(window as any).electronAPI?.copyImage?.(item)
                         toast.success('Imagen copiada al portapapeles')
-                        setTimeout(() => {
-                          ;(window as any).electronAPI?.hideWindow?.()
-                        }, 500)
-                      }}
-                    >
-                      <img
-                        src={item}
-                        alt='imagen'
-                        style={{ maxWidth: '100%' }}
-                      />
-                    </div>
-                  )
-                } else if (typeof item === 'string' && isCodeSnippet(item)) {
-                  return (
-                    <div
-                      key={idx}
-                      className={`mb-2 p-2 border rounded cursor-pointer ${
-                        darkMode
-                          ? 'bg-secondary text-white border-light'
-                          : 'bg-light'
-                      }`}
-                      onClick={() => {
+                      } else {
                         ;(window as any).electronAPI?.copyText(item)
                         setTimeout(() => {
                           ;(window as any).electronAPI?.pasteText()
                         }, 100)
                         toast.success('Pegado automáticamente')
-                        setTimeout(() => {
-                          ;(window as any).electronAPI?.hideWindow?.()
-                        }, 500)
-                      }}
-                    >
-                      <CodeBlock code={item} />
-                    </div>
-                  )
-                } else {
-                  return (
-                    <div key={idx} className='mb-2'>
-                      <div
-                        className={`list-group-item list-group-item-action rounded cursor-pointer border no-drag ${
-                          darkMode ? 'bg-dark text-white border-secondary' : ''
-                        }`}
-                        style={{
-                          fontSize: '0.875rem',
-                          overflowWrap: 'break-word',
-                          wordBreak: 'break-word'
-                        }}
-                        onClick={() => {
-                          ;(window as any).electronAPI?.copyText(item)
-                          setTimeout(() => {
-                            ;(window as any).electronAPI?.pasteText()
-                          }, 100)
-                          toast.success('Pegado automáticamente')
-                          setTimeout(() => {
-                            ;(window as any).electronAPI?.hideWindow?.()
-                          }, 500)
-                        }}
-                      >
-                        {highlightMatch(
-                          item.length > 120 ? item.slice(0, 120) + '…' : item,
-                          search
-                        )}
-                      </div>
-                    </div>
-                  )
-                }
+                      }
+                      setTimeout(() => {
+                        ;(window as any).electronAPI?.hideWindow?.()
+                      }, 500)
+                    }}
+                  />
+                )
               })
             )}
           </div>
