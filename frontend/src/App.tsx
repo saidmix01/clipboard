@@ -117,7 +117,9 @@ function App () {
           darkMode ? 'bg-secondary text-white border-light' : 'bg-light'
         }`}
         onClick={onCopy}
-        style={{ cursor: 'pointer' }}
+        style={{
+          cursor: 'pointer'
+        }}
       >
         <div style={wrapperStyle}>
           {isImage ? (
@@ -159,7 +161,7 @@ function App () {
       <div
         className='d-flex justify-content-center'
         style={{
-          background: darkMode ? '#121212' : 'transparent',
+          background: darkMode ? '#161616' : 'transparent',
           width: '100vw',
           height: '100vh',
           margin: 0,
@@ -170,10 +172,8 @@ function App () {
         }}
       >
         <div
-          className={`card shadow rounded-1 position-relative ${
-            darkMode
-              ? 'bg-dark text-white border-secondary'
-              : 'bg-white border-dark'
+          className={`card shadow rounded-1 position-relative card-glass ${
+            darkMode ? 'text-white border-secondary' : 'text-dark border-dark'
           }`}
           style={{
             width: '400px',
@@ -185,9 +185,9 @@ function App () {
         >
           {/* Encabezado */}
           <div
-            className={`card-header d-flex align-items-center justify-content-between ${
-              darkMode ? 'bg-dark border-secondary' : 'bg-white border-bottom'
-            } p-2`}
+            className={`card-header d-flex align-items-center justify-content-between card-glass p-2 ${
+              darkMode ? 'border-secondary' : 'border-bottom'
+            }`}
           >
             <div
               style={
@@ -235,11 +235,7 @@ function App () {
           </div>
 
           {/* Buscador */}
-          <div
-            className={`p-3 border-bottom ${
-              darkMode ? 'bg-dark border-secondary' : 'bg-white'
-            }`}
-          >
+          <div className={`p-3 border-bottom card-glass`}>
             <input
               type='text'
               placeholder='Buscar en el historial...'
@@ -254,7 +250,7 @@ function App () {
           {/* Lista del historial */}
           <div
             className={`flex-grow-1 overflow-auto p-3 ${
-              darkMode ? 'bg-dark text-white' : 'bg-white'
+              darkMode ? 'text-white' : 'text-dark'
             }`}
             style={{
               scrollbarColor: darkMode ? '#666 #222' : undefined,
@@ -262,10 +258,6 @@ function App () {
             }}
           >
             {filteredHistory.length === 0 ? (
-              <p className='text-muted text-center small mb-0'>
-                Sin coincidencias
-              </p>
-            ) : filteredHistory.length === 0 ? (
               <p className='text-muted text-center small mb-0'>
                 Sin coincidencias
               </p>
