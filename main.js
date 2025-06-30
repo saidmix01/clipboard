@@ -197,7 +197,7 @@ app.whenReady().then(() => {
 
   pollClipboard()
 
-  globalShortcut.register('CommandOrControl+Shift+V', () => {
+  globalShortcut.register('Ctrl+Space', () => {
     const mousePos = screen.getCursorScreenPoint()
     const display = screen.getDisplayNearestPoint(mousePos)
 
