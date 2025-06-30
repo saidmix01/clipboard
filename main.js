@@ -183,13 +183,28 @@ function createWindow () {
 }
 
 app.whenReady().then(() => {
-  autoUpdater.checkForUpdatesAndNotify()
+  autoUpdater.on('checking-for-update', () => {
+    console.log('🔎 Buscando actualizaciones...')
+  })
+
   autoUpdater.on('update-available', () => {
     console.log('🔄 Actualización disponible')
   })
-  autoUpdater.on('update-downloaded', () => {
-    console.log('✅ Actualización descargada, se instalará al reiniciar')
+
+  autoUpdater.on('update-not-available', () => {
+    console.log('✅ No hay actualizaciones disponibles')
   })
+
+  autoUpdater.on('error', err => {
+    console.error('❌ Error al buscar actualizaciones:', err)
+  })
+
+  autoUpdater.on('update-downloaded', () => {
+    console.log('✅ Actualización descargada. Se instalará ahora mismo...')
+    autoUpdater.quitAndInstall() // 👉 Forzar instalación inmediata
+  })
+
+  autoUpdater.checkForUpdatesAndNotify()
 
   createWindow()
 
