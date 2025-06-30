@@ -12,6 +12,13 @@
     "appId": "com.app.copyfy",
     "productName": "CopyFy++",
     "icon": "build/icon",
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "saidmix01",
+        "repo": "clipboard"
+      }
+    ],
     "files": [
       "frontend/dist/**/*",
       "main.js",
@@ -54,6 +61,7 @@
     "bootstrap": "^5.3.7",
     "child_process": "^1.0.2",
     "electron-store": "^10.1.0",
+    "electron-updater": "^6.6.2",
     "highlight.js": "^11.11.1",
     "node-key-sender": "^1.0.11",
     "os": "^0.1.2",
