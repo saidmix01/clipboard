@@ -7,6 +7,7 @@ const {
   screen,
   nativeImage
 } = require('electron')
+const { autoUpdater } = require('electron-updater')
 const path = require('path')
 const axios = require('axios')
 const fs = require('fs')
@@ -85,7 +86,7 @@ function performPaste (mainWindow) {
   }
 }
 //Pegado de imagen
-function performPasteImage(mainWindow) {
+function performPasteImage (mainWindow) {
   const platform = process.platform
   const isDev = !app.isPackaged
 
@@ -141,7 +142,6 @@ function performPasteImage(mainWindow) {
   }
 }
 
-
 function createWindow () {
   mainWindow = new BrowserWindow({
     width: 400,
@@ -183,6 +183,14 @@ function createWindow () {
 }
 
 app.whenReady().then(() => {
+  autoUpdater.checkForUpdatesAndNotify()
+  autoUpdater.on('update-available', () => {
+    console.log('🔄 Actualización disponible')
+  })
+  autoUpdater.on('update-downloaded', () => {
+    console.log('✅ Actualización descargada, se instalará al reiniciar')
+  })
+
   createWindow()
 
   function normalizeHistory (raw) {
