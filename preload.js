@@ -19,5 +19,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // 👇 ESTA ES LA QUE FALTA
   pasteText: () => ipcRenderer.send('paste-text'),
 
-  toggleFavorite: (value) => ipcRenderer.send('toggle-favorite', value)
+  toggleFavorite: (value) => ipcRenderer.send('toggle-favorite', value),
+  //Pegar imagen
+  pasteImage: () => ipcRenderer.invoke('pasteImage'),
 })

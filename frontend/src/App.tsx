@@ -335,6 +335,9 @@ function App () {
                         item.value.startsWith('data:image')
                       ) {
                         ;(window as any).electronAPI?.copyImage?.(item.value)
+                        setTimeout(() => {
+                          (window as any).electronAPI.pasteImage()
+                        }, 300)
                         toast.success('Imagen copiada al portapapeles')
                       } else {
                         ;(window as any).electronAPI?.copyText(item.value)

@@ -84,6 +84,63 @@ function performPaste (mainWindow) {
     console.warn('⚠️ Plataforma no compatible')
   }
 }
+//Pegado de imagen
+function performPasteImage(mainWindow) {
+  const platform = process.platform
+  const isDev = !app.isPackaged
+
+  // ✅ Ocultar ventana para devolver foco a la anterior app
+  if (mainWindow && mainWindow.hide) mainWindow.hide()
+
+  console.log(`📌 Plataforma: ${platform}`)
+  console.log(`📦 Entorno: ${isDev ? 'desarrollo' : 'producción'}`)
+
+  if (platform === 'win32') {
+    const exePath = isDev
+      ? path.join(__dirname, 'helpers', 'paste-image.exe')
+      : path.join(
+          process.resourcesPath,
+          'app.asar.unpacked',
+          'helpers',
+          'paste-image.exe'
+        )
+
+    console.log('📁 Ejecutando:', exePath)
+
+    execFile(exePath, err => {
+      if (err) {
+        console.error('❌ Error al ejecutar paste-image.exe:', err)
+      } else {
+        console.log('✅ paste-image.exe ejecutado correctamente')
+      }
+    })
+  } else if (platform === 'darwin') {
+    // macOS: comando AppleScript (Ctrl+V para imágenes también)
+    setTimeout(() => {
+      exec(
+        `osascript -e 'tell application "System Events" to keystroke "v" using command down'`,
+        err => {
+          if (err) console.error('❌ Error ejecutando osascript (imagen)', err)
+          else console.log('✅ Imagen pegada en macOS')
+        }
+      )
+    }, 300)
+  } else if (platform === 'linux') {
+    // Linux: usa xdotool para Ctrl+V
+    setTimeout(() => {
+      exec('xdotool key ctrl+v', err => {
+        if (err) {
+          console.error('❌ Error pegando imagen en Linux con xdotool:', err)
+        } else {
+          console.log('✅ Imagen pegada en Linux')
+        }
+      })
+    }, 300)
+  } else {
+    console.warn('⚠️ Plataforma no compatible para pegar imagen')
+  }
+}
+
 
 function createWindow () {
   mainWindow = new BrowserWindow({
@@ -151,7 +208,17 @@ app.whenReady().then(() => {
     let lastText = clipboard.readText()
     let lastImageDataUrl = ''
     const search = ''
-    // --- Cargar historial desde disco y eliminar duplicados ---
+
+    // Cargar historial desde disco o inicializarlo vacío
+    if (fs.existsSync(historyPath)) {
+      try {
+        history = JSON.parse(fs.readFileSync(historyPath, 'utf-8'))
+      } catch {
+        history = []
+      }
+    } else {
+      history = []
+    }
 
     setInterval(() => {
       const image = clipboard.readImage()
@@ -161,41 +228,51 @@ app.whenReady().then(() => {
       if (!image.isEmpty()) {
         const dataUrl = image.toDataURL()
 
+        // Protección contra datos vacíos o inválidos
         if (
-          dataUrl !== lastImageDataUrl &&
-          !history.some(
+          typeof dataUrl !== 'string' ||
+          !dataUrl.startsWith('data:image') ||
+          dataUrl === 'data:image/png;base64,' || // imagen vacía común
+          dataUrl.trim().length < 30 || // corta, posiblemente vacía
+          dataUrl === lastImageDataUrl || // repetida
+          history.some(
             item => typeof item === 'object' && item.value === dataUrl
           )
         ) {
-          lastImageDataUrl = dataUrl
-          history.unshift({ value: dataUrl, favorite: false })
-
-          // Eliminar duplicados solo por `value`, sin search
-          history = history
-            .filter(item => item && typeof item.value === 'string')
-            .sort((a, b) => Number(b.favorite) - Number(a.favorite))
-            .slice(0, 50)
-
-          if (history.length > 200) history.length = 200
-
-          fs.writeFileSync(
-            historyPath,
-            JSON.stringify(history, null, 2),
-            'utf-8'
-          )
-          mainWindow.webContents.send('clipboard-update', history)
           return
         }
+
+        lastImageDataUrl = dataUrl
+        history.unshift({ value: dataUrl, favorite: false })
+
+        // Eliminar duplicados
+        history = history
+          .filter(item => item && typeof item.value === 'string')
+          .sort((a, b) => Number(b.favorite) - Number(a.favorite))
+          .slice(0, 50)
+
+        if (history.length > 200) history.length = 200
+
+        fs.writeFileSync(historyPath, JSON.stringify(history, null, 2), 'utf-8')
+        mainWindow.webContents.send('clipboard-update', history)
+        return
       }
 
       // --- Si hay nuevo texto ---
-      if (!history.some(item => item.value === text)) {
+      if (
+        typeof text === 'string' &&
+        text.trim() !== '' &&
+        !history.some(item => item.value === text)
+      ) {
         lastText = text
         history.unshift({ value: text, favorite: false })
+
+        // Eliminar duplicados de texto
         history = history.filter(
           (item, index, self) =>
             index === self.findIndex(t => t.value === item.value)
         )
+
         if (history.length > 200) history.length = 200
 
         try {
@@ -359,4 +436,8 @@ ipcMain.on('toggle-favorite', (event, value) => {
   } catch (err) {
     console.error('❌ Error actualizando favoritos:', err)
   }
+})
+
+ipcMain.handle('pasteImage', () => {
+  performPasteImage(mainWindow)
 })
