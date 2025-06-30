@@ -8,6 +8,7 @@ const {
   nativeImage
 } = require('electron')
 const { autoUpdater } = require('electron-updater')
+const log = require('electron-log')
 const path = require('path')
 const axios = require('axios')
 const fs = require('fs')
@@ -17,6 +18,9 @@ const { exec, execFile } = require('child_process')
 
 let mainWindow
 let history = []
+
+autoUpdater.logger = log
+autoUpdater.logger.transports.file.level = 'info'
 
 // Cargar historial guardado
 if (fs.existsSync(historyPath)) {
@@ -183,31 +187,8 @@ function createWindow () {
 }
 
 app.whenReady().then(() => {
-  autoUpdater.on('checking-for-update', () => {
-    console.log('🔎 Buscando actualizaciones...')
-  })
-
-  autoUpdater.on('update-available', () => {
-    console.log('🔄 Actualización disponible')
-  })
-
-  autoUpdater.on('update-not-available', () => {
-    console.log('✅ No hay actualizaciones disponibles')
-  })
-
-  autoUpdater.on('error', err => {
-    console.error('❌ Error al buscar actualizaciones:', err)
-  })
-
-  autoUpdater.on('update-downloaded', () => {
-    console.log('✅ Actualización descargada. Se instalará ahora mismo...')
-    autoUpdater.quitAndInstall() // 👉 Forzar instalación inmediata
-  })
-
-  autoUpdater.checkForUpdatesAndNotify()
-
   createWindow()
-
+  autoUpdater.forceDevUpdateConfig = true
   function normalizeHistory (raw) {
     return raw.map(item =>
       typeof item === 'string'
@@ -357,6 +338,48 @@ app.on('window-all-closed', () => {
 app.setLoginItemSettings({
   openAtLogin: true,
   path: process.execPath
+})
+
+// Evento para forzar la actualización desde el frontend
+ipcMain.on('force-update', () => {
+  log.info('🧪 Botón forzó búsqueda de actualización...')
+  autoUpdater.checkForUpdates()
+})
+
+// Eventos para debug y actualizaciones
+autoUpdater.on('checking-for-update', () => {
+  log.info('🔍 Buscando actualizaciones...')
+  mainWindow.webContents.send('update-status', 'Buscando actualizaciones...')
+})
+
+autoUpdater.on('update-available', info => {
+  log.info('🟠 Actualización disponible:', info)
+  mainWindow.webContents.send(
+    'update-status',
+    'Actualización disponible, descargando...'
+  )
+})
+
+autoUpdater.on('update-not-available', () => {
+  log.info('✅ No hay actualizaciones.')
+  mainWindow.webContents.send('update-status', 'Ya tienes la última versión.')
+})
+
+autoUpdater.on('error', err => {
+  log.error('❌ Error en autoUpdater:', err)
+  mainWindow.webContents.send(
+    'update-status',
+    'Error al buscar actualizaciones.'
+  )
+})
+
+autoUpdater.on('update-downloaded', () => {
+  log.info('✅ Update descargada, reiniciando...')
+  mainWindow.webContents.send(
+    'update-status',
+    'Actualización descargada. Reiniciando...'
+  )
+  setTimeout(() => autoUpdater.quitAndInstall(), 2000)
 })
 
 ipcMain.handle('get-clipboard-history', () => {
