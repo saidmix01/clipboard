@@ -1,6 +1,6 @@
 {
   "name": "portapapeles-app",
-  "version": "1.0.5",
+  "version": "1.0.7",
   "main": "main.js",
   "scripts": {
     "dev": "concurrently \"npm run dev --prefix frontend\" \"wait-on http://localhost:5173 && electron .\"",
