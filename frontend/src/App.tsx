@@ -67,13 +67,27 @@ function App () {
     )
   }
 
+  const [filter, setFilter] = useState<'all' | 'text' | 'image' | 'favorite'>(
+    'all'
+  )
   //Filtro
   const filteredHistory = [...history]
-    .filter(
-      item =>
+    .filter(item => {
+      const isImage =
+        typeof item.value === 'string' && item.value.startsWith('data:image')
+      const isFavorite = item.favorite
+
+      // Primero aplicar el filtro por tipo
+      if (filter === 'text' && isImage) return false
+      if (filter === 'image' && !isImage) return false
+      if (filter === 'favorite' && !isFavorite) return false
+
+      // Luego el filtro de búsqueda
+      return (
         typeof item.value === 'string' &&
         item.value.toLowerCase().includes(search.toLowerCase())
-    )
+      )
+    })
     .sort((a, b) => Number(b.favorite) - Number(a.favorite)) // ⭐ favoritos primero
     .slice(0, 50)
 
@@ -110,6 +124,14 @@ function App () {
   useEffect(() => {
     document.body.classList.toggle('dark-mode', darkMode)
   }, [darkMode])
+
+  const [appVersion, setAppVersion] = useState('')
+
+  useEffect(() => {
+    if ((window as any).electronAPI?.getAppVersion) {
+      ;(window as any).electronAPI.getAppVersion().then(setAppVersion)
+    }
+  }, [])
 
   function ExpandableCard ({
     content,
@@ -316,15 +338,58 @@ function App () {
               }`}
             />
           </div>
+            {/* Filtros */}
+          <div className={`p-3 border-bottom card-glass`}
+          style={{
+            display: 'flex',
+            justifyContent: 'space-between'
+          }}
+          >
+            <button
+              className={`btn btn-sm ${
+                filter === 'all' ? 'btn-secondary' : 'btn-outline-secondary'
+              }`}
+              onClick={() => setFilter('all')}
+            >
+              Todo
+            </button>
+            <button
+              className={`btn btn-sm ${
+                filter === 'text' ? 'btn-secondary' : 'btn-outline-secondary'
+              }`}
+              onClick={() => setFilter('text')}
+            >
+              🔤 Texto
+            </button>
+            <button
+              className={`btn btn-sm ${
+                filter === 'image' ? 'btn-secondary' : 'btn-outline-secondary'
+              }`}
+              onClick={() => setFilter('image')}
+            >
+              🖼️ Imagen
+            </button>
+            <button
+              className={`btn btn-sm ${
+                filter === 'favorite'
+                  ? 'btn-secondary'
+                  : 'btn-outline-secondary'
+              }`}
+              onClick={() => setFilter('favorite')}
+            >
+              ⭐ Favoritos
+            </button>
+          </div>
 
           {/* Lista del historial */}
           <div
-            className={`flex-grow-1 overflow-auto p-3 ${
+            className={`flex-grow-1 overflow-auto ${
               darkMode ? 'text-white' : 'text-dark'
             }`}
             style={{
               scrollbarColor: darkMode ? '#666 #222' : undefined,
-              scrollbarWidth: 'thin'
+              scrollbarWidth: 'thin',
+              padding: '10px'
             }}
           >
             {filteredHistory.length === 0 ? (
@@ -366,13 +431,25 @@ function App () {
                       newHistory[idx].favorite = !newHistory[idx].favorite
                       setHistory(newHistory)
 
-                      // Si deseas persistir, también llama a:
+                      // También actualiza en el backend
                       ;(window as any).electronAPI?.toggleFavorite?.(item.value)
                     }}
                   />
                 )
               })
             )}
+          </div>
+
+          {/* Pie de versión */}
+          <div
+            className='text-end px-2 pb-1'
+            style={{
+              fontSize: '0.7rem',
+              color: darkMode ? '#ccc' : '#666',
+              marginTop: '2px'
+            }}
+          >
+            <span title='Versión de la app'>v{appVersion}</span>
           </div>
         </div>
       </div>

@@ -24,5 +24,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   pasteImage: () => ipcRenderer.invoke('pasteImage'),
   //updates
   forceUpdate: () => ipcRenderer.send('force-update'),
-  onUpdateStatus: callback => ipcRenderer.on('update-status', (_, message) => callback(message))
+  onUpdateStatus: callback => ipcRenderer.on('update-status', (_, message) => callback(message)),
+  // Version app
+  getAppVersion: () => ipcRenderer.invoke('get-app-version'),
 })
