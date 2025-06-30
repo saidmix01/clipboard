@@ -4,7 +4,8 @@ const {
   globalShortcut,
   clipboard,
   ipcMain,
-  screen
+  screen,
+  nativeImage
 } = require('electron')
 const path = require('path')
 const axios = require('axios')
@@ -125,9 +126,7 @@ function createWindow () {
 }
 
 app.whenReady().then(() => {
-
   createWindow()
-
 
   function normalizeHistory (raw) {
     return raw.map(item =>
@@ -151,7 +150,7 @@ app.whenReady().then(() => {
   const pollClipboard = () => {
     let lastText = clipboard.readText()
     let lastImageDataUrl = ''
-
+    const search = ''
     // --- Cargar historial desde disco y eliminar duplicados ---
 
     setInterval(() => {
@@ -171,14 +170,9 @@ app.whenReady().then(() => {
           lastImageDataUrl = dataUrl
           history.unshift({ value: dataUrl, favorite: false })
 
-          // Eliminar duplicados
+          // Eliminar duplicados solo por `value`, sin search
           history = history
-            .filter(
-              item =>
-                item &&
-                typeof item.value === 'string' &&
-                item.value.toLowerCase().includes(search.toLowerCase())
-            )
+            .filter(item => item && typeof item.value === 'string')
             .sort((a, b) => Number(b.favorite) - Number(a.favorite))
             .slice(0, 50)
 
@@ -292,8 +286,6 @@ ipcMain.handle('clear-history', () => {
   }
 })
 
-const { nativeImage } = require('electron')
-const { log } = require('electron-builder')
 //copiar imagen
 ipcMain.on('copy-image', (_, dataUrl) => {
   try {

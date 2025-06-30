@@ -4,54 +4,41 @@ import hljs from 'highlight.js'
 import 'highlight.js/styles/github.css' // Puedes cambiar el estilo si luego quieres otro
 
 function isCodeSnippet (text: string): boolean {
-  if (!text || typeof text !== 'string') return false
+  const trimmed = text.trim()
 
-  // Evitar detectar enlaces o texto con una sola línea HTML/Markdown
-  if (/https?:\/\/\S+/.test(text) || /^<.+>$/.test(text.trim())) return false
+  // Detectar JSON válido
+  try {
+    const parsed = JSON.parse(trimmed)
+    if (typeof parsed === 'object' && parsed !== null) {
+      return true
+    }
+  } catch (_) {}
 
-  const lines = text.trim().split('\n')
-  const score = {
-    keywords: 0,
-    punctuation: 0,
-    structure: 0
-  }
-
-  const keywordList = [
+  // Detectar estructuras de código comunes
+  const hasCodeIndicators = [
+    ';',
+    '{',
+    '}',
+    '=>',
     'function',
     'const ',
     'let ',
-    'var ',
     'class ',
     'import ',
     'export ',
-    'if (',
-    'else',
-    'try',
-    'catch',
     'return ',
-    'await ',
-    'async '
-  ]
+    '//',
+    '/*',
+    '*/'
+  ].some(keyword => text.includes(keyword))
 
-  const punctuationList = ['{', '}', '=>', ';', '(', ')']
+  const lines = text.split('\n')
 
-  for (const kw of keywordList) {
-    if (text.includes(kw)) score.keywords++
-  }
+  // Al menos 3 líneas y algún símbolo sospechoso
+  const looksMultilineCode =
+    lines.length > 2 && lines.some(line => /[{;}=]/.test(line.trim()))
 
-  for (const p of punctuationList) {
-    if (text.includes(p)) score.punctuation++
-  }
-
-  if (lines.length >= 3) score.structure += 1
-  if (lines.some(line => line.trim().endsWith(';'))) score.structure += 1
-  if (lines.some(line => /^\s{2,}/.test(line))) score.structure += 1
-
-  const totalScore =
-    score.keywords * 2 + score.punctuation + score.structure * 2
-
-  // Puedes ajustar este umbral
-  return totalScore >= 4
+  return hasCodeIndicators || looksMultilineCode
 }
 
 type HistoryItem = {
