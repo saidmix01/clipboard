@@ -17,5 +17,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   translateToEnglish: text => ipcRenderer.invoke('translate-to-english', text),
   // 👇 ESTA ES LA QUE FALTA
-  pasteText: () => ipcRenderer.send('paste-text')
+  pasteText: () => ipcRenderer.send('paste-text'),
+
+  toggleFavorite: (value) => ipcRenderer.send('toggle-favorite', value)
 })

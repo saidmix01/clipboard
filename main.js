@@ -28,7 +28,6 @@ if (fs.existsSync(historyPath)) {
 }
 
 //Pegado de texto
-
 function performPaste (mainWindow) {
   const platform = process.platform
   const isDev = !app.isPackaged
@@ -126,24 +125,34 @@ function createWindow () {
 }
 
 app.whenReady().then(() => {
+
   createWindow()
+
+
+  function normalizeHistory (raw) {
+    return raw.map(item =>
+      typeof item === 'string'
+        ? { value: item, favorite: false }
+        : { value: item.value, favorite: !!item.favorite }
+    )
+  }
+  if (fs.existsSync(historyPath)) {
+    try {
+      const data = fs.readFileSync(historyPath, 'utf-8')
+      const parsed = JSON.parse(data)
+      history = normalizeHistory(parsed)
+
+      console.log('✅ Historial cargado:', history.length, 'entradas')
+    } catch (err) {
+      console.error('❌ Error al leer historial:', err)
+    }
+  }
 
   const pollClipboard = () => {
     let lastText = clipboard.readText()
     let lastImageDataUrl = ''
 
     // --- Cargar historial desde disco y eliminar duplicados ---
-    if (fs.existsSync(historyPath)) {
-      try {
-        const data = fs.readFileSync(historyPath, 'utf-8')
-        const rawHistory = JSON.parse(data)
-        // Eliminar duplicados manteniendo el orden
-        history = [...new Set(rawHistory)]
-        console.log('✅ Historial cargado:', history.length, 'entradas únicas')
-      } catch (err) {
-        console.error('❌ Error al leer historial:', err)
-      }
-    }
 
     setInterval(() => {
       const image = clipboard.readImage()
@@ -152,32 +161,47 @@ app.whenReady().then(() => {
       // --- Si hay nueva imagen ---
       if (!image.isEmpty()) {
         const dataUrl = image.toDataURL()
-        if (dataUrl !== lastImageDataUrl && !history.includes(dataUrl)) {
+
+        if (
+          dataUrl !== lastImageDataUrl &&
+          !history.some(
+            item => typeof item === 'object' && item.value === dataUrl
+          )
+        ) {
           lastImageDataUrl = dataUrl
-          history.unshift(dataUrl)
-          history = [...new Set(history)]
+          history.unshift({ value: dataUrl, favorite: false })
+
+          // Eliminar duplicados
+          history = history
+            .filter(
+              item =>
+                item &&
+                typeof item.value === 'string' &&
+                item.value.toLowerCase().includes(search.toLowerCase())
+            )
+            .sort((a, b) => Number(b.favorite) - Number(a.favorite))
+            .slice(0, 50)
+
           if (history.length > 200) history.length = 200
 
-          try {
-            fs.writeFileSync(
-              historyPath,
-              JSON.stringify(history, null, 2),
-              'utf-8'
-            )
-          } catch (err) {
-            console.error('❌ Error al guardar historial:', err)
-          }
-
+          fs.writeFileSync(
+            historyPath,
+            JSON.stringify(history, null, 2),
+            'utf-8'
+          )
           mainWindow.webContents.send('clipboard-update', history)
-          return // ⚠️ No seguir si ya se procesó imagen
+          return
         }
       }
 
       // --- Si hay nuevo texto ---
-      if (text && !text.startsWith('data:image') && !history.includes(text)) {
+      if (!history.some(item => item.value === text)) {
         lastText = text
-        history.unshift(text)
-        history = [...new Set(history)]
+        history.unshift({ value: text, favorite: false })
+        history = history.filter(
+          (item, index, self) =>
+            index === self.findIndex(t => t.value === item.value)
+        )
         if (history.length > 200) history.length = 200
 
         try {
@@ -197,7 +221,7 @@ app.whenReady().then(() => {
 
   pollClipboard()
 
-  globalShortcut.register('Ctrl+Space', () => {
+  globalShortcut.register('Shift+Space', () => {
     const mousePos = screen.getCursorScreenPoint()
     const display = screen.getDisplayNearestPoint(mousePos)
 
@@ -269,6 +293,7 @@ ipcMain.handle('clear-history', () => {
 })
 
 const { nativeImage } = require('electron')
+const { log } = require('electron-builder')
 //copiar imagen
 ipcMain.on('copy-image', (_, dataUrl) => {
   try {
@@ -308,4 +333,38 @@ ipcMain.handle('translate-to-english', async (_, text) => {
 // Cuando se recibe el evento desde el renderer
 ipcMain.on('paste-text', () => {
   performPaste(mainWindow)
+})
+
+// Escuchar favorito
+ipcMain.on('toggle-favorite', (event, value) => {
+  try {
+    if (!fs.existsSync(historyPath)) return
+
+    const fileData = fs.readFileSync(historyPath, 'utf8')
+    const data = JSON.parse(fileData)
+
+    // Verificar que es un array de objetos con .value
+    if (!Array.isArray(data)) return
+
+    const updated = data.map(item => {
+      if (typeof item === 'object' && item.value === value) {
+        return { ...item, favorite: !item.favorite }
+      }
+      return item
+    })
+
+    fs.writeFileSync(historyPath, JSON.stringify(updated, null, 2), 'utf8')
+
+    // También actualizamos la variable en memoria
+    history = updated
+
+    // Enviar al frontend
+    if (mainWindow?.webContents) {
+      mainWindow.webContents.send('clipboard-update', history)
+    }
+
+    console.log('⭐ Favorito actualizado:', value)
+  } catch (err) {
+    console.error('❌ Error actualizando favoritos:', err)
+  }
 })

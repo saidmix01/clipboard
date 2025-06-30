@@ -4,21 +4,63 @@ import hljs from 'highlight.js'
 import 'highlight.js/styles/github.css' // Puedes cambiar el estilo si luego quieres otro
 
 function isCodeSnippet (text: string): boolean {
-  return (
-    text.includes(';') ||
-    text.includes('{') ||
-    text.includes('=>') ||
-    text.includes('function') ||
-    text.includes('const ') ||
-    text.includes('let ') ||
-    text.includes('class ') ||
-    text.includes('import ') ||
-    text.split('\n').length > 2
-  )
+  if (!text || typeof text !== 'string') return false
+
+  // Evitar detectar enlaces o texto con una sola línea HTML/Markdown
+  if (/https?:\/\/\S+/.test(text) || /^<.+>$/.test(text.trim())) return false
+
+  const lines = text.trim().split('\n')
+  const score = {
+    keywords: 0,
+    punctuation: 0,
+    structure: 0
+  }
+
+  const keywordList = [
+    'function',
+    'const ',
+    'let ',
+    'var ',
+    'class ',
+    'import ',
+    'export ',
+    'if (',
+    'else',
+    'try',
+    'catch',
+    'return ',
+    'await ',
+    'async '
+  ]
+
+  const punctuationList = ['{', '}', '=>', ';', '(', ')']
+
+  for (const kw of keywordList) {
+    if (text.includes(kw)) score.keywords++
+  }
+
+  for (const p of punctuationList) {
+    if (text.includes(p)) score.punctuation++
+  }
+
+  if (lines.length >= 3) score.structure += 1
+  if (lines.some(line => line.trim().endsWith(';'))) score.structure += 1
+  if (lines.some(line => /^\s{2,}/.test(line))) score.structure += 1
+
+  const totalScore =
+    score.keywords * 2 + score.punctuation + score.structure * 2
+
+  // Puedes ajustar este umbral
+  return totalScore >= 4
+}
+
+type HistoryItem = {
+  value: string
+  favorite: boolean
 }
 
 function App () {
-  const [history, setHistory] = useState<string[]>([])
+  const [history, setHistory] = useState<HistoryItem[]>([])
   const [search, setSearch] = useState('')
 
   const highlightMatch = (text: string, query: string) => {
@@ -39,15 +81,20 @@ function App () {
   }
 
   //Filtro
-  const filteredHistory = history
-    .filter(item => item.toLowerCase().includes(search.toLowerCase()))
-    .slice(0, 50) // ✅ solo 50 ítems visibles
+  const filteredHistory = [...history]
+    .filter(
+      item =>
+        typeof item.value === 'string' &&
+        item.value.toLowerCase().includes(search.toLowerCase())
+    )
+    .sort((a, b) => Number(b.favorite) - Number(a.favorite)) // ⭐ favoritos primero
+    .slice(0, 50)
 
   // Escuchar actualizaciones del portapapeles
   useEffect(() => {
     if ((window as any).electronAPI?.onClipboardUpdate) {
-      ;(window as any).electronAPI.onClipboardUpdate((data: string[]) => {
-        setHistory(data)
+      ;(window as any).electronAPI.onClipboardUpdate((data: any[]) => {
+        setHistory(data) // ✅ ya viene bien formado desde Electron
       })
     }
   }, [])
@@ -81,12 +128,19 @@ function App () {
     content,
     darkMode,
     search,
-    onCopy
+    onCopy,
+    onToggleFavorite,
+    item
   }: {
     content: string
     darkMode: boolean
     search: string
     onCopy: () => void
+    onToggleFavorite: () => void
+    item: {
+      value: string
+      favorite: boolean
+    }
   }) {
     const [expanded, setExpanded] = useState(false)
 
@@ -138,6 +192,25 @@ function App () {
             </div>
           )}
         </div>
+
+        <button
+          onClick={e => {
+            e.stopPropagation()
+            onToggleFavorite()
+          }}
+          className={`btn btn-sm ${
+            item.favorite ? 'btn-warning' : 'btn-outline-warning'
+          }`}
+          title='Marcar como favorito'
+          style={{
+            position: 'absolute',
+            top: '4px',
+            right: '4px',
+            zIndex: 10
+          }}
+        >
+          ⭐
+        </button>
 
         {content.length > 300 && (
           <div
@@ -266,18 +339,18 @@ function App () {
                 return (
                   <ExpandableCard
                     key={idx}
-                    content={item}
+                    content={item.value}
                     darkMode={darkMode}
                     search={search}
                     onCopy={() => {
                       if (
-                        typeof item === 'string' &&
-                        item.startsWith('data:image')
+                        typeof item.value === 'string' &&
+                        item.value.startsWith('data:image')
                       ) {
-                        ;(window as any).electronAPI?.copyImage?.(item)
+                        ;(window as any).electronAPI?.copyImage?.(item.value)
                         toast.success('Imagen copiada al portapapeles')
                       } else {
-                        ;(window as any).electronAPI?.copyText(item)
+                        ;(window as any).electronAPI?.copyText(item.value)
                         setTimeout(() => {
                           ;(window as any).electronAPI?.pasteText()
                         }, 100)
@@ -286,6 +359,15 @@ function App () {
                       setTimeout(() => {
                         ;(window as any).electronAPI?.hideWindow?.()
                       }, 500)
+                    }}
+                    item={item}
+                    onToggleFavorite={() => {
+                      const newHistory = [...history]
+                      newHistory[idx].favorite = !newHistory[idx].favorite
+                      setHistory(newHistory)
+
+                      // Si deseas persistir, también llama a:
+                      ;(window as any).electronAPI?.toggleFavorite?.(item.value)
                     }}
                   />
                 )
