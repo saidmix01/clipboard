@@ -2,6 +2,7 @@ import { useEffect, useState, useRef } from 'react'
 import { Toaster, toast } from 'react-hot-toast'
 import hljs from 'highlight.js'
 import 'highlight.js/styles/github.css' // Puedes cambiar el estilo si luego quieres otro
+import { motion } from 'framer-motion'
 
 function isCodeSnippet (text: string): boolean {
   const trimmed = text.trim()
@@ -177,11 +178,12 @@ function App () {
     return (
       <div
         className={`mb-2 p-2 border rounded position-relative ${
-          darkMode ? 'bg-secondary text-white border-light' : 'bg-light'
+          darkMode ? 'text-white border-dark' : 'bg-light'
         }`}
         onClick={onCopy}
         style={{
-          cursor: 'pointer'
+          cursor: 'pointer',
+          backgroundColor: darkMode ? '#3e3e3d' : '#dcdcdc'
         }}
       >
         <div style={wrapperStyle}>
@@ -238,221 +240,234 @@ function App () {
 
   return (
     <>
-      <Toaster position='top-center' />
-
-      <div
-        className='d-flex justify-content-center'
-        style={{
-          background: darkMode ? '#161616' : 'transparent',
-          width: '100vw',
-          height: '100vh',
-          margin: 0,
-          padding: 0,
-          overflow: 'hidden',
-          alignItems: 'center',
-          display: 'flex'
-        }}
+      <motion.div
+        initial={{ opacity: 0, y: 30 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.5, ease: 'easeOut' }}
       >
+        <Toaster position='top-center' />
+
         <div
-          className={`card shadow rounded-1 position-relative card-glass ${
-            darkMode ? 'text-white border-secondary' : 'text-dark border-dark'
-          }`}
+          className='d-flex justify-content-center'
           style={{
-            width: '400px',
-            height: '500px',
+            background: 'transparent',
+            width: '100vw',
+            height: '100vh',
+            margin: 0,
+            padding: 0,
             overflow: 'hidden',
-            display: 'flex',
-            flexDirection: 'column'
+            alignItems: 'center',
+            display: 'flex'
           }}
         >
-          {/* Encabezado */}
           <div
-            className={`card-header d-flex align-items-center justify-content-between card-glass p-2 ${
-              darkMode ? 'border-secondary' : 'border-bottom'
+            className={`card shadow rounded-1 position-relative card-glass ${
+              darkMode ? 'text-white border-secondary' : 'text-dark border-dark'
             }`}
+            style={{
+              width: '400px',
+              height: '500px',
+              overflow: 'hidden',
+              display: 'flex',
+              flexDirection: 'column'
+            }}
           >
+            {/* Encabezado */}
             <div
-              style={
-                {
-                  WebkitAppRegion: 'drag',
-                  userSelect: 'none',
-                  flexGrow: 1
-                } as any
-              }
-            >
-              <h5 className='mb-0'>📋 Copyfy++</h5>
-            </div>
-
-            <div
-              className='d-flex gap-2'
-              style={{ WebkitAppRegion: 'no-drag' } as any}
-            >
-              <button
-                onClick={() => {
-                  toast('Buscando actualizaciones...')
-                  ;(window as any).electronAPI?.forceUpdate?.()
-                }}
-                title='Buscar actualizaciones'
-                className='btn btn-sm btn-outline-success'
-              >
-                🔄
-              </button>
-              <button
-                onClick={() => setDarkMode(prev => !prev)}
-                title='Modo oscuro'
-                className='btn btn-sm btn-outline-primary'
-              >
-                {darkMode ? '🌞' : '🌙'}
-              </button>
-
-              <button
-                onClick={() => {
-                  ;(window as any).electronAPI?.clearHistory?.()
-                  toast.success('Historial eliminado')
-                }}
-                title='Borrar historial'
-                className='btn btn-sm btn-outline-danger'
-              >
-                🗑️
-              </button>
-
-              <button
-                onClick={() => (window as any).electronAPI?.hideWindow?.()}
-                title='Ocultar ventana'
-                className='btn btn-sm btn-outline-secondary'
-              >
-                ❌
-              </button>
-            </div>
-          </div>
-
-          {/* Buscador */}
-          <div className={`p-3 border-bottom card-glass`}>
-            <input
-              type='text'
-              placeholder='Buscar en el historial...'
-              value={search}
-              onChange={e => setSearch(e.target.value)}
-              className={`form-control form-control-sm ${
-                darkMode ? 'bg-dark text-white border-secondary' : ''
+              className={`card-header d-flex align-items-center justify-content-between card-glass p-2 ${
+                darkMode ? 'border-secondary' : 'border-bottom'
               }`}
-            />
-          </div>
+            >
+              <div
+                style={
+                  {
+                    WebkitAppRegion: 'drag',
+                    userSelect: 'none',
+                    flexGrow: 1
+                  } as any
+                }
+              >
+                <h5 className='mb-0'>📋 Copyfy++</h5>
+              </div>
+
+              <div
+                className='d-flex gap-2'
+                style={{ WebkitAppRegion: 'no-drag' } as any}
+              >
+                <button
+                  onClick={() => {
+                    toast('Buscando actualizaciones...')
+                    ;(window as any).electronAPI?.forceUpdate?.()
+                  }}
+                  title='Buscar actualizaciones'
+                  className='btn btn-sm btn-outline-success'
+                >
+                  🔄
+                </button>
+                <button
+                  onClick={() => setDarkMode(prev => !prev)}
+                  title='Modo oscuro'
+                  className='btn btn-sm btn-outline-primary'
+                >
+                  {darkMode ? '🌞' : '🌙'}
+                </button>
+
+                <button
+                  onClick={() => {
+                    ;(window as any).electronAPI?.clearHistory?.()
+                    toast.success('Historial eliminado')
+                  }}
+                  title='Borrar historial'
+                  className='btn btn-sm btn-outline-danger'
+                >
+                  🗑️
+                </button>
+
+                <button
+                  onClick={() => (window as any).electronAPI?.hideWindow?.()}
+                  title='Ocultar ventana'
+                  className='btn btn-sm btn-outline-secondary'
+                >
+                  ❌
+                </button>
+              </div>
+            </div>
+
+            {/* Buscador */}
+            <div className={`p-3 border-bottom card-glass`}>
+              <input
+                type='text'
+                placeholder='Buscar en el historial...'
+                value={search}
+                onChange={e => setSearch(e.target.value)}
+                className={`form-control form-control-sm ${
+                  darkMode ? 'bg-dark text-white border-secondary' : ''
+                }`}
+              />
+            </div>
             {/* Filtros */}
-          <div className={`p-3 border-bottom card-glass`}
-          style={{
-            display: 'flex',
-            justifyContent: 'space-between'
-          }}
-          >
-            <button
-              className={`btn btn-sm ${
-                filter === 'all' ? 'btn-secondary' : 'btn-outline-secondary'
-              }`}
-              onClick={() => setFilter('all')}
+            <div
+              className={`p-3 border-bottom card-glass`}
+              style={{
+                display: 'flex',
+                justifyContent: 'space-between'
+              }}
             >
-              Todo
-            </button>
-            <button
-              className={`btn btn-sm ${
-                filter === 'text' ? 'btn-secondary' : 'btn-outline-secondary'
-              }`}
-              onClick={() => setFilter('text')}
-            >
-              🔤 Texto
-            </button>
-            <button
-              className={`btn btn-sm ${
-                filter === 'image' ? 'btn-secondary' : 'btn-outline-secondary'
-              }`}
-              onClick={() => setFilter('image')}
-            >
-              🖼️ Imagen
-            </button>
-            <button
-              className={`btn btn-sm ${
-                filter === 'favorite'
-                  ? 'btn-secondary'
-                  : 'btn-outline-secondary'
-              }`}
-              onClick={() => setFilter('favorite')}
-            >
-              ⭐ Favoritos
-            </button>
-          </div>
+              <button
+                className={`btn btn-sm ${
+                  filter === 'all' ? 'btn-secondary' : 'btn-outline-secondary'
+                }`}
+                onClick={() => setFilter('all')}
+              >
+                Todo
+              </button>
+              <button
+                className={`btn btn-sm ${
+                  filter === 'text' ? 'btn-secondary' : 'btn-outline-secondary'
+                }`}
+                onClick={() => setFilter('text')}
+              >
+                🔤 Texto
+              </button>
+              <button
+                className={`btn btn-sm ${
+                  filter === 'image' ? 'btn-secondary' : 'btn-outline-secondary'
+                }`}
+                onClick={() => setFilter('image')}
+              >
+                🖼️ Imagen
+              </button>
+              <button
+                className={`btn btn-sm ${
+                  filter === 'favorite'
+                    ? 'btn-secondary'
+                    : 'btn-outline-secondary'
+                }`}
+                onClick={() => setFilter('favorite')}
+              >
+                ⭐ Favoritos
+              </button>
+            </div>
 
-          {/* Lista del historial */}
-          <div
-            className={`flex-grow-1 overflow-auto ${
-              darkMode ? 'text-white' : 'text-dark'
-            }`}
-            style={{
-              scrollbarColor: darkMode ? '#666 #222' : undefined,
-              scrollbarWidth: 'thin',
-              padding: '10px'
-            }}
-          >
-            {filteredHistory.length === 0 ? (
-              <p className='text-muted text-center small mb-0'>
-                Sin coincidencias
-              </p>
-            ) : (
-              filteredHistory.map((item, idx) => {
-                return (
-                  <ExpandableCard
-                    key={idx}
-                    content={item.value}
-                    darkMode={darkMode}
-                    search={search}
-                    onCopy={() => {
-                      if (
-                        typeof item.value === 'string' &&
-                        item.value.startsWith('data:image')
-                      ) {
-                        ;(window as any).electronAPI?.copyImage?.(item.value)
+            {/* Lista del historial */}
+            <div
+              className={`flex-grow-1 overflow-auto ${
+                darkMode ? 'text-white' : 'text-dark'
+              }`}
+              style={{
+                scrollbarColor: darkMode ? '#666 #222' : undefined,
+                scrollbarWidth: 'thin',
+                padding: '10px'
+              }}
+            >
+              {filteredHistory.length === 0 ? (
+                <p
+                  className={`text-muted text-center small mb-0 no-match ${
+                    darkMode ? 'dark-mode' : ''
+                  }`}
+                >
+                  Sin coincidencias
+                </p>
+              ) : (
+                filteredHistory.map((item, idx) => {
+                  return (
+                    <ExpandableCard
+                      key={idx}
+                      content={item.value}
+                      darkMode={darkMode}
+                      search={search}
+                      onCopy={() => {
+                        if (
+                          typeof item.value === 'string' &&
+                          item.value.startsWith('data:image')
+                        ) {
+                          ;(window as any).electronAPI?.copyImage?.(item.value)
+                          setTimeout(() => {
+                            ;(window as any).electronAPI.pasteImage()
+                          }, 300)
+                          toast.success('Imagen copiada al portapapeles')
+                        } else {
+                          ;(window as any).electronAPI?.copyText(item.value)
+                          setTimeout(() => {
+                            ;(window as any).electronAPI?.pasteText()
+                          }, 100)
+                          toast.success('Pegado automáticamente')
+                        }
                         setTimeout(() => {
-                          ;(window as any).electronAPI.pasteImage()
-                        }, 300)
-                        toast.success('Imagen copiada al portapapeles')
-                      } else {
-                        ;(window as any).electronAPI?.copyText(item.value)
-                        setTimeout(() => {
-                          ;(window as any).electronAPI?.pasteText()
-                        }, 100)
-                        toast.success('Pegado automáticamente')
-                      }
-                      setTimeout(() => {
-                        ;(window as any).electronAPI?.hideWindow?.()
-                      }, 500)
-                    }}
-                    item={item}
-                    onToggleFavorite={() => {
-                      const newHistory = [...history]
-                      newHistory[idx].favorite = !newHistory[idx].favorite
-                      setHistory(newHistory)
+                          ;(window as any).electronAPI?.hideWindow?.()
+                        }, 500)
+                      }}
+                      item={item}
+                      onToggleFavorite={() => {
+                        const newHistory = [...history]
+                        newHistory[idx].favorite = !newHistory[idx].favorite
+                        setHistory(newHistory)
 
-                      // También actualiza en el backend
-                      ;(window as any).electronAPI?.toggleFavorite?.(item.value)
-                    }}
-                  />
-                )
-              })
-            )}
-          </div>
+                        // También actualiza en el backend
+                        ;(window as any).electronAPI?.toggleFavorite?.(
+                          item.value
+                        )
+                      }}
+                    />
+                  )
+                })
+              )}
+            </div>
 
-          {/* Pie de versión */}
-          <div
-            className='text-end px-2 pb-1'
-            style={{
-              fontSize: '0.7rem',
-              color: darkMode ? '#ccc' : '#666',
-              marginTop: '2px'
-            }}
-          >
-            <span title='Versión de la app'>v{appVersion}</span>
+            {/* Pie de versión */}
+            <div
+              className='text-end px-2 pb-1'
+              style={{
+                fontSize: '0.7rem',
+                color: darkMode ? '#ccc' : '#666',
+                marginTop: '2px'
+              }}
+            >
+              <span title='Versión de la app'>v{appVersion}</span>
+            </div>
           </div>
         </div>
-      </div>
+      </motion.div>
     </>
   )
 }
@@ -467,7 +482,7 @@ function CodeBlock ({ code }: { code: string }) {
   }, [code])
 
   return (
-    <pre className='bg-light p-2 rounded' style={{ fontSize: '0.8rem' }}>
+    <pre className='code-block'>
       <code ref={ref} className='language-javascript'>
         {code}
       </code>
