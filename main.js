@@ -147,9 +147,19 @@ function performPasteImage (mainWindow) {
 }
 
 function createWindow () {
+  const display = screen.getPrimaryDisplay()
+  const screenWidth = display.workArea.width
+  const screenHeight = display.workArea.height
+  const windowWidth = 400
+  const windowHeight = screenHeight
+  const finalX = screenWidth - windowWidth
+  const startX = screenWidth // Inicia fuera de la pantalla
+
   mainWindow = new BrowserWindow({
-    width: 400,
-    height: 500,
+    width: windowWidth,
+    height: windowHeight,
+    x: startX,
+    y: 0,
     frame: false,
     transparent: true,
     backgroundColor: '#00FFFFFF',
@@ -165,21 +175,44 @@ function createWindow () {
     }
   })
 
+  // Cargar interfaz
   if (app.isPackaged) {
     mainWindow.loadFile(path.join(__dirname, 'frontend', 'dist', 'index.html'))
   } else {
     mainWindow.loadURL('http://localhost:5173')
   }
 
+  // Enviar historial al frontend
   mainWindow.webContents.on('did-finish-load', () => {
     mainWindow.webContents.send('clipboard-update', history)
   })
+
+  // Mostrar con animación
   mainWindow.once('ready-to-show', () => {
     mainWindow.show()
-    mainWindow.setContentSize(400, 500) // 👈 ajustado al tamaño real del card
+
+    const duration = 300 // ms
+    const steps = 30
+    const stepTime = duration / steps
+    const deltaX = (startX - finalX) / steps
+
+    let currentX = startX
+    const interval = setInterval(() => {
+      currentX -= deltaX
+      if (currentX <= finalX) {
+        currentX = finalX
+        clearInterval(interval)
+      }
+      mainWindow.setBounds({
+        x: Math.round(currentX),
+        y: 0,
+        width: windowWidth,
+        height: windowHeight
+      })
+    }, stepTime)
   })
 
-  // Evitar cerrar: solo ocultar
+  // Evitar cierre completo
   mainWindow.on('close', event => {
     event.preventDefault()
     mainWindow.hide()
@@ -297,31 +330,16 @@ app.whenReady().then(() => {
   pollClipboard()
 
   globalShortcut.register('Alt+X', () => {
-    const mousePos = screen.getCursorScreenPoint()
-    const display = screen.getDisplayNearestPoint(mousePos)
+    const display = screen.getPrimaryDisplay()
+    const screenWidth = display.workArea.width
+    const screenHeight = display.workArea.height
 
     const windowWidth = 400
-    const windowHeight = 500
+    const windowHeight = screenHeight
+    const x = screenWidth - windowWidth
+    const y = 0
 
-    let x = mousePos.x - windowWidth / 2
-    let y = mousePos.y + 20
-
-    // Asegurar que no se salga de pantalla horizontalmente
-    if (x + windowWidth > display.workArea.x + display.workArea.width) {
-      x = display.workArea.x + display.workArea.width - windowWidth
-    }
-    if (x < display.workArea.x) {
-      x = display.workArea.x
-    }
-
-    // Si no cabe abajo, mostrar arriba
-    if (y + windowHeight > display.workArea.y + display.workArea.height) {
-      y = mousePos.y - windowHeight - 20
-    }
-
-    mainWindow.setContentSize(400, 500) // o lo que midas exactamente tu card
-    mainWindow.setBounds({ x, y, width: 400, height: 500 })
-
+    mainWindow.setBounds({ x, y, width: windowWidth, height: windowHeight })
     mainWindow.show()
     mainWindow.focus()
   })

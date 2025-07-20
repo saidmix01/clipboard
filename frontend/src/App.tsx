@@ -1,13 +1,14 @@
 import { useEffect, useState, useRef } from 'react'
+import type { ReactNode } from 'react'
 import { Toaster, toast } from 'react-hot-toast'
 import hljs from 'highlight.js'
-import 'highlight.js/styles/github.css' // Puedes cambiar el estilo si luego quieres otro
+import 'highlight.js/styles/github.css'
 import { motion } from 'framer-motion'
+import { FaStar } from 'react-icons/fa'
 
 function isCodeSnippet (text: string): boolean {
   const trimmed = text.trim()
 
-  // Detectar JSON válido
   try {
     const parsed = JSON.parse(trimmed)
     if (typeof parsed === 'object' && parsed !== null) {
@@ -15,7 +16,6 @@ function isCodeSnippet (text: string): boolean {
     }
   } catch (_) {}
 
-  // Detectar estructuras de código comunes
   const hasCodeIndicators = [
     ';',
     '{',
@@ -35,7 +35,6 @@ function isCodeSnippet (text: string): boolean {
 
   const lines = text.split('\n')
 
-  // Al menos 3 líneas y algún símbolo sospechoso
   const looksMultilineCode =
     lines.length > 2 && lines.some(line => /[{;}=]/.test(line.trim()))
 
@@ -49,9 +48,17 @@ type HistoryItem = {
 
 function App () {
   const [history, setHistory] = useState<HistoryItem[]>([])
-  const [search, setSearch] = useState('')
+  const [search, setSearch] = useState<string>('')
+  const containerRef = useRef<HTMLDivElement>(null)
 
-  const highlightMatch = (text: string, query: string) => {
+  // Ref para el contenedor scrollable y para cada item
+  const containerScrollRef = useRef<HTMLDivElement>(null)
+  const itemRefs = useRef<(HTMLDivElement | null)[]>([])
+
+  const highlightMatch = (
+    text: string,
+    query: string
+  ): ReactNode[] | string => {
     if (!query) return text
 
     const regex = new RegExp(`(${query})`, 'gi')
@@ -71,51 +78,58 @@ function App () {
   const [filter, setFilter] = useState<'all' | 'text' | 'image' | 'favorite'>(
     'all'
   )
-  //Filtro
+
   const filteredHistory = [...history]
     .filter(item => {
-      const isImage =
-        typeof item.value === 'string' && item.value.startsWith('data:image')
+      const isImage = item.value.startsWith('data:image')
       const isFavorite = item.favorite
 
-      // Primero aplicar el filtro por tipo
+      if (filter === 'all' && isFavorite) return false
       if (filter === 'text' && isImage) return false
       if (filter === 'image' && !isImage) return false
       if (filter === 'favorite' && !isFavorite) return false
 
-      // Luego el filtro de búsqueda
-      return (
-        typeof item.value === 'string' &&
-        item.value.toLowerCase().includes(search.toLowerCase())
-      )
+      return item.value.toLowerCase().includes(search.toLowerCase())
     })
-    .sort((a, b) => Number(b.favorite) - Number(a.favorite)) // ⭐ favoritos primero
+    .sort((a, b) => Number(b.favorite) - Number(a.favorite))
     .slice(0, 50)
 
-  // Escuchar actualizaciones del portapapeles
   useEffect(() => {
     if ((window as any).electronAPI?.onClipboardUpdate) {
-      ;(window as any).electronAPI.onClipboardUpdate((data: any[]) => {
-        setHistory(data) // ✅ ya viene bien formado desde Electron
+      ;(window as any).electronAPI.onClipboardUpdate((data: HistoryItem[]) => {
+        setHistory(data)
       })
     }
   }, [])
 
-  // Cerrar con Escape
   useEffect(() => {
     const escListener = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
-        ;(window as any).electronAPI?.hideWindow?.() // ✅ llama a backend para ocultar
+        ;(window as any).electronAPI?.hideWindow?.()
       }
     }
     window.addEventListener('keydown', escListener)
     return () => window.removeEventListener('keydown', escListener)
   }, [])
 
-  //dark mode
-  const [darkMode, setDarkMode] = useState(() => {
+  useEffect(() => {
+    function handleClickOutside (event: MouseEvent) {
+      if (
+        containerRef.current &&
+        !containerRef.current.contains(event.target as Node)
+      ) {
+        ;(window as any).electronAPI?.hideWindow?.()
+      }
+    }
+    document.addEventListener('mousedown', handleClickOutside)
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside)
+    }
+  }, [])
+
+  const [darkMode, setDarkMode] = useState<boolean>(() => {
     const stored = localStorage.getItem('darkMode')
-    return stored === 'true' // si existe y es "true", activa el modo oscuro
+    return stored === 'true'
   })
 
   useEffect(() => {
@@ -126,7 +140,7 @@ function App () {
     document.body.classList.toggle('dark-mode', darkMode)
   }, [darkMode])
 
-  const [appVersion, setAppVersion] = useState('')
+  const [appVersion, setAppVersion] = useState<string>('')
 
   useEffect(() => {
     if ((window as any).electronAPI?.getAppVersion) {
@@ -134,109 +148,59 @@ function App () {
     }
   }, [])
 
-  function ExpandableCard ({
-    content,
-    darkMode,
-    search,
-    onCopy,
-    onToggleFavorite,
-    item
-  }: {
-    content: string
-    darkMode: boolean
-    search: string
-    onCopy: () => void
-    onToggleFavorite: () => void
-    item: {
-      value: string
-      favorite: boolean
+  const [selectedIndex, setSelectedIndex] = useState<number>(-1)
+
+  // Scroll automático cuando cambia selectedIndex
+  useEffect(() => {
+    const itemEl = itemRefs.current[selectedIndex]
+    if (itemEl && itemEl.scrollIntoView) {
+      itemEl.scrollIntoView({
+        behavior: 'smooth',
+        block: 'nearest',
+        inline: 'nearest'
+      })
     }
-  }) {
-    const [expanded, setExpanded] = useState(false)
+  }, [selectedIndex, filteredHistory])
 
-    const isImage = content.startsWith('data:image')
-    const isCode = isCodeSnippet(content)
+  useEffect(() => {
+    const keyListener = (e: KeyboardEvent) => {
+      if (filteredHistory.length === 0) return
 
-    const wrapperStyle: React.CSSProperties = {
-      maxHeight: expanded ? 'none' : '150px',
-      overflow: 'hidden',
-      position: 'relative'
+      if (e.key === 'ArrowDown') {
+        e.preventDefault()
+        setSelectedIndex(prev => (prev + 1) % filteredHistory.length)
+      } else if (e.key === 'ArrowUp') {
+        e.preventDefault()
+        setSelectedIndex(prev =>
+          prev <= 0 ? filteredHistory.length - 1 : prev - 1
+        )
+      } else if (e.key === 'Enter') {
+        e.preventDefault()
+        if (selectedIndex >= 0 && selectedIndex < filteredHistory.length) {
+          const item = filteredHistory[selectedIndex]
+          if (item.value.startsWith('data:image')) {
+            ;(window as any).electronAPI?.copyImage?.(item.value)
+            setTimeout(() => {
+              ;(window as any).electronAPI.pasteImage()
+            }, 300)
+            toast.success('Imagen copiada al portapapeles')
+          } else {
+            ;(window as any).electronAPI?.copyText(item.value)
+            setTimeout(() => {
+              ;(window as any).electronAPI?.pasteText()
+            }, 100)
+            toast.success('Pegado automáticamente')
+          }
+          setTimeout(() => {
+            ;(window as any).electronAPI?.hideWindow?.()
+          }, 500)
+        }
+      }
     }
 
-    const buttonStyle: React.CSSProperties = {
-      position: 'absolute',
-      bottom: 0,
-      left: 0,
-      width: '100%',
-      textAlign: 'center',
-      background: darkMode ? '#333' : '#fff',
-      color: darkMode ? '#ccc' : '#000',
-      fontSize: '0.75rem',
-      cursor: 'pointer'
-    }
-
-    return (
-      <div
-        className={`mb-2 p-2 border rounded position-relative ${
-          darkMode ? 'text-white border-dark' : 'bg-light'
-        }`}
-        onClick={onCopy}
-        style={{
-          cursor: 'pointer',
-          backgroundColor: darkMode ? '#3e3e3d' : '#dcdcdc'
-        }}
-      >
-        <div style={wrapperStyle}>
-          {isImage ? (
-            <img src={content} alt='imagen' style={{ maxWidth: '100%' }} />
-          ) : isCode ? (
-            <CodeBlock code={content} />
-          ) : (
-            <div
-              className={`${darkMode ? 'text-white' : 'text-dark'} small`}
-              style={{
-                overflowWrap: 'break-word',
-                wordBreak: 'break-word'
-              }}
-            >
-              {highlightMatch(content, search)}
-            </div>
-          )}
-        </div>
-
-        <button
-          onClick={e => {
-            e.stopPropagation()
-            onToggleFavorite()
-          }}
-          className={`btn btn-sm ${
-            item.favorite ? 'btn-warning' : 'btn-outline-warning'
-          }`}
-          title='Marcar como favorito'
-          style={{
-            position: 'absolute',
-            top: '4px',
-            right: '4px',
-            zIndex: 10
-          }}
-        >
-          ⭐
-        </button>
-
-        {content.length > 300 && (
-          <div
-            style={buttonStyle}
-            onClick={e => {
-              e.stopPropagation()
-              setExpanded(!expanded)
-            }}
-          >
-            {expanded ? '▲ Ver menos' : '▼ Ver más'}
-          </div>
-        )}
-      </div>
-    )
-  }
+    window.addEventListener('keydown', keyListener)
+    return () => window.removeEventListener('keydown', keyListener)
+  }, [filteredHistory, selectedIndex])
 
   return (
     <>
@@ -248,6 +212,7 @@ function App () {
         <Toaster position='top-center' />
 
         <div
+          ref={containerRef}
           className='d-flex justify-content-center'
           style={{
             background: 'transparent',
@@ -266,13 +231,13 @@ function App () {
             }`}
             style={{
               width: '400px',
-              height: '500px',
+              height: '100%',
               overflow: 'hidden',
               display: 'flex',
               flexDirection: 'column'
             }}
           >
-            {/* Encabezado */}
+            {/* Header */}
             <div
               className={`card-header d-flex align-items-center justify-content-between card-glass p-2 ${
                 darkMode ? 'border-secondary' : 'border-bottom'
@@ -333,7 +298,7 @@ function App () {
               </div>
             </div>
 
-            {/* Buscador */}
+            {/* Search input */}
             <div className={`p-3 border-bottom card-glass`}>
               <input
                 type='text'
@@ -345,7 +310,8 @@ function App () {
                 }`}
               />
             </div>
-            {/* Filtros */}
+
+            {/* Filters */}
             <div
               className={`p-3 border-bottom card-glass`}
               style={{
@@ -389,8 +355,9 @@ function App () {
               </button>
             </div>
 
-            {/* Lista del historial */}
+            {/* Scroll container */}
             <div
+              ref={containerScrollRef}
               className={`flex-grow-1 overflow-auto ${
                 darkMode ? 'text-white' : 'text-dark'
               }`}
@@ -410,51 +377,63 @@ function App () {
                 </p>
               ) : (
                 filteredHistory.map((item, idx) => {
+                  const isSelected = idx === selectedIndex
                   return (
-                    <ExpandableCard
+                    <div
                       key={idx}
-                      content={item.value}
-                      darkMode={darkMode}
-                      search={search}
-                      onCopy={() => {
-                        if (
-                          typeof item.value === 'string' &&
-                          item.value.startsWith('data:image')
-                        ) {
-                          ;(window as any).electronAPI?.copyImage?.(item.value)
-                          setTimeout(() => {
-                            ;(window as any).electronAPI.pasteImage()
-                          }, 300)
-                          toast.success('Imagen copiada al portapapeles')
-                        } else {
-                          ;(window as any).electronAPI?.copyText(item.value)
-                          setTimeout(() => {
-                            ;(window as any).electronAPI?.pasteText()
-                          }, 100)
-                          toast.success('Pegado automáticamente')
-                        }
-                        setTimeout(() => {
-                          ;(window as any).electronAPI?.hideWindow?.()
-                        }, 500)
+                      ref={el => {
+                        itemRefs.current[idx] = el
                       }}
-                      item={item}
-                      onToggleFavorite={() => {
-                        const newHistory = [...history]
-                        newHistory[idx].favorite = !newHistory[idx].favorite
-                        setHistory(newHistory)
-
-                        // También actualiza en el backend
-                        ;(window as any).electronAPI?.toggleFavorite?.(
-                          item.value
-                        )
-                      }}
-                    />
+                    >
+                      <ExpandableCard
+                        content={item.value}
+                        darkMode={darkMode}
+                        search={search}
+                        onCopy={() => {
+                          if (item.value.startsWith('data:image')) {
+                            ;(window as any).electronAPI?.copyImage?.(
+                              item.value
+                            )
+                            setTimeout(() => {
+                              ;(window as any).electronAPI.pasteImage()
+                            }, 300)
+                            toast.success('Imagen copiada al portapapeles')
+                          } else {
+                            ;(window as any).electronAPI?.copyText(item.value)
+                            setTimeout(() => {
+                              ;(window as any).electronAPI?.pasteText()
+                            }, 100)
+                            toast.success('Pegado automáticamente')
+                          }
+                          setTimeout(() => {
+                            ;(window as any).electronAPI?.hideWindow?.()
+                          }, 500)
+                        }}
+                        item={item}
+                        onToggleFavorite={() => {
+                          const newHistory = [...history]
+                          const realIndex = history.findIndex(
+                            h => h.value === item.value
+                          )
+                          if (realIndex !== -1) {
+                            newHistory[realIndex].favorite =
+                              !newHistory[realIndex].favorite
+                            setHistory(newHistory)
+                            ;(window as any).electronAPI?.toggleFavorite?.(
+                              item.value
+                            )
+                          }
+                        }}
+                        selected={isSelected}
+                        highlightMatch={highlightMatch}
+                      />
+                    </div>
                   )
                 })
               )}
             </div>
 
-            {/* Pie de versión */}
+            {/* Footer version */}
             <div
               className='text-end px-2 pb-1'
               style={{
@@ -467,8 +446,126 @@ function App () {
             </div>
           </div>
         </div>
-      </motion.div> 
+      </motion.div>
     </>
+  )
+}
+
+type ExpandableCardProps = {
+  content: string
+  darkMode: boolean
+  search: string
+  onCopy: () => void
+  onToggleFavorite: () => void
+  item: HistoryItem
+  selected: boolean
+  highlightMatch: (text: string, query: string) => React.ReactNode[] | string
+}
+
+function ExpandableCard ({
+  content,
+  darkMode,
+  search,
+  onCopy,
+  onToggleFavorite,
+  item,
+  selected,
+  highlightMatch
+}: ExpandableCardProps) {
+  const [expanded, setExpanded] = useState(false)
+
+  const isImage = content.startsWith('data:image')
+  const isCode = isCodeSnippet(content)
+
+  const wrapperStyle: React.CSSProperties = {
+    maxHeight: expanded ? 'none' : '150px',
+    overflow: 'hidden',
+    position: 'relative',
+    outline: selected
+      ? darkMode
+        ? '2px solid orange'
+        : '2px solid #007bff'
+      : undefined
+  }
+
+  const buttonStyle: React.CSSProperties = {
+    position: 'absolute',
+    bottom: 0,
+    left: 0,
+    width: '100%',
+    textAlign: 'center',
+    background: darkMode ? '#333' : '#fff',
+    color: darkMode ? '#ccc' : '#000',
+    fontSize: '0.75rem',
+    cursor: 'pointer'
+  }
+
+  return (
+    <div
+      className={`mb-2 p-2 border rounded position-relative ${
+        darkMode ? 'text-white border-dark' : 'bg-light'
+      }`}
+      onClick={onCopy}
+      style={{
+        cursor: 'pointer',
+        backgroundColor: darkMode ? '#3e3e3d' : '#dcdcdc',
+        ...wrapperStyle
+      }}
+      tabIndex={0}
+    >
+      <div>
+        {isImage ? (
+          <img src={content} alt='imagen' style={{ maxWidth: '100%' }} />
+        ) : isCode ? (
+          <CodeBlock code={content} />
+        ) : (
+          <div
+            className={`${darkMode ? 'text-white' : 'text-dark'} small`}
+            style={{
+              overflowWrap: 'break-word',
+              wordBreak: 'break-word'
+            }}
+          >
+            {highlightMatch(content, search)}
+          </div>
+        )}
+      </div>
+
+      <button
+        onClick={e => {
+          e.stopPropagation()
+          onToggleFavorite()
+        }}
+        title='Marcar como favorito'
+        className='btn btn-sm'
+        style={{
+          position: 'absolute',
+          top: '4px',
+          right: '4px',
+          zIndex: 10,
+          backgroundColor: 'transparent',
+          border: 'none',
+          padding: 0,
+          fontSize: '1.3rem',
+          cursor: 'pointer',
+          color: item.favorite ? 'gold' : 'gray'
+        }}
+      >
+        <FaStar />
+      </button>
+
+      {content.length > 300 && (
+        <div
+          style={buttonStyle}
+          onClick={e => {
+            e.stopPropagation()
+            setExpanded(!expanded)
+          }}
+        >
+          {expanded ? '▲ Ver menos' : '▼ Ver más'}
+        </div>
+      )}
+    </div>
   )
 }
 
