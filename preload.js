@@ -27,4 +27,5 @@ contextBridge.exposeInMainWorld('electronAPI', {
   onUpdateStatus: callback => ipcRenderer.on('update-status', (_, message) => callback(message)),
   // Version app
   getAppVersion: () => ipcRenderer.invoke('get-app-version'),
+  setAuthToken: (token) => ipcRenderer.send('set-auth-token', token)
 })

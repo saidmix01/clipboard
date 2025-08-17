@@ -4,12 +4,14 @@ type LoginModalProps = {
   isOpen: boolean
   onClose: () => void
   onLoginSuccess: (token: string) => void
+  isDarkMode: boolean
 }
 
-export default function LoginModal ({
+export default function LoginModal({
   isOpen,
   onClose,
-  onLoginSuccess
+  onLoginSuccess,
+  isDarkMode
 }: LoginModalProps) {
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
@@ -31,7 +33,7 @@ export default function LoginModal ({
       })
 
       const data = await res.json()
-
+      
       if (!res.ok) {
         setError(data.msg || 'Error en login')
       } else {
@@ -57,22 +59,23 @@ export default function LoginModal ({
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
-        zIndex: 10000 // más alto para asegurarse que esté sobre todo
+        zIndex: 10000
       }}
       onClick={onClose}
     >
       <div
         onClick={e => e.stopPropagation()}
         style={{
-          backgroundColor: 'white',
+          backgroundColor: isDarkMode ? '#1e1e1e' : 'white',
+          color: isDarkMode ? '#f5f5f5' : '#000',
           padding: 20,
           borderRadius: 8,
           width: '90%',
-          maxWidth: 320, // para que no crezca mucho en pantallas grandes
+          maxWidth: 320,
           boxShadow: '0 2px 10px rgba(0,0,0,0.3)'
         }}
       >
-        <h3>Iniciar sesión</h3>
+        <h3 style={{ color: isDarkMode ? '#f5f5f5' : '#000' }}>Iniciar sesión</h3>
         <form onSubmit={handleSubmit}>
           <input
             type='email'
@@ -84,6 +87,9 @@ export default function LoginModal ({
               width: '100%',
               marginBottom: 10,
               padding: 8,
+              backgroundColor: isDarkMode ? '#2c2c2c' : '#fff',
+              color: isDarkMode ? '#f5f5f5' : '#000',
+              border: '1px solid #ccc',
               boxSizing: 'border-box'
             }}
           />
@@ -97,6 +103,9 @@ export default function LoginModal ({
               width: '100%',
               marginBottom: 10,
               padding: 8,
+              backgroundColor: isDarkMode ? '#2c2c2c' : '#fff',
+              color: isDarkMode ? '#f5f5f5' : '#000',
+              border: '1px solid #ccc',
               boxSizing: 'border-box'
             }}
           />
@@ -106,7 +115,11 @@ export default function LoginModal ({
             style={{
               width: '100%',
               padding: 10,
-              cursor: loading ? 'not-allowed' : 'pointer'
+              cursor: loading ? 'not-allowed' : 'pointer',
+              backgroundColor: isDarkMode ? '#444' : '#007bff',
+              color: isDarkMode ? '#f5f5f5' : '#fff',
+              border: 'none',
+              borderRadius: 4
             }}
           >
             {loading ? 'Ingresando...' : 'Ingresar'}
@@ -118,7 +131,8 @@ export default function LoginModal ({
           style={{
             marginTop: 15,
             width: '100%',
-            backgroundColor: '#ddd',
+            backgroundColor: isDarkMode ? '#555' : '#ddd',
+            color: isDarkMode ? '#f5f5f5' : '#000',
             padding: 10,
             border: 'none',
             borderRadius: 4,

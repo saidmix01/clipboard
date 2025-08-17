@@ -509,3 +509,93 @@ ipcMain.handle('pasteImage', () => {
 ipcMain.handle('get-app-version', () => {
   return app.getVersion()
 })
+
+const BACKEND_URL = 'http://localhost:3000/api' // Cambiar
+let authToken = null
+
+ipcMain.on('set-auth-token', (event, token) => {
+  authToken = token
+  console.log('✅ Token recibido en main.js:', authToken)
+})
+
+function getAxiosInstance () {
+  if (!authToken) {
+    throw new Error('No hay token de autenticación disponible')
+  }
+
+  return axios.create({
+    baseURL: BACKEND_URL,
+    headers: {
+      'x-token': authToken,
+      'Content-Type': 'application/json'
+    }
+  })
+}
+
+async function fetchBackendFavorites () {
+  const axiosInstance = getAxiosInstance()
+  const res = await axiosInstance.get('/favorite/get_favorites')
+  if (!res.data.status) throw new Error('Error al obtener favoritos')
+  return res.data.data
+}
+
+async function createFavorite (value) {
+  const axiosInstance = getAxiosInstance()
+  const res = await axiosInstance.post('/favorite/save', { value })
+  if (!res.data.status) throw new Error('Error al crear favorito')
+  return res.data.data
+}
+
+async function deleteFavorite (value) {
+  const axiosInstance = getAxiosInstance()
+  const res = await axiosInstance.post(`/favorite/delete`,{value})
+  if (!res.data.status) {
+    log.error('Error al eliminar favorito:', res.data.message)
+    throw new Error('Error al eliminar favorito')
+  }
+}
+
+function readLocalFavorites () {
+  if (!fs.existsSync(historyPath)) return []
+  try {
+    const data = fs.readFileSync(historyPath, 'utf-8')
+    const items = JSON.parse(data)
+    return items.filter(item => item.favorite).map(item => item.value)
+  } catch {
+    return []
+  }
+}
+
+async function syncFavorites () {
+  try {
+    const localFavorites = readLocalFavorites()
+    const backendFavorites = await fetchBackendFavorites()
+
+    const backendValues = backendFavorites.map(fav => fav.value)
+
+    for (const value of localFavorites) {
+      if (!backendValues.includes(value)) {
+        console.log('[syncFavorites] Creando favorito:', value)
+        await createFavorite(value)
+      }
+    }
+
+    for (const fav of backendFavorites) {
+      if (!localFavorites.includes(fav.value)) {
+        console.log('[syncFavorites] Eliminando favorito:', fav.value)
+        await deleteFavorite(fav.value)
+      }
+    }
+
+    console.log('[syncFavorites] Sincronización completa')
+  } catch (error) {
+    console.error('[syncFavorites] Error:', error.message)
+  }
+}
+
+// Dentro de app.whenReady()
+setInterval(() => {
+  syncFavorites()
+}, 60000)
+
+syncFavorites()

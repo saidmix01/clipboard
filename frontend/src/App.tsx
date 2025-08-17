@@ -5,6 +5,7 @@ import hljs from 'highlight.js'
 import 'highlight.js/styles/github.css'
 import { motion } from 'framer-motion'
 import { FaStar } from 'react-icons/fa'
+import LoginModal from './Login'
 
 function isCodeSnippet (text: string): boolean {
   const trimmed = text.trim()
@@ -50,6 +51,16 @@ function App () {
   const [history, setHistory] = useState<HistoryItem[]>([])
   const [search, setSearch] = useState<string>('')
   const containerRef = useRef<HTMLDivElement>(null)
+  const [showLogin, setShowLogin] = useState(false)
+  const [token, setToken] = useState<string | null>(null)
+
+  const handleLoginSuccess = (newToken: string) => {
+    setToken(newToken)
+
+    if ((window as any).electronAPI?.setAuthToken) {
+      ;(window as any).electronAPI?.setAuthToken(newToken)
+    }
+  }
 
   // Ref para el contenedor scrollable y para cada item
   const containerScrollRef = useRef<HTMLDivElement>(null)
@@ -93,6 +104,14 @@ function App () {
     })
     .sort((a, b) => Number(b.favorite) - Number(a.favorite))
     .slice(0, 50)
+
+  useEffect(() => {
+    const token = localStorage.getItem('x-token')
+    if (token) {
+      handleLoginSuccess(token);
+      (window as any).electronAPI?.setAuthToken(token)
+    }
+  }, [])
 
   useEffect(() => {
     if ((window as any).electronAPI?.onClipboardUpdate) {
@@ -259,6 +278,27 @@ function App () {
                 className='d-flex gap-2'
                 style={{ WebkitAppRegion: 'no-drag' } as any}
               >
+                {!token ? (
+                  <button
+                    className='btn btn-sm btn-outline-primary'
+                    onClick={() => setShowLogin(true)}
+                    title='Iniciar sesión'
+                  >
+                    🔐
+                  </button>
+                ) : (
+                  <button
+                    className='btn btn-sm btn-outline-warning'
+                    onClick={() => {
+                      setToken(null)
+                      localStorage.removeItem('authToken') // si decides guardarlo localmente después
+                      toast.success('Sesión cerrada')
+                    }}
+                    title='Cerrar sesión'
+                  >
+                    🚪
+                  </button>
+                )}
                 <button
                   onClick={() => {
                     toast('Buscando actualizaciones...')
@@ -310,6 +350,13 @@ function App () {
                 }`}
               />
             </div>
+
+            <LoginModal
+              isOpen={showLogin}
+              onClose={() => setShowLogin(false)}
+              onLoginSuccess={handleLoginSuccess}
+              isDarkMode={darkMode}
+            />
 
             {/* Filters */}
             <div
