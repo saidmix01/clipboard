@@ -7,12 +7,16 @@ const {
   screen,
   nativeImage
 } = require('electron')
+
+const os = require('os')
+if (os.platform() === 'linux') {
+  app.commandLine.appendSwitch('no-sandbox');
+}
 const { autoUpdater } = require('electron-updater')
 const log = require('electron-log')
 const path = require('path')
 const axios = require('axios')
 const fs = require('fs')
-const os = require('os')
 const historyPath = path.join(os.homedir(), '.clipboard-history.json')
 const { exec, execFile } = require('child_process')
 

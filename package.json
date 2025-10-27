@@ -4,6 +4,7 @@
   "main": "main.js",
   "scripts": {
     "dev": "concurrently \"npm run dev --prefix frontend\" \"wait-on http://localhost:5173 && electron .\"",
+    "dev-linux": "concurrently \"npm run dev --prefix frontend\" \"wait-on http://localhost:5173 && electron --no-sandbox .\"",
     "build": "npm run build --prefix frontend",
     "start": "electron .",
     "dist": "electron-builder"
@@ -45,7 +46,12 @@
         "AppImage",
         "deb"
       ],
-      "category": "Utility"
+      "category": "Utility",
+      "synopsis": "Portapapeles avanzado Copyfy++",
+      "description": "CopyFy++ es una herramienta avanzada para gestionar el portapapeles con soporte para texto, imágenes y favoritos.",
+      "depends": [
+        "xdotool"
+      ]
     }
   },
   "keywords": [],
