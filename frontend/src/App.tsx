@@ -56,6 +56,7 @@ function App () {
 
   const handleLoginSuccess = (newToken: string) => {
     setToken(newToken)
+    localStorage.setItem('x-token', newToken)
 
     if ((window as any).electronAPI?.setAuthToken) {
       ;(window as any).electronAPI?.setAuthToken(newToken)
@@ -117,6 +118,14 @@ function App () {
     if ((window as any).electronAPI?.onClipboardUpdate) {
       ;(window as any).electronAPI.onClipboardUpdate((data: HistoryItem[]) => {
         setHistory(data)
+      })
+    }
+  }, [])
+
+  useEffect(() => {
+    if ((window as any).electronAPI?.getClipboardHistory) {
+      ;(window as any).electronAPI.getClipboardHistory().then((data: HistoryItem[]) => {
+        if (Array.isArray(data)) setHistory(data)
       })
     }
   }, [])
@@ -289,11 +298,11 @@ function App () {
                 ) : (
                   <button
                     className='btn btn-sm btn-outline-warning'
-                    onClick={() => {
-                      setToken(null)
+                  onClick={() => {
+                    setToken(null)
                       localStorage.removeItem('authToken') // si decides guardarlo localmente después
-                      toast.success('Sesión cerrada')
-                    }}
+                    toast.success('Sesión cerrada')
+                  }}
                     title='Cerrar sesión'
                   >
                     🚪

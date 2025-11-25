@@ -19,6 +19,15 @@ const { exec, execFile } = require('child_process')
 let mainWindow
 let history = []
 
+function normalizeHistory (raw) {
+  if (!Array.isArray(raw)) return []
+  return raw.map(item =>
+    typeof item === 'string'
+      ? { value: item, favorite: false }
+      : { value: item.value, favorite: !!item.favorite }
+  )
+}
+
 autoUpdater.logger = log
 autoUpdater.logger.transports.file.level = 'info'
 
@@ -26,10 +35,26 @@ autoUpdater.logger.transports.file.level = 'info'
 if (fs.existsSync(historyPath)) {
   try {
     const data = fs.readFileSync(historyPath, 'utf-8')
-    history = JSON.parse(data)
-    console.log('✅ Historial cargado:', history.length, 'entradas')
+    history = normalizeHistory(JSON.parse(data))
+    log.info('Historial cargado', { count: history.length })
   } catch (err) {
-    console.error('❌ Error al leer historial:', err)
+    log.error('Error al leer historial', err)
+  }
+}
+
+if (!fs.existsSync(historyPath)) {
+  try {
+    const alt1 = path.join(__dirname, '.clipboard-history.json')
+    const alt2 = path.join(__dirname, 'clipboard-history.json')
+    const src = [alt1, alt2].find(p => fs.existsSync(p))
+    if (src) {
+      const data = fs.readFileSync(src, 'utf-8')
+      history = normalizeHistory(JSON.parse(data))
+      fs.writeFileSync(historyPath, JSON.stringify(history, null, 2), 'utf-8')
+      log.info('Historial importado', { count: history.length })
+    }
+  } catch (err) {
+    log.error('Error importando historial', err)
   }
 }
 
@@ -41,8 +66,8 @@ function performPaste (mainWindow) {
   // ✅ Ocultar ventana para devolver foco a la anterior app
   if (mainWindow && mainWindow.hide) mainWindow.hide()
 
-  console.log(`📌 Plataforma: ${platform}`)
-  console.log(`📦 Entorno: ${isDev ? 'desarrollo' : 'producción'}`)
+  log.info('Plataforma', { platform })
+  log.info('Entorno', { env: isDev ? 'desarrollo' : 'producción' })
 
   if (platform === 'win32') {
     const exePath = isDev
@@ -54,13 +79,13 @@ function performPaste (mainWindow) {
           'paste.exe'
         )
 
-    console.log('📁 Ejecutando:', exePath)
+    log.info('Ejecutando', { exePath })
 
     execFile(exePath, err => {
       if (err) {
-        console.error('❌ Error al ejecutar paste.exe:', err)
+        log.error('Error al ejecutar paste.exe', err)
       } else {
-        console.log('✅ paste.exe ejecutado correctamente')
+        log.info('paste.exe ejecutado correctamente')
       }
     })
   } else if (platform === 'darwin') {
@@ -69,8 +94,8 @@ function performPaste (mainWindow) {
       exec(
         `osascript -e 'tell application "System Events" to keystroke "v" using command down'`,
         err => {
-          if (err) console.error('❌ Error ejecutando osascript:', err)
-          else console.log('✅ Comando pegado en macOS')
+          if (err) log.error('Error ejecutando osascript', err)
+          else log.info('Comando pegado en macOS')
         }
       )
     }, 300)
@@ -79,15 +104,15 @@ function performPaste (mainWindow) {
     setTimeout(() => {
       exec('xdotool key ctrl+v', err => {
         if (err) {
-          console.error('❌ Error ejecutando xdotool:', err)
+          log.error('Error ejecutando xdotool', err)
         } else {
-          console.log('✅ Pegado automático en Linux')
+          log.info('Pegado automático en Linux')
         }
       })
     }, 300)
   } else {
-    console.warn('⚠️ Plataforma no compatible')
-  }
+    log.warn('Plataforma no compatible')
+}
 }
 //Pegado de imagen
 function performPasteImage (mainWindow) {
@@ -97,8 +122,8 @@ function performPasteImage (mainWindow) {
   // ✅ Ocultar ventana para devolver foco a la anterior app
   if (mainWindow && mainWindow.hide) mainWindow.hide()
 
-  console.log(`📌 Plataforma: ${platform}`)
-  console.log(`📦 Entorno: ${isDev ? 'desarrollo' : 'producción'}`)
+  log.info('Plataforma', { platform })
+  log.info('Entorno', { env: isDev ? 'desarrollo' : 'producción' })
 
   if (platform === 'win32') {
     const exePath = isDev
@@ -110,13 +135,13 @@ function performPasteImage (mainWindow) {
           'paste-image.exe'
         )
 
-    console.log('📁 Ejecutando:', exePath)
+    log.info('Ejecutando', { exePath })
 
     execFile(exePath, err => {
       if (err) {
-        console.error('❌ Error al ejecutar paste-image.exe:', err)
+        log.error('Error al ejecutar paste-image.exe', err)
       } else {
-        console.log('✅ paste-image.exe ejecutado correctamente')
+        log.info('paste-image.exe ejecutado correctamente')
       }
     })
   } else if (platform === 'darwin') {
@@ -125,8 +150,8 @@ function performPasteImage (mainWindow) {
       exec(
         `osascript -e 'tell application "System Events" to keystroke "v" using command down'`,
         err => {
-          if (err) console.error('❌ Error ejecutando osascript (imagen)', err)
-          else console.log('✅ Imagen pegada en macOS')
+          if (err) log.error('Error ejecutando osascript (imagen)', err)
+          else log.info('Imagen pegada en macOS')
         }
       )
     }, 300)
@@ -135,15 +160,15 @@ function performPasteImage (mainWindow) {
     setTimeout(() => {
       exec('xdotool key ctrl+v', err => {
         if (err) {
-          console.error('❌ Error pegando imagen en Linux con xdotool:', err)
+          log.error('Error pegando imagen en Linux con xdotool', err)
         } else {
-          console.log('✅ Imagen pegada en Linux')
+          log.info('Imagen pegada en Linux')
         }
       })
     }, 300)
   } else {
-    console.warn('⚠️ Plataforma no compatible para pegar imagen')
-  }
+    log.warn('Plataforma no compatible para pegar imagen')
+}
 }
 
 function createWindow () {
@@ -168,6 +193,7 @@ function createWindow () {
     icon: path.join(__dirname, 'public', 'icon.ico'), // Usa .ico en Windows
     show: false,
     hasShadow: true, // ✅ sombra opcional
+    title: '',
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
@@ -184,11 +210,17 @@ function createWindow () {
 
   // Enviar historial al frontend
   mainWindow.webContents.on('did-finish-load', () => {
+    try {
+      history = normalizeHistory(history)
+    } catch {
+      history = []
+    }
     mainWindow.webContents.send('clipboard-update', history)
   })
 
   // Mostrar con animación
   mainWindow.once('ready-to-show', () => {
+    mainWindow.setTitle('')
     mainWindow.show()
 
     const duration = 300 // ms
@@ -222,39 +254,30 @@ function createWindow () {
 app.whenReady().then(() => {
   createWindow()
   autoUpdater.forceDevUpdateConfig = true
-  function normalizeHistory (raw) {
-    return raw.map(item =>
-      typeof item === 'string'
-        ? { value: item, favorite: false }
-        : { value: item.value, favorite: !!item.favorite }
-    )
-  }
   if (fs.existsSync(historyPath)) {
     try {
       const data = fs.readFileSync(historyPath, 'utf-8')
       const parsed = JSON.parse(data)
       history = normalizeHistory(parsed)
 
-      console.log('✅ Historial cargado:', history.length, 'entradas')
+      log.info('Historial cargado', { count: history.length })
     } catch (err) {
-      console.error('❌ Error al leer historial:', err)
+      log.error('Error al leer historial', err)
     }
   }
 
   const pollClipboard = () => {
-    let lastText = clipboard.readText()
     let lastImageDataUrl = ''
-    const search = ''
 
-    // Cargar historial desde disco o inicializarlo vacío
-    if (fs.existsSync(historyPath)) {
-      try {
-        history = JSON.parse(fs.readFileSync(historyPath, 'utf-8'))
-      } catch {
-        history = []
-      }
-    } else {
+    // Normalizar historial ya cargado y enviar al renderer inmediatamente
+    try {
+      history = Array.isArray(history) ? normalizeHistory(history) : []
+    } catch {
       history = []
+    }
+
+    if (mainWindow?.webContents) {
+      mainWindow.webContents.send('clipboard-update', history)
     }
 
     setInterval(() => {
@@ -301,7 +324,6 @@ app.whenReady().then(() => {
         text.trim() !== '' &&
         !history.some(item => item.value === text)
       ) {
-        lastText = text
         history.unshift({ value: text, favorite: false })
 
         // Eliminar duplicados de texto
@@ -319,7 +341,7 @@ app.whenReady().then(() => {
             'utf-8'
           )
         } catch (err) {
-          console.error('❌ Error al guardar historial:', err)
+          log.error('Error al guardar historial', err)
         }
 
         mainWindow.webContents.send('clipboard-update', history)
@@ -421,9 +443,9 @@ ipcMain.handle('clear-history', () => {
   try {
     fs.writeFileSync(historyPath, JSON.stringify(history, null, 2), 'utf-8')
     mainWindow.webContents.send('clipboard-update', history)
-    console.log('🗑️ Historial borrado')
+    log.info('Historial borrado')
   } catch (err) {
-    console.error('❌ Error al borrar historial:', err)
+    log.error('Error al borrar historial', err)
   }
 })
 
@@ -432,9 +454,9 @@ ipcMain.on('copy-image', (_, dataUrl) => {
   try {
     const image = nativeImage.createFromDataURL(dataUrl)
     clipboard.writeImage(image)
-    console.log('📋 Imagen copiada al portapapeles')
+    log.info('Imagen copiada al portapapeles')
   } catch (err) {
-    console.error('❌ Error al copiar imagen:', err)
+    log.error('Error al copiar imagen', err)
   }
 })
 //Traducir texto
@@ -575,21 +597,21 @@ async function syncFavorites () {
 
     for (const value of localFavorites) {
       if (!backendValues.includes(value)) {
-        console.log('[syncFavorites] Creando favorito:', value)
+        log.info('syncFavorites creando favorito', { value })
         await createFavorite(value)
       }
     }
 
     for (const fav of backendFavorites) {
       if (!localFavorites.includes(fav.value)) {
-        console.log('[syncFavorites] Eliminando favorito:', fav.value)
+        log.info('syncFavorites eliminando favorito', { value: fav.value })
         await deleteFavorite(fav.value)
       }
     }
 
-    console.log('[syncFavorites] Sincronización completa')
+    log.info('syncFavorites sincronización completa')
   } catch (error) {
-    console.error('[syncFavorites] Error:', error.message)
+    log.error('syncFavorites error', { message: error.message })
   }
 }
 
