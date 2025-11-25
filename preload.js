@@ -29,4 +29,5 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getAppVersion: () => ipcRenderer.invoke('get-app-version'),
   setAuthToken: (token) => ipcRenderer.send('set-auth-token', token),
   getClipboardHistory: () => ipcRenderer.invoke('get-clipboard-history')
+  ,openImageViewer: (dataUrl) => ipcRenderer.send('open-image-viewer', dataUrl)
 })

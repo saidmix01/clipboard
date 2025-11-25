@@ -91,7 +91,7 @@ function App () {
     'all'
   )
 
-  const filteredHistory = [...history]
+  let filteredHistory = [...history]
     .filter(item => {
       const isImage = item.value.startsWith('data:image')
       const isFavorite = item.favorite
@@ -104,7 +104,10 @@ function App () {
       return item.value.toLowerCase().includes(search.toLowerCase())
     })
     .sort((a, b) => Number(b.favorite) - Number(a.favorite))
-    .slice(0, 50)
+
+  if (!search.trim()) {
+    filteredHistory = filteredHistory.slice(0, 50)
+  }
 
   useEffect(() => {
     const token = localStorage.getItem('x-token')
@@ -571,7 +574,15 @@ function ExpandableCard ({
     >
       <div>
         {isImage ? (
-          <img src={content} alt='imagen' style={{ maxWidth: '100%' }} />
+          <img
+            src={content}
+            alt='imagen'
+            style={{ maxWidth: '100%' }}
+            onClick={e => {
+              e.stopPropagation()
+              ;(window as any).electronAPI?.openImageViewer?.(content)
+            }}
+          />
         ) : isCode ? (
           <CodeBlock code={content} />
         ) : (

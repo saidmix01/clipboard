@@ -305,11 +305,10 @@ app.whenReady().then(() => {
         lastImageDataUrl = dataUrl
         history.unshift({ value: dataUrl, favorite: false })
 
-        // Eliminar duplicados
+        // Eliminar duplicados y ordenar; no recortar a 50 al guardar
         history = history
           .filter(item => item && typeof item.value === 'string')
           .sort((a, b) => Number(b.favorite) - Number(a.favorite))
-          .slice(0, 50)
 
         if (history.length > 200) history.length = 200
 
@@ -457,6 +456,21 @@ ipcMain.on('copy-image', (_, dataUrl) => {
     log.info('Imagen copiada al portapapeles')
   } catch (err) {
     log.error('Error al copiar imagen', err)
+  }
+})
+ipcMain.on('open-image-viewer', (_, dataUrl) => {
+  try {
+    const win = new BrowserWindow({
+      width: 900,
+      height: 700,
+      resizable: true,
+      backgroundColor: '#111111',
+      show: true
+    })
+    const html = `<!doctype html><html><head><meta charset="UTF-8"><style>body{margin:0;background:#111;display:flex;align-items:center;justify-content:center;height:100vh}img{max-width:95vw;max-height:95vh;border-radius:6px}</style></head><body><img src="${dataUrl}"></body></html>`
+    win.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html))
+  } catch (err) {
+    log.error('Error abriendo visor de imagen', err)
   }
 })
 //Traducir texto
