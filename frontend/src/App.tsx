@@ -180,6 +180,7 @@ function App () {
   }, [])
 
   const [selectedIndex, setSelectedIndex] = useState<number>(-1)
+  const [settingsOpen, setSettingsOpen] = useState<boolean>(false)
 
   // Scroll automático cuando cambia selectedIndex
   useEffect(() => {
@@ -273,6 +274,7 @@ function App () {
               className={`card-header d-flex align-items-center justify-content-between card-glass p-2 ${
                 darkMode ? 'border-secondary' : 'border-bottom'
               }`}
+              style={{ position: 'relative', zIndex: 2000 }}
             >
               <div
                 style={
@@ -311,34 +313,62 @@ function App () {
                     🚪
                   </button>
                 )}
-                <button
-                  onClick={() => {
-                    toast('Buscando actualizaciones...')
-                    ;(window as any).electronAPI?.forceUpdate?.()
-                  }}
-                  title='Buscar actualizaciones'
-                  className='btn btn-sm btn-outline-success'
-                >
-                  🔄
-                </button>
-                <button
-                  onClick={() => setDarkMode(prev => !prev)}
-                  title='Modo oscuro'
-                  className='btn btn-sm btn-outline-primary'
-                >
-                  {darkMode ? '🌞' : '🌙'}
-                </button>
-
-                <button
-                  onClick={() => {
-                    ;(window as any).electronAPI?.clearHistory?.()
-                    toast.success('Historial eliminado')
-                  }}
-                  title='Borrar historial'
-                  className='btn btn-sm btn-outline-danger'
-                >
-                  🗑️
-                </button>
+                <div className='position-relative' style={{ WebkitAppRegion: 'no-drag' } as any}>
+                  <button
+                    onClick={() => setSettingsOpen(prev => !prev)}
+                    title='Configuración'
+                    className='btn btn-sm btn-outline-secondary'
+                  >
+                    ⚙️
+                  </button>
+                  {settingsOpen && (
+                    <div
+                      className='shadow rounded border'
+                      style={{
+                        position: 'absolute',
+                        right: 0,
+                        top: 'calc(100% + 4px)',
+                        zIndex: 1000,
+                        background: darkMode ? '#333' : '#fff'
+                      }}
+                    >
+                      <div className='d-flex flex-column p-2 gap-2' style={{ minWidth: '200px' }}>
+                        <button
+                          onClick={() => {
+                            setSettingsOpen(false)
+                            toast('Buscando actualizaciones...')
+                            ;(window as any).electronAPI?.forceUpdate?.()
+                          }}
+                          className='btn btn-sm btn-outline-success text-start'
+                          title='Buscar actualizaciones'
+                        >
+                          🔄 Buscar actualizaciones
+                        </button>
+                        <button
+                          onClick={() => {
+                            setSettingsOpen(false)
+                            setDarkMode(prev => !prev)
+                          }}
+                          className='btn btn-sm btn-outline-primary text-start'
+                          title='Modo oscuro'
+                        >
+                          {darkMode ? '🌞' : '🌙'} Modo oscuro
+                        </button>
+                        <button
+                          onClick={() => {
+                            setSettingsOpen(false)
+                            ;(window as any).electronAPI?.clearHistory?.()
+                            toast.success('Historial eliminado')
+                          }}
+                          className='btn btn-sm btn-outline-danger text-start'
+                          title='Borrar historial'
+                        >
+                          🗑️ Borrar historial
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
 
                 <button
                   onClick={() => (window as any).electronAPI?.hideWindow?.()}
