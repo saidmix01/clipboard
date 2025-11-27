@@ -312,7 +312,11 @@ app.whenReady().then(() => {
 
         if (history.length > 200) history.length = 200
 
-        fs.writeFileSync(historyPath, JSON.stringify(history, null, 2), 'utf-8')
+        if (!authToken) {
+          fs.writeFileSync(historyPath, JSON.stringify(history, null, 2), 'utf-8')
+        } else {
+          saveClipboardRecord('image', dataUrl, { format: 'dataURL' })
+        }
         mainWindow.webContents.send('clipboard-update', history)
         return
       }
@@ -334,11 +338,15 @@ app.whenReady().then(() => {
         if (history.length > 200) history.length = 200
 
         try {
-          fs.writeFileSync(
-            historyPath,
-            JSON.stringify(history, null, 2),
-            'utf-8'
-          )
+          if (!authToken) {
+            fs.writeFileSync(
+              historyPath,
+              JSON.stringify(history, null, 2),
+              'utf-8'
+            )
+          } else {
+            saveClipboardRecord('text', text, {})
+          }
         } catch (err) {
           log.error('Error al guardar historial', err)
         }
@@ -421,7 +429,12 @@ autoUpdater.on('update-downloaded', () => {
   setTimeout(() => autoUpdater.quitAndInstall(), 2000)
 })
 
-ipcMain.handle('get-clipboard-history', () => {
+ipcMain.handle('get-clipboard-history', async () => {
+  try {
+    if (authToken) {
+      await fetchBackendClipboard()
+    }
+  } catch {}
   return history
 })
 
@@ -573,12 +586,14 @@ ipcMain.handle('get-app-version', () => {
   return app.getVersion()
 })
 
-const BACKEND_URL = 'http://localhost:3000/api' // Cambiar
+const BACKEND_URL = 'http://localhost:3000' 
 let authToken = null
+let deviceId = null
 
 ipcMain.on('set-auth-token', (event, token) => {
   authToken = token
   console.log('✅ Token recibido en main.js:', authToken)
+  fetchBackendClipboard()
 })
 
 function getAxiosInstance () {
@@ -589,10 +604,59 @@ function getAxiosInstance () {
   return axios.create({
     baseURL: BACKEND_URL,
     headers: {
-      'x-token': authToken,
+      Authorization: `Bearer ${authToken}`,
       'Content-Type': 'application/json'
     }
   })
+}
+
+async function fetchBackendClipboard () {
+  try {
+    const axiosInstance = getAxiosInstance()
+    const res = await axiosInstance.get('/clipboard')
+    const data = res?.data
+    const items = (data && typeof data === 'object' ? (data.data?.items ?? data.items ?? []) : [])
+    const mapped = Array.isArray(items)
+      ? items.map(it => ({ value: String(it.value ?? ''), favorite: !!it.favorite }))
+      : []
+    history = mapped
+    if (mainWindow?.webContents) {
+      mainWindow.webContents.send('clipboard-update', history)
+    }
+  } catch (error) {
+    log.error('fetchBackendClipboard error', error?.message || error)
+  }
+}
+
+async function ensureDeviceRegistered () {
+  try {
+    if (deviceId) return deviceId
+    const axiosInstance = getAxiosInstance()
+    const hostname = os.hostname()
+    const osName = process.platform === 'win32' ? 'Windows' : (process.platform === 'darwin' ? 'macOS' : 'Linux')
+    const payload = { clientId: hostname, name: hostname, metadata: { os: osName, appVersion: app.getVersion() } }
+    const res = await axiosInstance.post('/devices', payload)
+    const data = res?.data
+    const obj = (data && typeof data === 'object' ? (data.data ?? data) : {})
+    deviceId = obj?.id || obj?.device?.id || null
+    return deviceId
+  } catch (error) {
+    log.error('ensureDeviceRegistered error', error?.message || error)
+    return null
+  }
+}
+
+async function saveClipboardRecord (type, value, meta = {}) {
+  try {
+    const axiosInstance = getAxiosInstance()
+    const hostname = os.hostname()
+    const id = deviceId || (await ensureDeviceRegistered())
+    const payload = { type, value, meta, clientId: hostname, deviceId: id }
+    log.info('clipboard save request', { type, deviceId: id })
+    await axiosInstance.post('/clipboard', payload)
+  } catch (error) {
+    log.error('clipboard save error', error?.message || error)
+  }
 }
 
 async function fetchBackendFavorites () {
@@ -662,3 +726,33 @@ setInterval(() => {
 }, 60000)
 
 syncFavorites()
+
+ipcMain.handle('register-device', async (_, clientId) => {
+  try {
+    const axiosInstance = getAxiosInstance()
+    const hostname = os.hostname()
+    const osName = process.platform === 'win32' ? 'Windows' : (process.platform === 'darwin' ? 'macOS' : 'Linux')
+    const payload = { clientId: hostname, name: hostname, metadata: { os: osName, appVersion: app.getVersion() } }
+    log.info('register-device request', payload)
+    const res = await axiosInstance.post('/devices', payload)
+    const data = res?.data
+    const obj = (data && typeof data === 'object' ? (data.data ?? data) : {})
+    deviceId = obj?.id || obj?.device?.id || null
+    log.info('register-device success')
+  } catch (error) {
+    log.error('register-device error', error?.message || error)
+  }
+})
+
+ipcMain.handle('auth-login', async (_, body) => {
+  try {
+    const url = `${BACKEND_URL}/auth/login`
+    const res = await axios.post(url, body, {
+      headers: { 'Content-Type': 'application/json' }
+    })
+    return res.data
+  } catch (error) {
+    log.error('auth-login error', error?.message || error)
+    throw error
+  }
+})

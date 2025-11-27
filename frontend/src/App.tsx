@@ -4,7 +4,7 @@ import { Toaster, toast } from 'react-hot-toast'
 import hljs from 'highlight.js'
 import 'highlight.js/styles/github.css'
 import { motion } from 'framer-motion'
-import { FaStar } from 'react-icons/fa'
+import { FaStar, FaSignInAlt, FaSignOutAlt, FaUserPlus } from 'react-icons/fa'
 import LoginModal from './Login'
 
 function isCodeSnippet (text: string): boolean {
@@ -52,7 +52,42 @@ function App () {
   const [search, setSearch] = useState<string>('')
   const containerRef = useRef<HTMLDivElement>(null)
   const [showLogin, setShowLogin] = useState(false)
+  const [showRegister, setShowRegister] = useState(false)
   const [token, setToken] = useState<string | null>(null)
+  const [globalLoading, setGlobalLoading] = useState(false)
+
+  const logout = () => {
+    setToken(null)
+    localStorage.removeItem('x-token')
+    localStorage.removeItem('session')
+    ;(window as any).electronAPI?.setAuthToken?.('')
+    toast.success('Sesión cerrada')
+  }
+
+  async function refreshAuthToken () {
+    try {
+      const raw = localStorage.getItem('session')
+      if (!raw) return
+      const sess = JSON.parse(raw)
+      const rt = sess?.refreshToken
+      if (!rt) return
+      const res = await fetch('http://localhost:3000/auth/refresh', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ refreshToken: rt })
+      })
+      const data = await res.json()
+      const payload = (data && typeof data === 'object' ? (data.data ?? data) : {}) as any
+      const success = (data && typeof data === 'object' ? data.success : undefined)
+      const newToken = payload?.token
+      const newRefresh = payload?.refreshToken
+      if ((success ?? res.ok) && newToken) {
+        handleLoginSuccess(newToken)
+        const newSession = { ...sess, token: newToken, refreshToken: newRefresh || rt }
+        localStorage.setItem('session', JSON.stringify(newSession))
+      }
+    } catch {}
+  }
 
   const handleLoginSuccess = (newToken: string) => {
     setToken(newToken)
@@ -61,6 +96,12 @@ function App () {
     if ((window as any).electronAPI?.setAuthToken) {
       ;(window as any).electronAPI?.setAuthToken(newToken)
     }
+
+    try {
+      setTimeout(() => {
+        ;(window as any).electronAPI?.registerDevice?.('')
+      }, 200)
+    } catch {}
   }
 
   // Ref para el contenedor scrollable y para cada item
@@ -112,9 +153,25 @@ function App () {
   useEffect(() => {
     const token = localStorage.getItem('x-token')
     if (token) {
-      handleLoginSuccess(token);
-      (window as any).electronAPI?.setAuthToken(token)
+      handleLoginSuccess(token)
+      ;(window as any).electronAPI?.setAuthToken(token)
+    } else {
+      const raw = localStorage.getItem('session')
+      if (raw) {
+        try {
+          const sess = JSON.parse(raw)
+          if (sess?.token) handleLoginSuccess(sess.token)
+          if (sess?.refreshToken) refreshAuthToken()
+        } catch {}
+      }
     }
+  }, [])
+
+  useEffect(() => {
+    const id = setInterval(() => {
+      refreshAuthToken()
+    }, 15 * 60 * 1000)
+    return () => clearInterval(id)
   }, [])
 
   useEffect(() => {
@@ -292,27 +349,24 @@ function App () {
                 className='d-flex gap-2'
                 style={{ WebkitAppRegion: 'no-drag' } as any}
               >
-                {!token ? (
+                <>
                   <button
-                    className='btn btn-sm btn-outline-primary'
-                    onClick={() => setShowLogin(true)}
-                    title='Iniciar sesión'
+                    className={`btn btn-sm ${token ? 'btn-outline-warning' : 'btn-outline-primary'}`}
+                    onClick={() => (token ? logout() : setShowLogin(true))}
+                    title={token ? 'Cerrar sesión' : 'Iniciar sesión'}
                   >
-                    🔐
+                    {token ? <FaSignOutAlt /> : <FaSignInAlt />}
                   </button>
-                ) : (
-                  <button
-                    className='btn btn-sm btn-outline-warning'
-                  onClick={() => {
-                    setToken(null)
-                      localStorage.removeItem('authToken') // si decides guardarlo localmente después
-                    toast.success('Sesión cerrada')
-                  }}
-                    title='Cerrar sesión'
-                  >
-                    🚪
-                  </button>
-                )}
+                  {!token && (
+                    <button
+                      className='btn btn-sm btn-outline-success'
+                      onClick={() => setShowRegister(true)}
+                      title='Registrarse'
+                    >
+                      <FaUserPlus />
+                    </button>
+                  )}
+                </>
                 <div className='position-relative' style={{ WebkitAppRegion: 'no-drag' } as any}>
                   <button
                     onClick={() => setSettingsOpen(prev => !prev)}
@@ -398,6 +452,16 @@ function App () {
               onClose={() => setShowLogin(false)}
               onLoginSuccess={handleLoginSuccess}
               isDarkMode={darkMode}
+              mode='login'
+              onGlobalLoading={setGlobalLoading}
+            />
+            <LoginModal
+              isOpen={showRegister}
+              onClose={() => setShowRegister(false)}
+              onLoginSuccess={handleLoginSuccess}
+              isDarkMode={darkMode}
+              mode='register'
+              onGlobalLoading={setGlobalLoading}
             />
 
             {/* Filters */}
@@ -533,6 +597,30 @@ function App () {
             >
               <span title='Versión de la app'>v{appVersion}</span>
             </div>
+            {globalLoading && (
+              <div
+                style={{
+                  position: 'fixed',
+                  inset: 0,
+                  backgroundColor: 'rgba(0,0,0,0.4)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  zIndex: 20000
+                }}
+              >
+                <div
+                  className='rounded shadow'
+                  style={{
+                    padding: 16,
+                    background: darkMode ? '#222' : '#fff',
+                    color: darkMode ? '#eee' : '#000'
+                  }}
+                >
+                  Procesando...
+                </div>
+              </div>
+            )}
           </div>
         </div>
       </motion.div>

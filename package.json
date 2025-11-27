@@ -1,6 +1,6 @@
 {
   "name": "copyfy",
-  "version": "1.1.8",
+  "version": "1.1.9",
   "main": "main.js",
   "scripts": {
     "dev": "concurrently \"npm run dev --prefix frontend\" \"wait-on http://localhost:5173 && electron .\"",

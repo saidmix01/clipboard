@@ -30,4 +30,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
   setAuthToken: (token) => ipcRenderer.send('set-auth-token', token),
   getClipboardHistory: () => ipcRenderer.invoke('get-clipboard-history')
   ,openImageViewer: (dataUrl) => ipcRenderer.send('open-image-viewer', dataUrl)
+  ,registerDevice: (clientId) => ipcRenderer.invoke('register-device', clientId)
+  ,authLogin: (body) => ipcRenderer.invoke('auth-login', body)
 })
