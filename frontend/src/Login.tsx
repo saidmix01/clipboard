@@ -60,8 +60,8 @@ export default function LoginModal({
       }
       const url =
         mode === 'login'
-          ? 'http://localhost:3000/auth/login'
-          : 'http://localhost:3000/auth/register'
+          ? `${API_BASE}/auth/login`
+          : `${API_BASE}/auth/register`
       const res = await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -110,7 +110,7 @@ export default function LoginModal({
         left: 0,
         right: 0,
         bottom: 0,
-        backgroundColor: 'rgba(0,0,0,0.5)',
+        backgroundColor: isDarkMode ? 'rgba(0,0,0,0.6)' : 'rgba(0,0,0,0.4)',
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
@@ -127,7 +127,8 @@ export default function LoginModal({
           borderRadius: 8,
           width: '90%',
           maxWidth: 320,
-          boxShadow: '0 2px 10px rgba(0,0,0,0.3)'
+          boxShadow: isDarkMode ? '0 2px 14px rgba(0,0,0,0.45)' : '0 2px 10px rgba(0,0,0,0.3)',
+          transition: 'background-color .2s ease, color .2s ease, box-shadow .2s ease'
         }}
       >
         <h3 style={{ color: isDarkMode ? '#f5f5f5' : '#000' }}>
@@ -226,3 +227,4 @@ export default function LoginModal({
     </div>
   )
 }
+import { API_BASE } from './config'

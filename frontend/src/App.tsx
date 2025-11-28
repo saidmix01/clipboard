@@ -4,11 +4,15 @@ import { Toaster, toast } from 'react-hot-toast'
 import hljs from 'highlight.js'
 import 'highlight.js/styles/github.css'
 import { motion } from 'framer-motion'
-import { FaStar, FaSignInAlt, FaSignOutAlt, FaUserPlus } from 'react-icons/fa'
+import { FaStar, FaSignInAlt, FaSignOutAlt, FaUserPlus, FaUserCircle, FaCog } from 'react-icons/fa'
 import LoginModal from './Login'
+import UserModal from './UserModal'
+import { API_BASE } from './config'
 
 function isCodeSnippet (text: string): boolean {
   const trimmed = text.trim()
+
+  if (trimmed.startsWith('data:image')) return false
 
   try {
     const parsed = JSON.parse(trimmed)
@@ -18,7 +22,6 @@ function isCodeSnippet (text: string): boolean {
   } catch (_) {}
 
   const hasCodeIndicators = [
-    ';',
     '{',
     '}',
     '=>',
@@ -37,12 +40,13 @@ function isCodeSnippet (text: string): boolean {
   const lines = text.split('\n')
 
   const looksMultilineCode =
-    lines.length > 2 && lines.some(line => /[{;}=]/.test(line.trim()))
+    lines.length > 2 && lines.some(line => /[{};=]/.test(line.trim()))
 
   return hasCodeIndicators || looksMultilineCode
 }
 
 type HistoryItem = {
+  id?: string
   value: string
   favorite: boolean
 }
@@ -53,8 +57,11 @@ function App () {
   const containerRef = useRef<HTMLDivElement>(null)
   const [showLogin, setShowLogin] = useState(false)
   const [showRegister, setShowRegister] = useState(false)
+  const [showUserModal, setShowUserModal] = useState(false)
   const [token, setToken] = useState<string | null>(null)
   const [globalLoading, setGlobalLoading] = useState(false)
+  const [userAvatar, setUserAvatar] = useState<string | null>(null)
+  const [avatarError, setAvatarError] = useState<boolean>(false)
 
   const logout = () => {
     setToken(null)
@@ -71,7 +78,7 @@ function App () {
       const sess = JSON.parse(raw)
       const rt = sess?.refreshToken
       if (!rt) return
-      const res = await fetch('http://localhost:3000/auth/refresh', {
+      const res = await fetch(`${API_BASE}/auth/refresh`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ refreshToken: rt })
@@ -137,7 +144,6 @@ function App () {
       const isImage = item.value.startsWith('data:image')
       const isFavorite = item.favorite
 
-      if (filter === 'all' && isFavorite) return false
       if (filter === 'text' && isImage) return false
       if (filter === 'image' && !isImage) return false
       if (filter === 'favorite' && !isFavorite) return false
@@ -173,6 +179,58 @@ function App () {
     }, 15 * 60 * 1000)
     return () => clearInterval(id)
   }, [])
+
+  useEffect(() => {
+    const fetchMe = async () => {
+      try {
+        setAvatarError(false)
+        if (!token) { setUserAvatar(null); return }
+        const res = await fetch(`${API_BASE}/users/me`, { headers: { Authorization: `Bearer ${token}` } })
+        const data = await res.json()
+        const payload: any = (data && typeof data === 'object' ? (data.data ?? data) : {})
+        const u = payload?.user
+        const src: string | undefined = u?.avatarUrl
+        const resolve = (s?: string | null): string | null => {
+          if (!s) return null
+          let v = String(s).replace(/\\/g, '/')
+          if (v.startsWith('http://') || v.startsWith('https://') || v.startsWith('data:')) return v
+          if (v.startsWith('/')) return `${API_BASE}${v}`
+          if (v.startsWith('uploads/')) return `${API_BASE}/${v}`
+          if (v.includes('/uploads/')) return `${API_BASE}${v.substring(v.indexOf('/uploads/'))}`
+          return `${API_BASE}/uploads/${v}`
+        }
+        setUserAvatar(resolve(src))
+      } catch {
+        setUserAvatar(null)
+      }
+    }
+    fetchMe()
+  }, [token])
+
+  useEffect(() => {
+    if (!showUserModal && token) {
+      (async () => {
+        try {
+          setAvatarError(false)
+          const res = await fetch(`${API_BASE}/users/me`, { headers: { Authorization: `Bearer ${token}` } })
+          const data = await res.json()
+          const payload: any = (data && typeof data === 'object' ? (data.data ?? data) : {})
+          const u = payload?.user
+          const src: string | undefined = u?.avatarUrl
+          const resolve = (s?: string | null): string | null => {
+            if (!s) return null
+            let v = String(s).replace(/\\/g, '/')
+            if (v.startsWith('http://') || v.startsWith('https://') || v.startsWith('data:')) return v
+            if (v.startsWith('/')) return `${API_BASE}${v}`
+            if (v.startsWith('uploads/')) return `${API_BASE}/${v}`
+            if (v.includes('/uploads/')) return `${API_BASE}${v.substring(v.indexOf('/uploads/'))}`
+            return `${API_BASE}/uploads/${v}`
+          }
+          setUserAvatar(resolve(src))
+        } catch {}
+      })()
+    }
+  }, [showUserModal, token])
 
   useEffect(() => {
     if ((window as any).electronAPI?.onClipboardUpdate) {
@@ -355,7 +413,7 @@ function App () {
                     onClick={() => (token ? logout() : setShowLogin(true))}
                     title={token ? 'Cerrar sesión' : 'Iniciar sesión'}
                   >
-                    {token ? <FaSignOutAlt /> : <FaSignInAlt />}
+                    {token ? <FaSignOutAlt size={20} /> : <FaSignInAlt size={20} />}
                   </button>
                   {!token && (
                     <button
@@ -363,7 +421,20 @@ function App () {
                       onClick={() => setShowRegister(true)}
                       title='Registrarse'
                     >
-                      <FaUserPlus />
+                      <FaUserPlus size={20} />
+                    </button>
+                  )}
+                  {token && (
+                    <button
+                      className='btn btn-sm btn-outline-info'
+                      onClick={() => setShowUserModal(true)}
+                      title='Datos del usuario'
+                    >
+                      {userAvatar && !avatarError ? (
+                        <img src={userAvatar} style={{ width: 22, height: 22, borderRadius: '50%', objectFit: 'cover' }} onError={() => setAvatarError(true)} />
+                      ) : (
+                        <FaUserCircle size={22} />
+                      )}
                     </button>
                   )}
                 </>
@@ -373,7 +444,7 @@ function App () {
                     title='Configuración'
                     className='btn btn-sm btn-outline-secondary'
                   >
-                    ⚙️
+                    <FaCog size={22} />
                   </button>
                   {settingsOpen && (
                     <div
@@ -462,6 +533,11 @@ function App () {
               isDarkMode={darkMode}
               mode='register'
               onGlobalLoading={setGlobalLoading}
+            />
+            <UserModal
+              isOpen={showUserModal}
+              onClose={() => setShowUserModal(false)}
+              isDarkMode={darkMode}
             />
 
             {/* Filters */}
@@ -573,7 +649,7 @@ function App () {
                               !newHistory[realIndex].favorite
                             setHistory(newHistory)
                             ;(window as any).electronAPI?.toggleFavorite?.(
-                              item.value
+                              item
                             )
                           }
                         }}
@@ -696,10 +772,6 @@ function ExpandableCard ({
             src={content}
             alt='imagen'
             style={{ maxWidth: '100%' }}
-            onClick={e => {
-              e.stopPropagation()
-              ;(window as any).electronAPI?.openImageViewer?.(content)
-            }}
           />
         ) : isCode ? (
           <CodeBlock code={content} />
@@ -736,14 +808,24 @@ function ExpandableCard ({
           color: item.favorite ? 'gold' : 'gray'
         }}
       >
-        <FaStar />
+        <FaStar size={24} />
       </button>
+
+      
 
       {content.length > 300 && (
         <div
           style={buttonStyle}
           onClick={e => {
             e.stopPropagation()
+            if (isImage) {
+              ;(window as any).electronAPI?.openImageViewer?.(content)
+              return
+            }
+            if (isCode) {
+              ;(window as any).electronAPI?.openCodeEditor?.(content)
+              return
+            }
             setExpanded(!expanded)
           }}
         >

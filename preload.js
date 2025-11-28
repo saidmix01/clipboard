@@ -19,7 +19,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // 👇 ESTA ES LA QUE FALTA
   pasteText: () => ipcRenderer.send('paste-text'),
 
-  toggleFavorite: (value) => ipcRenderer.send('toggle-favorite', value),
+  toggleFavorite: (payload) => ipcRenderer.send('toggle-favorite', payload),
   //Pegar imagen
   pasteImage: () => ipcRenderer.invoke('pasteImage'),
   //updates
@@ -30,6 +30,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   setAuthToken: (token) => ipcRenderer.send('set-auth-token', token),
   getClipboardHistory: () => ipcRenderer.invoke('get-clipboard-history')
   ,openImageViewer: (dataUrl) => ipcRenderer.send('open-image-viewer', dataUrl)
+  ,openCodeEditor: (code) => ipcRenderer.send('open-code-editor', code)
   ,registerDevice: (clientId) => ipcRenderer.invoke('register-device', clientId)
   ,authLogin: (body) => ipcRenderer.invoke('auth-login', body)
 })

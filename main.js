@@ -312,11 +312,7 @@ app.whenReady().then(() => {
 
         if (history.length > 200) history.length = 200
 
-        if (!authToken) {
-          fs.writeFileSync(historyPath, JSON.stringify(history, null, 2), 'utf-8')
-        } else {
-          saveClipboardRecord('image', dataUrl, { format: 'dataURL' })
-        }
+        fs.writeFileSync(historyPath, JSON.stringify(history, null, 2), 'utf-8')
         mainWindow.webContents.send('clipboard-update', history)
         return
       }
@@ -338,15 +334,11 @@ app.whenReady().then(() => {
         if (history.length > 200) history.length = 200
 
         try {
-          if (!authToken) {
-            fs.writeFileSync(
-              historyPath,
-              JSON.stringify(history, null, 2),
-              'utf-8'
-            )
-          } else {
-            saveClipboardRecord('text', text, {})
-          }
+          fs.writeFileSync(
+            historyPath,
+            JSON.stringify(history, null, 2),
+            'utf-8'
+          )
         } catch (err) {
           log.error('Error al guardar historial', err)
         }
@@ -430,11 +422,8 @@ autoUpdater.on('update-downloaded', () => {
 })
 
 ipcMain.handle('get-clipboard-history', async () => {
-  try {
-    if (authToken) {
-      await fetchBackendClipboard()
-    }
-  } catch {}
+  try {}
+  catch {}
   return history
 })
 
@@ -513,6 +502,34 @@ ipcMain.on('open-image-viewer', (_, dataUrl) => {
     log.error('Error abriendo visor de imagen', err)
   }
 })
+ipcMain.on('open-code-editor', (_, codeText) => {
+  try {
+    const win = new BrowserWindow({
+      width: 1000,
+      height: 800,
+      resizable: true,
+      frame: false,
+      transparent: true,
+      backgroundColor: '#00FFFFFF',
+      hasShadow: true,
+      show: true,
+      webPreferences: { nodeIntegration: true, contextIsolation: false, sandbox: false }
+    })
+    const display = screen.getPrimaryDisplay()
+    const wa = display.workArea
+    const mainBounds = mainWindow?.getBounds() || { width: 400, x: wa.x + wa.width - 400, y: wa.y, height: wa.height }
+    const viewerWidth = Math.max(300, wa.width - mainBounds.width)
+    win.setBounds({ x: wa.x, y: wa.y, width: viewerWidth, height: wa.height })
+    const html = `<!doctype html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1"/><style>body{margin:0;background:transparent}#window{position:fixed;inset:0;border:1px solid rgba(255,255,255,.2);border-radius:10px;background:rgba(45,45,45,.85);backdrop-filter:blur(10px);box-shadow:0 8px 24px rgba(0,0,0,.35);overflow:hidden;display:flex;flex-direction:column}#header{display:flex;align-items:center;justify-content:space-between;padding:8px 10px;border-bottom:1px solid rgba(255,255,255,.15);-webkit-app-region:drag;color:#eee}#title{font-size:14px;margin:0}#controls{display:flex;gap:8px;-webkit-app-region:no-drag}#controls button{width:28px;height:28px;display:flex;align-items:center;justify-content:center;background:#3a3a3a;border:1px solid #4a4a4a;color:#eee;border-radius:6px;cursor:pointer}#controls #close{background:#d32f2f;border-color:#b71c1c;color:#fff}#content{flex:1;position:relative;display:flex;flex-direction:column}#toolbar{display:flex;gap:8px;padding:8px;background:rgba(0,0,0,.25);border-bottom:1px solid rgba(255,255,255,.1)}#toolbar button{background:#3a3a3a;border:1px solid #4a4a4a;color:#eee;padding:6px 10px;border-radius:4px;cursor:pointer}#code{flex:1;margin:0;padding:12px;overflow:auto;background:transparent;color:#eee;font-family:Consolas,Menlo,monospace;font-size:13px;line-height:1.5;white-space:pre}</style></head><body><div id="window"><div id="header"><h5 id="title">📄 Código</h5><div id="controls"><button id="close">✕</button></div></div><div id="content"><div id="toolbar"><button id="copy">Copiar</button></div><pre id="code"></pre></div></div></body></html>`
+    win.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html))
+    win.webContents.on('did-finish-load', () => {
+      const inj = `(()=>{const { clipboard } = require('electron');const code=${JSON.stringify(String(codeText||''))};const pre=document.getElementById('code');pre.textContent=code;const btnClose=document.getElementById('close');const btnCopy=document.getElementById('copy');if(btnClose){btnClose.addEventListener('click',()=>window.close())}if(btnCopy){btnCopy.addEventListener('click',()=>clipboard.writeText(code))}document.addEventListener('keydown',(e)=>{if(e.key==='Escape'){window.close()}});})();`
+      win.webContents.executeJavaScript(inj)
+    })
+  } catch (err) {
+    log.error('Error abriendo editor de código', err)
+  }
+})
 //Traducir texto
 ipcMain.handle('translate-to-english', async (_, text) => {
   try {
@@ -545,7 +562,7 @@ ipcMain.on('paste-text', () => {
 })
 
 // Escuchar favorito
-ipcMain.on('toggle-favorite', (event, value) => {
+ipcMain.on('toggle-favorite', async (event, payload) => {
   try {
     if (!fs.existsSync(historyPath)) return
 
@@ -555,9 +572,14 @@ ipcMain.on('toggle-favorite', (event, value) => {
     // Verificar que es un array de objetos con .value
     if (!Array.isArray(data)) return
 
+    const value = (typeof payload === 'string') ? payload : (payload && payload.value)
+    const id = (payload && typeof payload === 'object') ? payload.id : undefined
+    let newFavorite = false
     const updated = data.map(item => {
       if (typeof item === 'object' && item.value === value) {
-        return { ...item, favorite: !item.favorite }
+        const fav = !item.favorite
+        newFavorite = fav
+        return { ...item, favorite: fav }
       }
       return item
     })
@@ -573,6 +595,12 @@ ipcMain.on('toggle-favorite', (event, value) => {
     }
 
     console.log('⭐ Favorito actualizado:', value)
+
+    if (authToken && id) {
+      try {
+        await updateClipboardRecord(id, { favorite: !!newFavorite })
+      } catch {}
+    }
   } catch (err) {
     console.error('❌ Error actualizando favoritos:', err)
   }
@@ -586,14 +614,14 @@ ipcMain.handle('get-app-version', () => {
   return app.getVersion()
 })
 
-const BACKEND_URL = 'http://localhost:3000' 
+const { BACKEND_URL } = require('./config')
 let authToken = null
 let deviceId = null
 
 ipcMain.on('set-auth-token', (event, token) => {
   authToken = token
   console.log('✅ Token recibido en main.js:', authToken)
-  fetchBackendClipboard()
+  syncClipboardHistory()
 })
 
 function getAxiosInstance () {
@@ -617,7 +645,7 @@ async function fetchBackendClipboard () {
     const data = res?.data
     const items = (data && typeof data === 'object' ? (data.data?.items ?? data.items ?? []) : [])
     const mapped = Array.isArray(items)
-      ? items.map(it => ({ value: String(it.value ?? ''), favorite: !!it.favorite }))
+      ? items.map(it => ({ id: it.id, value: String(it.value ?? ''), favorite: !!it.favorite }))
       : []
     history = mapped
     if (mainWindow?.webContents) {
@@ -656,6 +684,61 @@ async function saveClipboardRecord (type, value, meta = {}) {
     await axiosInstance.post('/clipboard', payload)
   } catch (error) {
     log.error('clipboard save error', error?.message || error)
+  }
+}
+
+async function updateClipboardRecord (id, patch) {
+  try {
+    const axiosInstance = getAxiosInstance()
+    await axiosInstance.put(`/clipboard/${id}`,(patch && typeof patch==='object')?patch:{})
+  } catch (error) {
+    log.error('clipboard update error', error?.message || error)
+  }
+}
+
+function readLocalHistory () {
+  if (!fs.existsSync(historyPath)) return []
+  try {
+    const data = fs.readFileSync(historyPath, 'utf-8')
+    const parsed = JSON.parse(data)
+    return normalizeHistory(parsed)
+  } catch {
+    return []
+  }
+}
+
+async function syncClipboardHistory () {
+  try {
+    if (!authToken) return
+    const axiosInstance = getAxiosInstance()
+    const res = await axiosInstance.get('/clipboard')
+    const data = res?.data
+    const items = (data && typeof data === 'object' ? (data.data?.items ?? data.items ?? []) : [])
+    const backendItems = Array.isArray(items)
+      ? items.map(it => ({ id: it.id, value: String(it.value ?? ''), favorite: !!it.favorite }))
+      : []
+    const backendByValue = new Map(backendItems.map(it => [it.value, it]))
+
+    const localItems = readLocalHistory()
+
+    await ensureDeviceRegistered()
+
+    for (const it of localItems) {
+      if (!it || typeof it.value !== 'string') continue
+      const isImage = it.value.startsWith('data:image')
+      const backend = backendByValue.get(it.value)
+      if (!backend) {
+        const type = isImage ? 'image' : 'text'
+        const meta = isImage ? { format: 'dataURL' } : {}
+        await saveClipboardRecord(type, it.value, meta)
+      } else if (backend.favorite !== !!it.favorite) {
+        await updateClipboardRecord(backend.id, { favorite: !!it.favorite })
+      }
+    }
+
+    log.info('syncClipboardHistory completo')
+  } catch (error) {
+    log.error('syncClipboardHistory error', error?.message || error)
   }
 }
 
@@ -726,6 +809,12 @@ setInterval(() => {
 }, 60000)
 
 syncFavorites()
+
+setInterval(() => {
+  syncClipboardHistory()
+}, 15 * 60 * 1000)
+
+syncClipboardHistory()
 
 ipcMain.handle('register-device', async (_, clientId) => {
   try {
