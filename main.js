@@ -614,7 +614,8 @@ ipcMain.handle('get-app-version', () => {
   return app.getVersion()
 })
 
-const { BACKEND_URL } = require('./config')
+let BACKEND_URL = 'https://copyfy.webcolsoluciones.com.co'
+try { BACKEND_URL = require('./config').BACKEND_URL || BACKEND_URL } catch {}
 let authToken = null
 let deviceId = null
 

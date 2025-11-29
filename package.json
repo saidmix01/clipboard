@@ -24,6 +24,7 @@
       "frontend/dist/**/*",
       "main.js",
       "preload.js",
+      "config.js",
       "helpers/**/*",
       "package.json"
     ],
