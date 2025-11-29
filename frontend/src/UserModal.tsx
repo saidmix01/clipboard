@@ -42,7 +42,7 @@ export default function UserModal({ isOpen, onClose, isDarkMode }: UserModalProp
       }
 
       if (Object.keys(body).length > 0) {
-        await fetch('http://localhost:3000/users/me', {
+        await fetch(`${API_BASE}/users/me`, {
           method: 'PUT',
           headers: {
             Authorization: `Bearer ${token}`,
@@ -55,14 +55,14 @@ export default function UserModal({ isOpen, onClose, isDarkMode }: UserModalProp
       if (avatarFile) {
         const fd = new FormData()
         fd.append('avatar', avatarFile)
-        await fetch('http://localhost:3000/users/me/avatar', {
+        await fetch(`${API_BASE}/users/me/avatar`, {
           method: 'POST',
           headers: { Authorization: `Bearer ${token}` },
           body: fd
         })
       }
 
-      const res = await fetch('http://localhost:3000/users/me', {
+      const res = await fetch(`${API_BASE}/users/me`, {
         headers: { Authorization: `Bearer ${token}` }
       })
       const data = await res.json()
@@ -101,7 +101,7 @@ export default function UserModal({ isOpen, onClose, isDarkMode }: UserModalProp
         setError(null)
         const token = localStorage.getItem('x-token') || (session as any)?.token
         if (!token) return
-        const res = await fetch('http://localhost:3000/users/me', {
+        const res = await fetch(`${API_BASE}/users/me`, {
           headers: { Authorization: `Bearer ${token}` }
         })
         const data = await res.json()
