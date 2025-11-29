@@ -75,6 +75,7 @@ body.dark-mode .card-glass {
  /* --- MODO OSCURO --- */
 body.dark-mode {
   color: #e0e0e0 !important;
+  --accent-orange: #ff8c00;
 }
 
 body.dark-mode .card-glass {
@@ -102,9 +103,10 @@ body.dark-mode .btn {
 }
 
 body.dark-mode .btn:hover {
-  background: rgba(110, 110, 110, 0.4);
-  border-color: rgba(140, 140, 140, 0.3);
+  background: rgba(255, 140, 0, 0.25);
+  border-color: var(--accent-orange);
   color: #fff;
+  box-shadow: 0 0 0 2px rgba(255, 140, 0, 0.25);
 }
 
 /* Etiquetas tipo filtro (Texto, Imagen, Favoritos) */
@@ -113,6 +115,17 @@ body.dark-mode .btn-group .btn {
   background: rgba(100, 100, 100, 0.3);
   color: #f1f1f1;
   border: 1px solid rgba(120, 120, 120, 0.2);
+}
+
+body.dark-mode button:hover,
+body.dark-mode a.btn:hover,
+body.dark-mode input[type="button"]:hover,
+body.dark-mode input[type="submit"]:hover,
+body.dark-mode input[type="reset"]:hover {
+  background: rgba(255, 140, 0, 0.25);
+  border-color: var(--accent-orange);
+  color: #fff;
+  box-shadow: 0 0 0 2px rgba(255, 140, 0, 0.25);
 }
 
 /* Ítems de historial */
