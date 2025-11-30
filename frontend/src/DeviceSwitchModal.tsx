@@ -13,6 +13,8 @@ export default function DeviceSwitchModal({ isOpen, onClose, isDarkMode, onAppli
   const [selected, setSelected] = useState<string>('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [progress, setProgress] = useState<number>(0)
+  const [status, setStatus] = useState<string>('')
 
   useEffect(() => {
     if (!isOpen) return
@@ -67,12 +69,31 @@ export default function DeviceSwitchModal({ isOpen, onClose, isDarkMode, onAppli
     })()
   }, [isOpen])
 
+  useEffect(() => {
+    if (!isOpen) return
+    const off = (window as any).electronAPI?.onSyncProgress?.((p: any) => {
+      try {
+        const val = Number(p?.percentage) || 0
+        const msg = typeof p?.message === 'string' ? p.message : ''
+        setProgress(val)
+        setStatus(msg)
+      } catch {}
+    })
+    return () => {
+      try { if (typeof off === 'function') off() } catch {}
+      setProgress(0)
+      setStatus('')
+    }
+  }, [isOpen])
+
   if (!isOpen) return null
 
   const apply = async () => {
     if (!selected) return
     try {
       setLoading(true)
+      setProgress(0)
+      setStatus('')
       try { localStorage.setItem('clientId', selected) } catch {}
       const hist = await (window as any).electronAPI?.switchActiveDevice?.(selected)
       if (Array.isArray(hist)) onApplied(hist)
@@ -117,6 +138,15 @@ export default function DeviceSwitchModal({ isOpen, onClose, isDarkMode, onAppli
         </div>
 
         {error && <div style={{ color: 'red', marginTop: 10 }}>{error}</div>}
+
+        {loading && (
+          <div style={{ marginTop: 12 }}>
+            <div style={{ fontSize: '0.85rem', opacity: 0.8 }}>{status || 'Sincronizando...'}</div>
+            <div style={{ width: '100%', height: 8, borderRadius: 6, background: isDarkMode ? '#2c2c2c' : '#eee', overflow: 'hidden' }}>
+              <div style={{ width: `${Math.max(0, Math.min(100, progress))}%`, height: '100%', background: isDarkMode ? '#28a745' : '#0d6efd' }} />
+            </div>
+          </div>
+        )}
 
         <div style={{ display: 'flex', gap: 8, marginTop: 16 }}>
           <button

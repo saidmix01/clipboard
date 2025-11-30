@@ -37,4 +37,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   ,loadDeviceHistory: (deviceName) => ipcRenderer.invoke('load-device-history', deviceName)
   ,switchActiveDevice: (deviceName) => ipcRenderer.invoke('switch-active-device', deviceName)
   ,getActiveDevice: () => ipcRenderer.invoke('get-active-device')
+  ,onSyncProgress: (callback) => {
+    const listener = (_, data) => callback(data)
+    ipcRenderer.on('sync-progress', listener)
+    return () => ipcRenderer.removeListener('sync-progress', listener)
+  }
 })

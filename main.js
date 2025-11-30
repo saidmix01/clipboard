@@ -604,8 +604,8 @@ ipcMain.handle('pasteImage', () => {
 ipcMain.handle('get-app-version', () => {
   return app.getVersion()
 })
-//let BACKEND_URL = 'https://copyfy.webcolsoluciones.com.co'
-let BACKEND_URL = 'http://localhost:3000'
+let BACKEND_URL = 'https://copyfy.webcolsoluciones.com.co'
+//let BACKEND_URL = 'http://localhost:3000'
 try { BACKEND_URL = require('./config').BACKEND_URL || BACKEND_URL } catch {}
 let authToken = null
 let deviceId = null
@@ -793,7 +793,8 @@ async function resolveDeviceIdentifiers (rawName) {
     const axiosInstance = getAxiosInstance()
     const res = await axiosInstance.get('/devices')
     const data = res?.data
-    const list = (data && typeof data === 'object' ? (data.data ?? data) : [])
+    const container = (data && typeof data === 'object' ? (data.data ?? data) : {})
+    const list = Array.isArray(container) ? container : (Array.isArray(container.items) ? container.items : [])
     const target = sanitizeDeviceName(rawName)
     for (const p of Array.isArray(list) ? list : []) {
       const obj = p || {}
@@ -917,13 +918,23 @@ async function ensureDeviceRegistered () {
   }
 }
 
-async function saveClipboardRecord (type, value, meta = {}) {
+async function saveClipboardRecord (type, value, meta = {}, overrides = {}) {
   try {
     const axiosInstance = getAxiosInstance()
+    const clientIdOverride = overrides && overrides.clientId ? String(overrides.clientId) : null
+    const deviceIdOverride = overrides && overrides.deviceId ? overrides.deviceId : null
     const hostname = os.hostname()
-    const id = deviceId || (await ensureDeviceRegistered())
-    const payload = { type, value, meta, clientId: hostname, deviceId: id }
-    log.info('clipboard save request', { type, deviceId: id })
+    const desiredClientId = clientIdOverride ?? (activeDeviceName || hostname)
+    let desiredDeviceId = null
+    if (deviceIdOverride) {
+      desiredDeviceId = deviceIdOverride
+    } else if (sanitizeDeviceName(desiredClientId) === sanitizeDeviceName(hostname)) {
+      desiredDeviceId = deviceId || (await ensureDeviceRegistered())
+    }
+    const payload = desiredDeviceId
+      ? { type, value, meta, clientId: desiredClientId, deviceId: desiredDeviceId }
+      : { type, value, meta, clientId: desiredClientId }
+    log.info('clipboard save request', { type, deviceId: desiredDeviceId })
     await axiosInstance.post('/clipboard', payload)
   } catch (error) {
     log.error('clipboard save error', error?.message || error)
@@ -951,6 +962,7 @@ async function syncClipboardHistory () {
   try {
     if (!authToken) return
     const axiosInstance = getAxiosInstance()
+    if (mainWindow?.webContents) { mainWindow.webContents.send('sync-progress', { percentage: 5, message: 'Iniciando sincronización' }) }
     const clientId = activeDeviceName || os.hostname()
     const res = await axiosInstance.get('/clipboard', { params: { clientId } })
     const data = res?.data
@@ -965,39 +977,43 @@ async function syncClipboardHistory () {
         }))
       : []
     const backendByValue = new Map(backendItems.map(it => [it.value, it]))
+    if (mainWindow?.webContents) { mainWindow.webContents.send('sync-progress', { percentage: 25, message: 'Descargando historial' }) }
 
     const localItems = readLocalHistory()
+    if (mainWindow?.webContents) { mainWindow.webContents.send('sync-progress', { percentage: 35, message: 'Leyendo historial local' }) }
 
     await ensureDeviceRegistered()
 
-    const hostnameSan = sanitizeDeviceName(os.hostname())
-    const activeSan = activeDeviceName ? sanitizeDeviceName(activeDeviceName) : hostnameSan
-    const activeIsLocal = activeSan === hostnameSan
-
-    if (activeIsLocal) {
-      for (const it of localItems) {
-        if (!it || typeof it.value !== 'string') continue
-        const isImage = it.value.startsWith('data:image')
-        const backend = backendByValue.get(it.value)
-        if (!backend) {
-          const type = isImage ? 'image' : 'text'
-          const meta = isImage ? { format: 'dataURL' } : {}
-          await saveClipboardRecord(type, it.value, meta)
-        } else if (backend.favorite !== !!it.favorite) {
-          await updateClipboardRecord(backend.id, { favorite: !!it.favorite })
-        }
-      }
+    let ident = null
+    if (activeDeviceName) {
+      ident = await resolveDeviceIdentifiers(activeDeviceName)
     }
 
     let filtered = backendItems
-    if (activeDeviceName) {
-      const ident = await resolveDeviceIdentifiers(activeDeviceName)
+    if (activeDeviceName && ident && (ident.deviceId || ident.clientId)) {
       filtered = backendItems.filter(be => {
         if (ident.deviceId && be.deviceId) return String(be.deviceId) === String(ident.deviceId)
         if (ident.clientId && be.clientId) return String(be.clientId) === String(ident.clientId)
-        return false
+        return true
       })
     }
+
+    const backendByValueFiltered = new Map(filtered.map(it => [it.value, it]))
+
+    for (const it of localItems) {
+      if (!it || typeof it.value !== 'string') continue
+      const isImage = it.value.startsWith('data:image')
+      const backend = activeDeviceName ? backendByValueFiltered.get(it.value) : backendByValue.get(it.value)
+      if (!backend) {
+        const type = isImage ? 'image' : 'text'
+        const meta = isImage ? { format: 'dataURL' } : {}
+        const overrides = ident && (ident.deviceId || ident.clientId) ? { deviceId: ident.deviceId, clientId: ident.clientId } : {}
+        await saveClipboardRecord(type, it.value, meta, overrides)
+      } else if (backend.favorite !== !!it.favorite) {
+        await updateClipboardRecord(backend.id, { favorite: !!it.favorite })
+      }
+    }
+    if (mainWindow?.webContents) { mainWindow.webContents.send('sync-progress', { percentage: 65, message: 'Subiendo cambios locales' }) }
 
     const localValues = new Set(localItems.map(it => it.value))
     for (const be of filtered) {
@@ -1005,6 +1021,7 @@ async function syncClipboardHistory () {
         history.unshift({ value: be.value, favorite: !!be.favorite })
       }
     }
+    if (mainWindow?.webContents) { mainWindow.webContents.send('sync-progress', { percentage: 85, message: 'Fusionando con remoto' }) }
     history = history
       .filter(item => item && typeof item.value === 'string')
       .filter((item, index, self) => index === self.findIndex(t => t.value === item.value))
@@ -1014,6 +1031,7 @@ async function syncClipboardHistory () {
     if (mainWindow?.webContents) {
       mainWindow.webContents.send('clipboard-update', history)
     }
+    if (mainWindow?.webContents) { mainWindow.webContents.send('sync-progress', { percentage: 100, message: 'Completado' }) }
 
     log.info('syncClipboardHistory completo')
   } catch (error) {
