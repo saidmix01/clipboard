@@ -604,8 +604,8 @@ ipcMain.handle('pasteImage', () => {
 ipcMain.handle('get-app-version', () => {
   return app.getVersion()
 })
-
-let BACKEND_URL = 'https://copyfy.webcolsoluciones.com.co'
+//let BACKEND_URL = 'https://copyfy.webcolsoluciones.com.co'
+let BACKEND_URL = 'http://localhost:3000'
 try { BACKEND_URL = require('./config').BACKEND_URL || BACKEND_URL } catch {}
 let authToken = null
 let deviceId = null
@@ -712,13 +712,14 @@ async function getDevicesFromBackend () {
     try {
       const res = await axiosInstance.get('/devices')
       const data = res?.data
-      const list = (data && typeof data === 'object' ? (data.data ?? data) : [])
+      const container = (data && typeof data === 'object' ? (data.data ?? data) : {})
+      const list = Array.isArray(container) ? container : (Array.isArray(container.items) ? container.items : [])
       const names = Array.isArray(list)
         ? list
             .map(p => {
               if (typeof p === 'string') return p
               const obj = p || {}
-              return obj.name || obj.clientId || ''
+              return String(obj.clientId || obj.name || '')
             })
             .filter(Boolean)
         : []
@@ -850,6 +851,14 @@ ipcMain.handle('load-device-history', async (_, deviceName) => {
   }
 })
 
+ipcMain.handle('get-active-device', async () => {
+  try {
+    return activeDeviceName || os.hostname()
+  } catch {
+    return os.hostname()
+  }
+})
+
 function getAxiosInstance () {
   if (!authToken) {
     throw new Error('No hay token de autenticación disponible')
@@ -867,7 +876,8 @@ function getAxiosInstance () {
 async function fetchBackendClipboard () {
   try {
     const axiosInstance = getAxiosInstance()
-    const res = await axiosInstance.get('/clipboard')
+    const clientId = activeDeviceName || os.hostname()
+    const res = await axiosInstance.get('/clipboard', { params: { clientId } })
     const data = res?.data
     const items = (data && typeof data === 'object' ? (data.data?.items ?? data.items ?? []) : [])
     const mapped = Array.isArray(items)
@@ -941,7 +951,8 @@ async function syncClipboardHistory () {
   try {
     if (!authToken) return
     const axiosInstance = getAxiosInstance()
-    const res = await axiosInstance.get('/clipboard')
+    const clientId = activeDeviceName || os.hostname()
+    const res = await axiosInstance.get('/clipboard', { params: { clientId } })
     const data = res?.data
     const items = (data && typeof data === 'object' ? (data.data?.items ?? data.items ?? []) : [])
     const backendItems = Array.isArray(items)

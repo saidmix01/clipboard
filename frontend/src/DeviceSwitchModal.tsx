@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { API_BASE } from './config'
 
 type Props = {
   isOpen: boolean
@@ -20,7 +21,44 @@ export default function DeviceSwitchModal({ isOpen, onClose, isDarkMode, onAppli
     ;(async () => {
       try {
         const list = await (window as any).electronAPI?.listDevices?.()
-        if (Array.isArray(list)) setDevices(list)
+        let names: string[] = Array.isArray(list) ? list : []
+        try {
+          const token = localStorage.getItem('x-token')
+          if (token) {
+            const res = await fetch(`${API_BASE}/devices`, { headers: { Authorization: `Bearer ${token}` } })
+            const data = await res.json()
+            const container: any = (data && typeof data === 'object' ? (data.data ?? data) : {})
+            const arr: any[] = Array.isArray(container) ? container : (Array.isArray(container.items) ? container.items : [])
+            const apiNames = Array.isArray(arr)
+              ? arr.map((d: any) => {
+                  if (typeof d === 'string') return d
+                  const o = d || {}
+                  return String(o.clientId || o.name || '')
+                }).filter(Boolean)
+              : []
+            names = Array.from(new Set([...
+              names,
+              ...apiNames,
+              ...(localStorage.getItem('clientId') ? [String(localStorage.getItem('clientId'))] : [])
+            ])).filter(Boolean)
+          }
+        } catch {}
+        setDevices(names)
+        let initial = ''
+        try {
+          const current = await (window as any).electronAPI?.getActiveDevice?.()
+          if (typeof current === 'string' && current && Array.isArray(list) && list.includes(current)) {
+            initial = current
+          }
+        } catch {}
+        if (!initial) {
+          try {
+            const saved = localStorage.getItem('clientId') || ''
+            if (saved && Array.isArray(list) && list.includes(saved)) initial = saved
+          } catch {}
+        }
+        if (!initial && Array.isArray(list) && list.length) initial = list[0]
+        setSelected(initial)
       } catch {
         setError('No se pudieron cargar los dispositivos')
       } finally {
@@ -35,6 +73,7 @@ export default function DeviceSwitchModal({ isOpen, onClose, isDarkMode, onAppli
     if (!selected) return
     try {
       setLoading(true)
+      try { localStorage.setItem('clientId', selected) } catch {}
       const hist = await (window as any).electronAPI?.switchActiveDevice?.(selected)
       if (Array.isArray(hist)) onApplied(hist)
       onClose()
