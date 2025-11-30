@@ -68,7 +68,9 @@ function App () {
     setToken(null)
     localStorage.removeItem('x-token')
     localStorage.removeItem('session')
+    try { localStorage.removeItem('clientId') } catch {}
     ;(window as any).electronAPI?.setAuthToken?.('')
+    try { (window as any).electronAPI?.clearUserData?.() } catch {}
     toast.success('Sesión cerrada')
   }
 
