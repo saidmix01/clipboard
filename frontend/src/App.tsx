@@ -7,6 +7,7 @@ import { motion } from 'framer-motion'
 import { FaStar, FaSignInAlt, FaSignOutAlt, FaUserPlus, FaUserCircle, FaCog } from 'react-icons/fa'
 import LoginModal from './Login'
 import UserModal from './UserModal'
+import DeviceSwitchModal from './DeviceSwitchModal'
 import { API_BASE } from './config'
 
 function isCodeSnippet (text: string): boolean {
@@ -296,6 +297,7 @@ function App () {
 
   const [selectedIndex, setSelectedIndex] = useState<number>(-1)
   const [settingsOpen, setSettingsOpen] = useState<boolean>(false)
+  const [showDeviceSwitch, setShowDeviceSwitch] = useState<boolean>(false)
 
   // Scroll automático cuando cambia selectedIndex
   useEffect(() => {
@@ -461,6 +463,16 @@ function App () {
                         <button
                           onClick={() => {
                             setSettingsOpen(false)
+                            setShowDeviceSwitch(true)
+                          }}
+                          className='btn btn-sm btn-outline-info text-start'
+                          title='Cambiar dispositivo'
+                        >
+                          🖥️ Cambiar dispositivo
+                        </button>
+                        <button
+                          onClick={() => {
+                            setSettingsOpen(false)
                             toast('Buscando actualizaciones...')
                             ;(window as any).electronAPI?.forceUpdate?.()
                           }}
@@ -538,6 +550,14 @@ function App () {
               isOpen={showUserModal}
               onClose={() => setShowUserModal(false)}
               isDarkMode={darkMode}
+            />
+            <DeviceSwitchModal
+              isOpen={showDeviceSwitch}
+              onClose={() => setShowDeviceSwitch(false)}
+              isDarkMode={darkMode}
+              onApplied={(newHistory: HistoryItem[]) => {
+                if (Array.isArray(newHistory)) setHistory(newHistory)
+              }}
             />
 
             {/* Filters */}

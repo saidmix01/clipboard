@@ -33,4 +33,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
   ,openCodeEditor: (code) => ipcRenderer.send('open-code-editor', code)
   ,registerDevice: (clientId) => ipcRenderer.invoke('register-device', clientId)
   ,authLogin: (body) => ipcRenderer.invoke('auth-login', body)
+  ,listDevices: () => ipcRenderer.invoke('list-devices')
+  ,loadDeviceHistory: (deviceName) => ipcRenderer.invoke('load-device-history', deviceName)
 })

@@ -13,7 +13,7 @@ const path = require('path')
 const axios = require('axios')
 const fs = require('fs')
 const os = require('os')
-const historyPath = path.join(os.homedir(), '.clipboard-history.json')
+const legacyHistoryPath = path.join(os.homedir(), '.clipboard-history.json')
 const { exec, execFile } = require('child_process')
 
 let mainWindow
@@ -32,9 +32,9 @@ autoUpdater.logger = log
 autoUpdater.logger.transports.file.level = 'info'
 
 // Cargar historial guardado
-if (fs.existsSync(historyPath)) {
+if (fs.existsSync(legacyHistoryPath)) {
   try {
-    const data = fs.readFileSync(historyPath, 'utf-8')
+    const data = fs.readFileSync(legacyHistoryPath, 'utf-8')
     history = normalizeHistory(JSON.parse(data))
     log.info('Historial cargado', { count: history.length })
   } catch (err) {
@@ -42,7 +42,7 @@ if (fs.existsSync(historyPath)) {
   }
 }
 
-if (!fs.existsSync(historyPath)) {
+if (!fs.existsSync(legacyHistoryPath)) {
   try {
     const alt1 = path.join(__dirname, '.clipboard-history.json')
     const alt2 = path.join(__dirname, 'clipboard-history.json')
@@ -50,7 +50,7 @@ if (!fs.existsSync(historyPath)) {
     if (src) {
       const data = fs.readFileSync(src, 'utf-8')
       history = normalizeHistory(JSON.parse(data))
-      fs.writeFileSync(historyPath, JSON.stringify(history, null, 2), 'utf-8')
+      fs.writeFileSync(legacyHistoryPath, JSON.stringify(history, null, 2), 'utf-8')
       log.info('Historial importado', { count: history.length })
     }
   } catch (err) {
@@ -254,16 +254,21 @@ function createWindow () {
 app.whenReady().then(() => {
   createWindow()
   autoUpdater.forceDevUpdateConfig = true
-  if (fs.existsSync(historyPath)) {
-    try {
-      const data = fs.readFileSync(historyPath, 'utf-8')
+  try {
+    const cfg = readDeviceConfigObj()
+    if (Array.isArray(cfg.history)) {
+      history = normalizeHistory(cfg.history)
+      log.info('Historial (device) cargado', { count: history.length })
+    } else if (fs.existsSync(legacyHistoryPath)) {
+      const data = fs.readFileSync(legacyHistoryPath, 'utf-8')
       const parsed = JSON.parse(data)
-      history = normalizeHistory(parsed)
-
-      log.info('Historial cargado', { count: history.length })
-    } catch (err) {
-      log.error('Error al leer historial', err)
+      cfg.history = normalizeHistory(parsed)
+      writeDeviceConfigObj(cfg)
+      history = cfg.history
+      log.info('Historial migrado desde legacy')
     }
+  } catch (err) {
+    log.error('Error al leer historial (device)', err)
   }
 
   const pollClipboard = () => {
@@ -312,7 +317,7 @@ app.whenReady().then(() => {
 
         if (history.length > 200) history.length = 200
 
-        fs.writeFileSync(historyPath, JSON.stringify(history, null, 2), 'utf-8')
+        writeDeviceHistory(history)
         mainWindow.webContents.send('clipboard-update', history)
         return
       }
@@ -333,15 +338,7 @@ app.whenReady().then(() => {
 
         if (history.length > 200) history.length = 200
 
-        try {
-          fs.writeFileSync(
-            historyPath,
-            JSON.stringify(history, null, 2),
-            'utf-8'
-          )
-        } catch (err) {
-          log.error('Error al guardar historial', err)
-        }
+        writeDeviceHistory(history)
 
         mainWindow.webContents.send('clipboard-update', history)
       }
@@ -442,7 +439,7 @@ ipcMain.handle('clear-history', () => {
   history = []
 
   try {
-    fs.writeFileSync(historyPath, JSON.stringify(history, null, 2), 'utf-8')
+    writeDeviceHistory(history)
     mainWindow.webContents.send('clipboard-update', history)
     log.info('Historial borrado')
   } catch (err) {
@@ -564,18 +561,13 @@ ipcMain.on('paste-text', () => {
 // Escuchar favorito
 ipcMain.on('toggle-favorite', async (event, payload) => {
   try {
-    if (!fs.existsSync(historyPath)) return
-
-    const fileData = fs.readFileSync(historyPath, 'utf8')
-    const data = JSON.parse(fileData)
-
-    // Verificar que es un array de objetos con .value
-    if (!Array.isArray(data)) return
+    const current = readDeviceHistory()
+    if (!Array.isArray(current)) return
 
     const value = (typeof payload === 'string') ? payload : (payload && payload.value)
     const id = (payload && typeof payload === 'object') ? payload.id : undefined
     let newFavorite = false
-    const updated = data.map(item => {
+    const updated = current.map(item => {
       if (typeof item === 'object' && item.value === value) {
         const fav = !item.favorite
         newFavorite = fav
@@ -583,8 +575,7 @@ ipcMain.on('toggle-favorite', async (event, payload) => {
       }
       return item
     })
-
-    fs.writeFileSync(historyPath, JSON.stringify(updated, null, 2), 'utf8')
+    writeDeviceHistory(updated)
 
     // También actualizamos la variable en memoria
     history = updated
@@ -619,10 +610,207 @@ try { BACKEND_URL = require('./config').BACKEND_URL || BACKEND_URL } catch {}
 let authToken = null
 let deviceId = null
 
+function getCurrentDeviceConfigPath () {
+  const baseDir = path.join(app.getPath('userData'), 'devices')
+  const dirName = sanitizeDeviceName(os.hostname())
+  const deviceDir = path.join(baseDir, dirName)
+  if (!fs.existsSync(deviceDir)) fs.mkdirSync(deviceDir, { recursive: true })
+  return path.join(deviceDir, 'config.json')
+}
+
+function readDeviceConfigObj () {
+  const cfgPath = getCurrentDeviceConfigPath()
+  try {
+    if (fs.existsSync(cfgPath)) {
+      const raw = fs.readFileSync(cfgPath, 'utf-8')
+      const obj = JSON.parse(raw)
+      if (!obj.deviceName) obj.deviceName = os.hostname()
+      if (!obj.preferences) obj.preferences = {}
+      if (!obj.version) obj.version = 1
+      if (!Array.isArray(obj.history)) obj.history = []
+      return obj
+    } else {
+      const obj = {
+        deviceName: os.hostname(),
+        createdAt: new Date().toISOString(),
+        preferences: {},
+        version: 1,
+        history: []
+      }
+      fs.writeFileSync(cfgPath, JSON.stringify(obj, null, 2), 'utf-8')
+      return obj
+    }
+  } catch {
+    return {
+      deviceName: os.hostname(),
+      createdAt: new Date().toISOString(),
+      preferences: {},
+      version: 1,
+      history: []
+    }
+  }
+}
+
+function writeDeviceConfigObj (obj) {
+  const cfgPath = getCurrentDeviceConfigPath()
+  fs.writeFileSync(cfgPath, JSON.stringify(obj, null, 2), 'utf-8')
+}
+
+function readDeviceHistory () {
+  try {
+    const obj = readDeviceConfigObj()
+    return normalizeHistory(obj.history || [])
+  } catch {
+    return []
+  }
+}
+
+function writeDeviceHistory (hist) {
+  try {
+    const obj = readDeviceConfigObj()
+    obj.history = normalizeHistory(hist)
+    writeDeviceConfigObj(obj)
+  } catch (err) {
+    log.error('Error al guardar historial (device)', err)
+  }
+}
+
+function getDeviceConfigPathByName (rawName) {
+  const baseDir = path.join(app.getPath('userData'), 'devices')
+  const dirName = sanitizeDeviceName(rawName)
+  const deviceDir = path.join(baseDir, dirName)
+  return path.join(deviceDir, 'config.json')
+}
+
+function listLocalDevices () {
+  try {
+    const baseDir = path.join(app.getPath('userData'), 'devices')
+    if (!fs.existsSync(baseDir)) return []
+    const dirs = fs.readdirSync(baseDir, { withFileTypes: true })
+    return dirs.filter(d => d.isDirectory()).map(d => d.name)
+  } catch {
+    return []
+  }
+}
+
+function readDeviceHistoryByName (rawName) {
+  try {
+    const cfgPath = getDeviceConfigPathByName(rawName)
+    if (!fs.existsSync(cfgPath)) return []
+    const raw = fs.readFileSync(cfgPath, 'utf-8')
+    const obj = JSON.parse(raw)
+    return normalizeHistory(obj.history || [])
+  } catch {
+    return []
+  }
+}
+
+async function getDevicesFromBackend () {
+  try {
+    const axiosInstance = getAxiosInstance()
+    try {
+      const res = await axiosInstance.get('/devices')
+      const data = res?.data
+      const list = (data && typeof data === 'object' ? (data.data ?? data) : [])
+      const names = Array.isArray(list)
+        ? list
+            .map(p => {
+              if (typeof p === 'string') return p
+              const obj = p || {}
+              return obj.name || obj.clientId || ''
+            })
+            .filter(Boolean)
+        : []
+      if (names.length > 0) return names
+    } catch {}
+
+    const res2 = await axiosInstance.get('/users/me')
+    const data2 = res2?.data
+    const payload = (data2 && typeof data2 === 'object' ? (data2.data ?? data2) : {})
+    const user = payload?.user || payload
+    const devices = user?.devices || []
+    const names2 = Array.isArray(devices)
+      ? devices
+          .map(p => {
+            if (typeof p === 'string') return p
+            const obj = p || {}
+            return obj.name || obj.clientId || ''
+          })
+          .filter(Boolean)
+      : []
+    return names2
+  } catch (error) {
+    log.error('getDevicesFromBackend error', error?.message || error)
+    return []
+  }
+}
+
+function sanitizeDeviceName (name) {
+  const s = String(name || '').trim()
+  return s.replace(/[<>:"/\\|?*]/g, '').slice(0, 64) || 'device'
+}
+
+async function ensureLocalDevices () {
+  try {
+    const names = await getDevicesFromBackend()
+    const baseDir = path.join(app.getPath('userData'), 'devices')
+    if (!fs.existsSync(baseDir)) fs.mkdirSync(baseDir, { recursive: true })
+
+    for (const raw of names) {
+      const dirName = sanitizeDeviceName(raw)
+      const deviceDir = path.join(baseDir, dirName)
+      const cfgPath = path.join(deviceDir, 'config.json')
+      if (!fs.existsSync(deviceDir)) fs.mkdirSync(deviceDir, { recursive: true })
+      if (!fs.existsSync(cfgPath)) {
+        const cfg = {
+          deviceName: raw,
+          createdAt: new Date().toISOString(),
+          preferences: {},
+          version: 1
+        }
+        fs.writeFileSync(cfgPath, JSON.stringify(cfg, null, 2), 'utf-8')
+        log.info('Dispositivo local creado', { dir: deviceDir })
+      }
+    }
+
+    log.info('ensureLocalDevices completo', { count: names.length })
+  } catch (error) {
+    log.error('ensureLocalDevices error', error?.message || error)
+  }
+}
+
 ipcMain.on('set-auth-token', (event, token) => {
   authToken = token
   console.log('✅ Token recibido en main.js:', authToken)
   syncClipboardHistory()
+  ensureLocalDevices()
+})
+
+ipcMain.handle('list-devices', async () => {
+  try {
+    await ensureLocalDevices()
+    return listLocalDevices()
+  } catch {
+    return []
+  }
+})
+
+ipcMain.handle('load-device-history', async (_, deviceName) => {
+  try {
+    const list = listLocalDevices()
+    const target = sanitizeDeviceName(deviceName)
+    if (!list.includes(target)) {
+      return []
+    }
+    const devHist = readDeviceHistoryByName(target)
+    history = devHist
+    if (mainWindow?.webContents) {
+      mainWindow.webContents.send('clipboard-update', history)
+    }
+    return devHist
+  } catch {
+    return []
+  }
 })
 
 function getAxiosInstance () {
@@ -649,6 +837,7 @@ async function fetchBackendClipboard () {
       ? items.map(it => ({ id: it.id, value: String(it.value ?? ''), favorite: !!it.favorite }))
       : []
     history = mapped
+    writeDeviceHistory(history)
     if (mainWindow?.webContents) {
       mainWindow.webContents.send('clipboard-update', history)
     }
@@ -698,11 +887,8 @@ async function updateClipboardRecord (id, patch) {
 }
 
 function readLocalHistory () {
-  if (!fs.existsSync(historyPath)) return []
   try {
-    const data = fs.readFileSync(historyPath, 'utf-8')
-    const parsed = JSON.parse(data)
-    return normalizeHistory(parsed)
+    return readDeviceHistory()
   } catch {
     return []
   }
@@ -737,6 +923,22 @@ async function syncClipboardHistory () {
       }
     }
 
+    const localValues = new Set(localItems.map(it => it.value))
+    for (const be of backendItems) {
+      if (!localValues.has(be.value)) {
+        history.unshift({ value: be.value, favorite: !!be.favorite })
+      }
+    }
+    history = history
+      .filter(item => item && typeof item.value === 'string')
+      .filter((item, index, self) => index === self.findIndex(t => t.value === item.value))
+      .sort((a, b) => Number(b.favorite) - Number(a.favorite))
+    if (history.length > 200) history.length = 200
+    writeDeviceHistory(history)
+    if (mainWindow?.webContents) {
+      mainWindow.webContents.send('clipboard-update', history)
+    }
+
     log.info('syncClipboardHistory completo')
   } catch (error) {
     log.error('syncClipboardHistory error', error?.message || error)
@@ -767,10 +969,8 @@ async function deleteFavorite (value) {
 }
 
 function readLocalFavorites () {
-  if (!fs.existsSync(historyPath)) return []
   try {
-    const data = fs.readFileSync(historyPath, 'utf-8')
-    const items = JSON.parse(data)
+    const items = readDeviceHistory()
     return items.filter(item => item.favorite).map(item => item.value)
   } catch {
     return []
