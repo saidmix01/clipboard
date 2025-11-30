@@ -35,4 +35,5 @@ contextBridge.exposeInMainWorld('electronAPI', {
   ,authLogin: (body) => ipcRenderer.invoke('auth-login', body)
   ,listDevices: () => ipcRenderer.invoke('list-devices')
   ,loadDeviceHistory: (deviceName) => ipcRenderer.invoke('load-device-history', deviceName)
+  ,switchActiveDevice: (deviceName) => ipcRenderer.invoke('switch-active-device', deviceName)
 })

@@ -609,11 +609,12 @@ let BACKEND_URL = 'https://copyfy.webcolsoluciones.com.co'
 try { BACKEND_URL = require('./config').BACKEND_URL || BACKEND_URL } catch {}
 let authToken = null
 let deviceId = null
+let activeDeviceName = null
 
 function getCurrentDeviceConfigPath () {
   const baseDir = path.join(app.getPath('userData'), 'devices')
-  const dirName = sanitizeDeviceName(os.hostname())
-  const deviceDir = path.join(baseDir, dirName)
+  const selected = activeDeviceName ? sanitizeDeviceName(activeDeviceName) : sanitizeDeviceName(os.hostname())
+  const deviceDir = path.join(baseDir, selected)
   if (!fs.existsSync(deviceDir)) fs.mkdirSync(deviceDir, { recursive: true })
   return path.join(deviceDir, 'config.json')
 }
@@ -786,6 +787,42 @@ ipcMain.on('set-auth-token', (event, token) => {
   ensureLocalDevices()
 })
 
+async function resolveDeviceIdentifiers (rawName) {
+  try {
+    const axiosInstance = getAxiosInstance()
+    const res = await axiosInstance.get('/devices')
+    const data = res?.data
+    const list = (data && typeof data === 'object' ? (data.data ?? data) : [])
+    const target = sanitizeDeviceName(rawName)
+    for (const p of Array.isArray(list) ? list : []) {
+      const obj = p || {}
+      const name = obj.name || obj.clientId || ''
+      const sname = sanitizeDeviceName(name)
+      if (sname === target) {
+        return { deviceId: obj.id || (obj.device && obj.device.id) || null, clientId: obj.clientId || null, name: name }
+      }
+    }
+  } catch {}
+  return { deviceId: null, clientId: null, name: sanitizeDeviceName(rawName) }
+}
+
+ipcMain.handle('switch-active-device', async (_, deviceName) => {
+  try {
+    activeDeviceName = sanitizeDeviceName(deviceName)
+    await ensureLocalDevices()
+    const devHist = readDeviceHistory()
+    history = devHist
+    if (mainWindow?.webContents) {
+      mainWindow.webContents.send('clipboard-update', history)
+    }
+    await syncClipboardHistory()
+    return history
+  } catch (e) {
+    log.error('switch-active-device error', e?.message || e)
+    return []
+  }
+})
+
 ipcMain.handle('list-devices', async () => {
   try {
     await ensureLocalDevices()
@@ -834,7 +871,13 @@ async function fetchBackendClipboard () {
     const data = res?.data
     const items = (data && typeof data === 'object' ? (data.data?.items ?? data.items ?? []) : [])
     const mapped = Array.isArray(items)
-      ? items.map(it => ({ id: it.id, value: String(it.value ?? ''), favorite: !!it.favorite }))
+      ? items.map(it => ({
+          id: it.id,
+          value: String(it.value ?? ''),
+          favorite: !!it.favorite,
+          deviceId: it.deviceId || (it.device && it.device.id) || null,
+          clientId: it.clientId || (it.meta && it.meta.clientId) || (it.device && it.device.clientId) || null
+        }))
       : []
     history = mapped
     writeDeviceHistory(history)
@@ -902,7 +945,13 @@ async function syncClipboardHistory () {
     const data = res?.data
     const items = (data && typeof data === 'object' ? (data.data?.items ?? data.items ?? []) : [])
     const backendItems = Array.isArray(items)
-      ? items.map(it => ({ id: it.id, value: String(it.value ?? ''), favorite: !!it.favorite }))
+      ? items.map(it => ({
+          id: it.id,
+          value: String(it.value ?? ''),
+          favorite: !!it.favorite,
+          deviceId: it.deviceId || (it.device && it.device.id) || null,
+          clientId: it.clientId || (it.meta && it.meta.clientId) || (it.device && it.device.clientId) || null
+        }))
       : []
     const backendByValue = new Map(backendItems.map(it => [it.value, it]))
 
@@ -910,21 +959,37 @@ async function syncClipboardHistory () {
 
     await ensureDeviceRegistered()
 
-    for (const it of localItems) {
-      if (!it || typeof it.value !== 'string') continue
-      const isImage = it.value.startsWith('data:image')
-      const backend = backendByValue.get(it.value)
-      if (!backend) {
-        const type = isImage ? 'image' : 'text'
-        const meta = isImage ? { format: 'dataURL' } : {}
-        await saveClipboardRecord(type, it.value, meta)
-      } else if (backend.favorite !== !!it.favorite) {
-        await updateClipboardRecord(backend.id, { favorite: !!it.favorite })
+    const hostnameSan = sanitizeDeviceName(os.hostname())
+    const activeSan = activeDeviceName ? sanitizeDeviceName(activeDeviceName) : hostnameSan
+    const activeIsLocal = activeSan === hostnameSan
+
+    if (activeIsLocal) {
+      for (const it of localItems) {
+        if (!it || typeof it.value !== 'string') continue
+        const isImage = it.value.startsWith('data:image')
+        const backend = backendByValue.get(it.value)
+        if (!backend) {
+          const type = isImage ? 'image' : 'text'
+          const meta = isImage ? { format: 'dataURL' } : {}
+          await saveClipboardRecord(type, it.value, meta)
+        } else if (backend.favorite !== !!it.favorite) {
+          await updateClipboardRecord(backend.id, { favorite: !!it.favorite })
+        }
       }
     }
 
+    let filtered = backendItems
+    if (activeDeviceName) {
+      const ident = await resolveDeviceIdentifiers(activeDeviceName)
+      filtered = backendItems.filter(be => {
+        if (ident.deviceId && be.deviceId) return String(be.deviceId) === String(ident.deviceId)
+        if (ident.clientId && be.clientId) return String(be.clientId) === String(ident.clientId)
+        return false
+      })
+    }
+
     const localValues = new Set(localItems.map(it => it.value))
-    for (const be of backendItems) {
+    for (const be of filtered) {
       if (!localValues.has(be.value)) {
         history.unshift({ value: be.value, favorite: !!be.favorite })
       }

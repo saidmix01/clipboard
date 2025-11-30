@@ -35,7 +35,7 @@ export default function DeviceSwitchModal({ isOpen, onClose, isDarkMode, onAppli
     if (!selected) return
     try {
       setLoading(true)
-      const hist = await (window as any).electronAPI?.loadDeviceHistory?.(selected)
+      const hist = await (window as any).electronAPI?.switchActiveDevice?.(selected)
       if (Array.isArray(hist)) onApplied(hist)
       onClose()
     } catch {
@@ -98,4 +98,3 @@ export default function DeviceSwitchModal({ isOpen, onClose, isDarkMode, onAppli
     </div>
   )
 }
-
