@@ -2,3 +2,4 @@ node_modules/
 dist/
 .env
 env
+how_compile.md
