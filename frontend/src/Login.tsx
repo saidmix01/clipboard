@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import DetailsModal from './components/DetailsModal'
 
 type LoginModalProps = {
   isOpen: boolean
@@ -103,128 +104,21 @@ export default function LoginModal({
   }
 
   return (
-    <div
-      style={{
-        position: 'fixed',
-        top: 0,
-        left: 0,
-        right: 0,
-        bottom: 0,
-        backgroundColor: isDarkMode ? 'rgba(0,0,0,0.6)' : 'rgba(0,0,0,0.4)',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        zIndex: 10000
-      }}
-      onClick={onClose}
-    >
-      <div
-        onClick={e => e.stopPropagation()}
-        style={{
-          backgroundColor: isDarkMode ? '#1e1e1e' : 'white',
-          color: isDarkMode ? '#f5f5f5' : '#000',
-          padding: 20,
-          borderRadius: 8,
-          width: '90%',
-          maxWidth: 320,
-          boxShadow: isDarkMode ? '0 2px 14px rgba(0,0,0,0.45)' : '0 2px 10px rgba(0,0,0,0.3)',
-          transition: 'background-color .2s ease, color .2s ease, box-shadow .2s ease'
-        }}
-      >
-        <h3 style={{ color: isDarkMode ? '#f5f5f5' : '#000' }}>
-          {mode === 'login' ? 'Iniciar sesión' : 'Crear cuenta'}
-        </h3>
-        <form onSubmit={handleSubmit}>
+    <DetailsModal open={isOpen} onClose={onClose}>
+      <div className="space-y-3">
+        <h3 className="m-0 text-[color:var(--color-text)]">{mode === 'login' ? 'Iniciar sesión' : 'Crear cuenta'}</h3>
+        <form onSubmit={handleSubmit} className="space-y-2">
           {mode === 'register' && (
-            <input
-              type='text'
-              placeholder='Nombre'
-              value={name}
-              onChange={e => setName(e.target.value)}
-              required
-              style={{
-                width: '100%',
-                marginBottom: 10,
-                padding: 8,
-                backgroundColor: isDarkMode ? '#2c2c2c' : '#fff',
-                color: isDarkMode ? '#f5f5f5' : '#000',
-                border: '1px solid #ccc',
-                boxSizing: 'border-box'
-              }}
-            />
+            <input type='text' placeholder='Nombre' value={name} onChange={e => setName(e.target.value)} required className="w-full px-3 py-2 rounded-md border border-[color:var(--color-border)] bg-transparent text-[color:var(--color-text)] outline-none focus:ring-2 focus:ring-[color:var(--color-primary)]" />
           )}
-          <input
-            type='email'
-            placeholder='Correo'
-            value={email}
-            onChange={e => setEmail(e.target.value)}
-            required
-            style={{
-              width: '100%',
-              marginBottom: 10,
-              padding: 8,
-              backgroundColor: isDarkMode ? '#2c2c2c' : '#fff',
-              color: isDarkMode ? '#f5f5f5' : '#000',
-              border: '1px solid #ccc',
-              boxSizing: 'border-box'
-            }}
-          />
-          <input
-            type='password'
-            placeholder='Contraseña'
-            value={password}
-            onChange={e => setPassword(e.target.value)}
-            required
-            style={{
-              width: '100%',
-              marginBottom: 10,
-              padding: 8,
-              backgroundColor: isDarkMode ? '#2c2c2c' : '#fff',
-              color: isDarkMode ? '#f5f5f5' : '#000',
-              border: '1px solid #ccc',
-              boxSizing: 'border-box'
-            }}
-          />
-          <button
-            type='submit'
-            disabled={loading}
-            style={{
-              width: '100%',
-              padding: 10,
-              cursor: loading ? 'not-allowed' : 'pointer',
-              backgroundColor: isDarkMode ? '#444' : '#007bff',
-              color: isDarkMode ? '#f5f5f5' : '#fff',
-              border: 'none',
-              borderRadius: 4
-            }}
-          >
-            {loading
-              ? mode === 'login'
-                ? 'Ingresando...'
-                : 'Registrando...'
-              : mode === 'login'
-                ? 'Ingresar'
-                : 'Registrarse'}
-          </button>
-          {error && <p style={{ color: 'red', marginTop: 10 }}>{error}</p>}
+          <input type='email' placeholder='Correo' value={email} onChange={e => setEmail(e.target.value)} required className="w-full px-3 py-2 rounded-md border border-[color:var(--color-border)] bg-transparent text-[color:var(--color-text)] outline-none focus:ring-2 focus:ring-[color:var(--color-primary)]" />
+          <input type='password' placeholder='Contraseña' value={password} onChange={e => setPassword(e.target.value)} required className="w-full px-3 py-2 rounded-md border border-[color:var(--color-border)] bg-transparent text-[color:var(--color-text)] outline-none focus:ring-2 focus:ring-[color:var(--color-primary)]" />
+          <button type='submit' disabled={loading} className="w-full px-3 py-2 rounded-md text-white" style={{ backgroundColor: 'var(--color-primary)', opacity: loading ? 0.7 : 1 }}>{loading ? (mode === 'login' ? 'Ingresando...' : 'Registrando...') : (mode === 'login' ? 'Ingresar' : 'Registrarse')}</button>
+          {error && <p className="text-sm" style={{ color: 'var(--color-accent)' }}>{error}</p>}
         </form>
-        <button
-          onClick={onClose}
-          style={{
-            marginTop: 15,
-            width: '100%',
-            backgroundColor: isDarkMode ? '#555' : '#ddd',
-            color: isDarkMode ? '#f5f5f5' : '#000',
-            padding: 10,
-            border: 'none',
-            borderRadius: 4,
-            cursor: 'pointer'
-          }}
-        >
-          Cancelar
-        </button>
+        <button onClick={onClose} className="w-full px-3 py-2 rounded-md border border-[color:var(--color-border)] text-[color:var(--color-text)]">Cancelar</button>
       </div>
-    </div>
+    </DetailsModal>
   )
 }
 import { API_BASE } from './config'

@@ -604,8 +604,8 @@ ipcMain.handle('pasteImage', () => {
 ipcMain.handle('get-app-version', () => {
   return app.getVersion()
 })
-let BACKEND_URL = 'https://copyfy.webcolsoluciones.com.co'
-//let BACKEND_URL = 'http://localhost:3000'
+// let BACKEND_URL = 'https://copyfy.webcolsoluciones.com.co'
+let BACKEND_URL = 'http://localhost:3000'
 try { BACKEND_URL = require('./config').BACKEND_URL || BACKEND_URL } catch {}
 let authToken = null
 let deviceId = null
@@ -1138,5 +1138,30 @@ ipcMain.handle('auth-login', async (_, body) => {
   } catch (error) {
     log.error('auth-login error', error?.message || error)
     throw error
+  }
+})
+
+ipcMain.handle('clear-user-data', async () => {
+  try {
+    const baseDir = path.join(app.getPath('userData'), 'devices')
+    if (fs.existsSync(baseDir)) {
+      try { fs.rmSync(baseDir, { recursive: true, force: true }) } catch {}
+    }
+    try { fs.rmSync(legacyHistoryPath, { force: true }) } catch {}
+    try {
+      const alt1 = path.join(__dirname, '.clipboard-history.json')
+      const alt2 = path.join(__dirname, 'clipboard-history.json')
+      if (fs.existsSync(alt1)) { try { fs.rmSync(alt1, { force: true }) } catch {} }
+      if (fs.existsSync(alt2)) { try { fs.rmSync(alt2, { force: true }) } catch {} }
+    } catch {}
+    authToken = null
+    deviceId = null
+    activeDeviceName = null
+    history = []
+    if (mainWindow?.webContents) {
+      mainWindow.webContents.send('clipboard-update', history)
+    }
+  } catch (error) {
+    log.error('clear-user-data error', error?.message || error)
   }
 })

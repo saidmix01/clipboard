@@ -1,5 +1,6 @@
 import { useEffect, useState, useRef } from 'react'
 import { API_BASE } from './config'
+import DetailsModal from './components/DetailsModal'
 
 type UserModalProps = {
   isOpen: boolean
@@ -161,119 +162,50 @@ export default function UserModal({ isOpen, onClose, isDarkMode }: UserModalProp
   
 
   return (
-    <div
-      style={{
-        position: 'fixed',
-        inset: 0,
-        backgroundColor: isDarkMode ? 'rgba(0,0,0,0.6)' : 'rgba(0,0,0,0.4)',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        zIndex: 10000
-      }}
-      onClick={onClose}
-    >
-      <div
-        onClick={e => e.stopPropagation()}
-        style={{
-          backgroundColor: isDarkMode ? '#1e1e1e' : '#fff',
-          color: isDarkMode ? '#f5f5f5' : '#000',
-          padding: 20,
-          borderRadius: 8,
-          width: '92%',
-          maxWidth: 420,
-          boxShadow: isDarkMode ? '0 2px 14px rgba(0,0,0,0.45)' : '0 2px 10px rgba(0,0,0,0.3)',
-          maxHeight: '90vh',
-          overflowY: 'auto',
-          transition: 'background-color .2s ease, color .2s ease, box-shadow .2s ease'
-        }}
-      >
-        <h3 style={{ marginTop: 0 }}>Datos del usuario</h3>
+    <DetailsModal open={isOpen} onClose={onClose}>
+      <div className="space-y-3">
+        <h3 className="m-0">Datos del usuario</h3>
         {!session ? (
-          <p style={{ marginTop: 8 }}>No autenticado</p>
+          <p className="mt-1 text-[color:var(--color-muted)]">No autenticado</p>
         ) : (
-          <div style={{ display: 'grid', gap: 10 }}>
+          <div className="grid gap-3">
             <div>
-              <div style={labelStyle}>Nombre</div>
-              <input
-                value={nameDraft}
-                onChange={e => setNameDraft(e.target.value)}
-                style={{ ...fieldStyle, width: '80%', margin: '0 auto', display: 'block' }}
-              />
-              
+              <div className="text-sm opacity-80 mb-1">Nombre</div>
+              <input value={nameDraft} onChange={e => setNameDraft(e.target.value)} className="w-4/5 mx-auto block px-3 py-2 rounded-md border border-[color:var(--color-border)] bg-transparent text-[color:var(--color-text)] outline-none focus:ring-2 focus:ring-[color:var(--color-primary)]" />
             </div>
             <div>
-              <div style={labelStyle}>Contraseña</div>
-              <input
-                type="password"
-                placeholder="Nueva contraseña"
-                value={newPassword}
-                onChange={e => setNewPassword(e.target.value)}
-                style={{ ...fieldStyle, width: '80%', margin: '0 auto 8px', display: 'block' }}
-              />
-              <input
-                type="password"
-                placeholder="Confirmar contraseña"
-                value={confirmPassword}
-                onChange={e => setConfirmPassword(e.target.value)}
-                style={{ ...fieldStyle, width: '80%', margin: '0 auto', display: 'block' }}
-              />
-              
+              <div className="text-sm opacity-80 mb-1">Contraseña</div>
+              <input type="password" placeholder="Nueva contraseña" value={newPassword} onChange={e => setNewPassword(e.target.value)} className="w-4/5 mx-auto block mb-2 px-3 py-2 rounded-md border border-[color:var(--color-border)] bg-transparent text-[color:var(--color-text)] outline-none focus:ring-2 focus:ring-[color:var(--color-primary)]" />
+              <input type="password" placeholder="Confirmar contraseña" value={confirmPassword} onChange={e => setConfirmPassword(e.target.value)} className="w-4/5 mx-auto block px-3 py-2 rounded-md border border-[color:var(--color-border)] bg-transparent text-[color:var(--color-text)] outline-none focus:ring-2 focus:ring-[color:var(--color-primary)]" />
             </div>
             <div>
-              <div style={labelStyle}>Avatar</div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-                <div style={{ width: 96, height: 96, borderRadius: '50%', overflow: 'hidden', border: isDarkMode ? '2px solid #444' : '2px solid #ddd', boxShadow: '0 6px 14px rgba(0,0,0,0.25)', position: 'relative' }}>
+              <div className="text-sm opacity-80 mb-1">Avatar</div>
+              <div className="flex items-center gap-3">
+                <div className="w-24 h-24 rounded-full overflow-hidden border" style={{ borderColor: 'var(--color-border)', boxShadow: 'var(--shadow-soft)' }}>
                   {preview && !avatarError ? (
-                    <img src={preview} alt="avatar" style={{ width: '100%', height: '100%', objectFit: 'cover' }} onError={() => setAvatarError(true)} />
+                    <img src={preview || ''} alt="avatar" className="w-full h-full object-cover" onError={() => setAvatarError(true)} />
                   ) : (
-                    <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', background: isDarkMode ? '#2c2c2c' : '#f2f2f2' }}>—</div>
+                    <div className="w-full h-full flex items-center justify-center" style={{ background: 'var(--color-bg)' }}>—</div>
                   )}
                 </div>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 8, flexGrow: 1 }}>
-                  <div
-                    style={{ border: isDarkMode ? '1px dashed #555' : '1px dashed #999', borderRadius: 8, padding: 10, textAlign: 'center', cursor: 'pointer' }}
-                    onClick={() => fileInputRef.current?.click()}
-                  >
-                    Elegir imagen
-                  </div>
-                  <input
-                    ref={fileInputRef}
-                    type="file"
-                    accept="image/*"
-                    onChange={e => setAvatarFile(e.target.files?.[0] || null)}
-                    style={{ display: 'none' }}
-                  />
-                  <div style={{ fontSize: '0.8rem', opacity: 0.7 }}>
-                    {avatarFile?.name || 'Ningún archivo seleccionado'}
-                  </div>
-                  
+                <div className="flex flex-col gap-2 flex-1">
+                  <div className="text-center cursor-pointer px-3 py-2 rounded-md border border-dashed" style={{ borderColor: 'var(--color-border)' }} onClick={() => fileInputRef.current?.click()}>Elegir imagen</div>
+                  <input ref={fileInputRef} type="file" accept="image/*" onChange={e => setAvatarFile(e.target.files?.[0] || null)} className="hidden" />
+                  <div className="text-xs opacity-70">{avatarFile?.name || 'Ningún archivo seleccionado'}</div>
                 </div>
               </div>
             </div>
           </div>
         )}
-
-        <div style={{ display: 'flex', gap: 8, marginTop: 16, justifyContent: 'space-between', alignItems: 'center' }}>
-          {error && <span style={{ color: 'red' }}>{error}</span>}
-          <div style={{ display: 'flex', gap: 8 }}>
-            <button
-              onClick={updateAll}
-              className={isDarkMode ? 'btn btn-sm btn-outline-success' : 'btn btn-sm btn-outline-primary'}
-              disabled={loading || (!nameDraft && !avatarFile && !(newPassword && newPassword === confirmPassword && newPassword.length >= 8))}
-            >
-              Actualizar
-            </button>
-          <button
-            onClick={onClose}
-            className={isDarkMode ? 'btn btn-sm btn-outline-light' : 'btn btn-sm btn-outline-dark'}
-          >
-            Cerrar
-          </button>
+        <div className="flex gap-2 mt-2 items-center justify-between">
+          {error && <span className="text-sm" style={{ color: 'var(--color-accent)' }}>{error}</span>}
+          <div className="flex gap-2">
+            <button onClick={updateAll} className="px-3 py-2 rounded-md border border-[color:var(--color-border)] text-[color:var(--color-text)]" disabled={loading || (!nameDraft && !avatarFile && !(newPassword && newPassword === confirmPassword && newPassword.length >= 8))}>Actualizar</button>
+            <button onClick={onClose} className="px-3 py-2 rounded-md border border-[color:var(--color-border)] text-[color:var(--color-text)]">Cerrar</button>
           </div>
         </div>
       </div>
-    </div>
+    </DetailsModal>
   )
 }
 

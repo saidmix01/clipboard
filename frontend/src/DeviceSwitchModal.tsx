@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { API_BASE } from './config'
+import DetailsModal from './components/DetailsModal'
 
 type Props = {
   isOpen: boolean
@@ -106,64 +107,32 @@ export default function DeviceSwitchModal({ isOpen, onClose, isDarkMode, onAppli
   }
 
   return (
-    <div
-      style={{
-        position: 'fixed', inset: 0, backgroundColor: isDarkMode ? 'rgba(0,0,0,0.6)' : 'rgba(0,0,0,0.4)',
-        display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 10000
-      }}
-      onClick={onClose}
-    >
-      <div
-        onClick={e => e.stopPropagation()}
-        style={{
-          backgroundColor: isDarkMode ? '#1e1e1e' : '#fff', color: isDarkMode ? '#f5f5f5' : '#000',
-          padding: 20, borderRadius: 8, width: '92%', maxWidth: 380,
-          boxShadow: isDarkMode ? '0 2px 14px rgba(0,0,0,0.45)' : '0 2px 10px rgba(0,0,0,0.3)'
-        }}
-      >
-        <h3 style={{ marginTop: 0 }}>Cambiar dispositivo</h3>
-
-        <div style={{ marginTop: 8 }}>
-          <label style={{ fontSize: '0.85rem', opacity: 0.8, marginBottom: 4, display: 'block' }}>Selecciona dispositivo</label>
-          <select
-            value={selected}
-            onChange={e => setSelected(e.target.value)}
-            className={`form-select form-select-sm ${isDarkMode ? 'bg-dark text-white border-secondary' : ''}`}
-          >
+    <DetailsModal open={isOpen} onClose={onClose}>
+      <div className="space-y-3">
+        <h3 className="m-0">Cambiar dispositivo</h3>
+        <div className="mt-1">
+          <label className="text-sm opacity-80 mb-1 block">Selecciona dispositivo</label>
+          <select value={selected} onChange={e => setSelected(e.target.value)} className="w-full px-3 py-2 rounded-md border border-[color:var(--color-border)] bg-transparent text-[color:var(--color-text)] outline-none">
             <option value='' disabled>—</option>
             {devices.map((d, i) => (
               <option key={i} value={d}>{d}</option>
             ))}
           </select>
         </div>
-
-        {error && <div style={{ color: 'red', marginTop: 10 }}>{error}</div>}
-
+        {error && <div className="text-sm" style={{ color: 'var(--color-accent)' }}>{error}</div>}
         {loading && (
-          <div style={{ marginTop: 12 }}>
-            <div style={{ fontSize: '0.85rem', opacity: 0.8 }}>{status || 'Sincronizando...'}</div>
-            <div style={{ width: '100%', height: 8, borderRadius: 6, background: isDarkMode ? '#2c2c2c' : '#eee', overflow: 'hidden' }}>
-              <div style={{ width: `${Math.max(0, Math.min(100, progress))}%`, height: '100%', background: isDarkMode ? '#28a745' : '#0d6efd' }} />
+          <div className="mt-2 space-y-2">
+            <div className="text-sm opacity-80">{status || 'Sincronizando...'}</div>
+            <div className="w-full h-2 rounded-md" style={{ background: 'var(--color-bg)' }}>
+              <div className="h-full rounded-md" style={{ width: `${Math.max(0, Math.min(100, progress))}%`, background: 'var(--color-primary)' }} />
             </div>
           </div>
         )}
-
-        <div style={{ display: 'flex', gap: 8, marginTop: 16 }}>
-          <button
-            onClick={apply}
-            disabled={!selected || loading}
-            className={isDarkMode ? 'btn btn-sm btn-outline-success' : 'btn btn-sm btn-outline-primary'}
-          >
-            Aplicar
-          </button>
-          <button
-            onClick={onClose}
-            className={isDarkMode ? 'btn btn-sm btn-outline-light' : 'btn btn-sm btn-outline-dark'}
-          >
-            Cancelar
-          </button>
+        <div className="flex gap-2 mt-2">
+          <button onClick={apply} disabled={!selected || loading} className="px-3 py-2 rounded-md border border-[color:var(--color-border)] text-[color:var(--color-text)]">Aplicar</button>
+          <button onClick={onClose} className="px-3 py-2 rounded-md border border-[color:var(--color-border)] text-[color:var(--color-text)]">Cancelar</button>
         </div>
       </div>
-    </div>
+    </DetailsModal>
   )
 }

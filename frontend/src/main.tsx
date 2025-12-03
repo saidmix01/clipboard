@@ -1,5 +1,4 @@
-// src/main.tsx o src/index.tsx
-import 'bootstrap/dist/css/bootstrap.min.css'; // 👈 AÑADE ESTO
+// src/main.tsx
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import App from './App';
