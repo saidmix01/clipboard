@@ -11,7 +11,6 @@ test('renderiza texto y resalta coincidencias', () => {
       onCopy={noop}
       onToggleFavorite={noop}
       highlightMatch={(t) => [t]}
-      darkMode={false}
       search={'Hola'}
     />
   )

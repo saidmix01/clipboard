@@ -1,5 +1,5 @@
 import { motion } from 'framer-motion'
-import { ClipboardIcon, ClipboardDocumentCheckIcon, HeartIcon, Cog6ToothIcon } from '@heroicons/react/24/outline'
+import { ClipboardIcon, ClipboardDocumentCheckIcon, HeartIcon, Cog6ToothIcon, UserCircleIcon, ArrowRightStartOnRectangleIcon, ArrowLeftEndOnRectangleIcon, UserPlusIcon } from '@heroicons/react/24/outline'
 
 type DockItem = {
   label: string
@@ -9,9 +9,13 @@ type DockItem = {
 
 type Props = {
   items: DockItem[]
+  userAvatar?: string | null
 }
 
-export default function Dock({ items }: Props) {
+import { useState } from 'react'
+
+export default function Dock({ items, userAvatar }: Props) {
+  const [avatarError, setAvatarError] = useState(false)
   return (
     <div className="px-3 pb-2">
       <div className="glass flex items-center justify-between px-3 py-2">
@@ -20,7 +24,17 @@ export default function Dock({ items }: Props) {
             {it.label === 'Copiar' ? <ClipboardIcon className="w-5 h-5" /> :
              it.label === 'Pegar' ? <ClipboardDocumentCheckIcon className="w-5 h-5" /> :
              it.label === 'Favoritos' ? <HeartIcon className="w-5 h-5" /> :
-             it.label === 'Ajustes' ? <Cog6ToothIcon className="w-5 h-5" /> : it.icon}
+             it.label === 'Ajustes' ? <Cog6ToothIcon className="w-5 h-5" /> :
+             it.label === 'Perfil' ? (
+               userAvatar && !avatarError ? (
+                 <img src={userAvatar} className="w-5 h-5 rounded-full object-cover" onError={() => setAvatarError(true)} />
+               ) : (
+                 <UserCircleIcon className="w-5 h-5" />
+               )
+             ) :
+             it.label === 'Cerrar sesión' ? <ArrowRightStartOnRectangleIcon className="w-5 h-5" /> :
+             it.label === 'Iniciar sesión' ? <ArrowLeftEndOnRectangleIcon className="w-5 h-5" /> :
+             it.label === 'Registrarse' ? <UserPlusIcon className="w-5 h-5" /> : it.icon}
           </motion.button>
         ))}
       </div>

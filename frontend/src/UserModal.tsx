@@ -5,7 +5,6 @@ import DetailsModal from './components/DetailsModal'
 type UserModalProps = {
   isOpen: boolean
   onClose: () => void
-  isDarkMode: boolean
 }
 
 type Session = {
@@ -16,7 +15,7 @@ type Session = {
   user?: any
 }
 
-export default function UserModal({ isOpen, onClose, isDarkMode }: UserModalProps) {
+export default function UserModal({ isOpen, onClose }: UserModalProps) {
   const [session, setSession] = useState<Session | null>(null)
   const [user, setUser] = useState<any>(null)
   const [nameDraft, setNameDraft] = useState('')
@@ -145,19 +144,7 @@ export default function UserModal({ isOpen, onClose, isDarkMode }: UserModalProp
 
   if (!isOpen) return null
 
-  const labelStyle: React.CSSProperties = {
-    fontSize: '0.85rem',
-    opacity: 0.8,
-    marginBottom: 4
-  }
-
-  const fieldStyle: React.CSSProperties = {
-    padding: '8px',
-    borderRadius: 6,
-    border: isDarkMode ? '1px solid #444' : '1px solid #ccc',
-    backgroundColor: isDarkMode ? '#2c2c2c' : '#fff',
-    transition: 'background-color .2s ease, color .2s ease, border-color .2s ease'
-  }
+  
 
   
 

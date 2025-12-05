@@ -13,7 +13,6 @@ export const Text: Story = {
   args: {
     item: { value: 'Hola mundo', favorite: false },
     selected: false,
-    darkMode: false,
     search: 'Hola',
     highlightMatch: (t: string) => [t],
     onCopy: () => {},
@@ -25,7 +24,6 @@ export const Code: Story = {
   args: {
     item: { value: 'const x = 1;', favorite: true },
     selected: true,
-    darkMode: true,
     search: '',
     highlightMatch: (t: string) => [t],
     onCopy: () => {},

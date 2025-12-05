@@ -5,7 +5,6 @@ type LoginModalProps = {
   isOpen: boolean
   onClose: () => void
   onLoginSuccess: (token: string) => void
-  isDarkMode: boolean
   mode?: 'login' | 'register'
   onGlobalLoading?: (loading: boolean) => void
 }
@@ -14,7 +13,6 @@ export default function LoginModal({
   isOpen,
   onClose,
   onLoginSuccess,
-  isDarkMode,
   mode = 'login',
   onGlobalLoading
 }: LoginModalProps) {

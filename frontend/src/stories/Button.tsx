@@ -1,4 +1,4 @@
-import React from 'react';
+// React import no requerido con JSX automático
 
 import './button.css';
 

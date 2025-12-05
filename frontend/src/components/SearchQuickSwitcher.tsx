@@ -1,5 +1,6 @@
 import { useEffect } from 'react'
 import { motion } from 'framer-motion'
+import Portal from './Portal'
 
 type Props = {
   open: boolean
@@ -17,16 +18,18 @@ export default function SearchQuickSwitcher({ open, query, onQueryChange, onClos
 
   if (!open) return null
   return (
-    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="fixed inset-0 z-[3000] flex items-start justify-center pt-16">
-      <div className="glass w-[520px]">
-        <input
-          autoFocus
-          value={query}
-          onChange={(e) => onQueryChange(e.target.value)}
-          placeholder="Buscar…"
-          className="w-full px-4 py-3 bg-transparent text-[color:var(--color-text)] outline-none"
-        />
-      </div>
-    </motion.div>
+    <Portal>
+      <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="fixed inset-0 flex items-start justify-center pt-16 no_drag" style={{ zIndex: 9500 }}>
+        <div className="panel w-[520px]">
+          <input
+            autoFocus
+            value={query}
+            onChange={(e) => onQueryChange(e.target.value)}
+            placeholder="Buscar…"
+            className="w-full px-4 py-3 bg-transparent text-[color:var(--color-text)] outline-none"
+          />
+        </div>
+      </motion.div>
+    </Portal>
   )
 }

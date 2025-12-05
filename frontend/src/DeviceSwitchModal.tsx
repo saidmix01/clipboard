@@ -1,15 +1,15 @@
 import { useEffect, useState } from 'react'
 import { API_BASE } from './config'
+import { ComputerDesktopIcon } from '@heroicons/react/24/outline'
 import DetailsModal from './components/DetailsModal'
 
 type Props = {
   isOpen: boolean
   onClose: () => void
-  isDarkMode: boolean
   onApplied: (newHistory: any[]) => void
 }
 
-export default function DeviceSwitchModal({ isOpen, onClose, isDarkMode, onApplied }: Props) {
+export default function DeviceSwitchModal({ isOpen, onClose, onApplied }: Props) {
   const [devices, setDevices] = useState<string[]>([])
   const [selected, setSelected] = useState<string>('')
   const [loading, setLoading] = useState(false)
@@ -111,13 +111,30 @@ export default function DeviceSwitchModal({ isOpen, onClose, isDarkMode, onAppli
       <div className="space-y-3">
         <h3 className="m-0">Cambiar dispositivo</h3>
         <div className="mt-1">
-          <label className="text-sm opacity-80 mb-1 block">Selecciona dispositivo</label>
-          <select value={selected} onChange={e => setSelected(e.target.value)} className="w-full px-3 py-2 rounded-md border border-[color:var(--color-border)] bg-transparent text-[color:var(--color-text)] outline-none">
-            <option value='' disabled>—</option>
-            {devices.map((d, i) => (
-              <option key={i} value={d}>{d}</option>
-            ))}
-          </select>
+          <label className="text-sm opacity-80 mb-2 block">Selecciona dispositivo</label>
+          <div className="max-h-[36vh] overflow-auto space-y-2">
+            {devices.length === 0 && (
+              <div className="text-sm opacity-70">Sin dispositivos</div>
+            )}
+            {devices.map((d, i) => {
+              const isSel = selected === d
+              return (
+                <button
+                  key={i}
+                  onClick={() => setSelected(d)}
+                  className="w-full flex items-center gap-3 px-3 py-2 rounded-md border text-left hover:bg-[color:var(--color-bg)]"
+                  style={{
+                    borderColor: isSel ? 'var(--color-primary)' : 'var(--color-border)',
+                    background: isSel ? 'color-mix(in oklab, var(--color-primary) 12%, transparent)' : 'transparent',
+                    color: 'var(--color-text)'
+                  }}
+                >
+                  <ComputerDesktopIcon className="w-5 h-5" />
+                  <span className="truncate">{d}</span>
+                </button>
+              )
+            })}
+          </div>
         </div>
         {error && <div className="text-sm" style={{ color: 'var(--color-accent)' }}>{error}</div>}
         {loading && (

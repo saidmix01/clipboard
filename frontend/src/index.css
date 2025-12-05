@@ -17,6 +17,10 @@
 
   --shadow-soft: 0 8px 30px rgba(0,0,0,0.08);
   --shadow-hover: 0 12px 40px rgba(0,0,0,0.12);
+
+  --traffic-red: #ff5f57;
+  --traffic-yellow: #fdbc40;
+  --traffic-green: #28c940;
 }
 
 :root[data-theme="dark"] {
@@ -28,6 +32,7 @@
   --color-primary: #0a84ff;
   --color-secondary: #30d158;
   --color-accent: #ff9f0a;
+  color-scheme: dark;
 }
 
 html, body, #root {
@@ -37,6 +42,10 @@ html, body, #root {
   overflow: hidden;
   font-family: var(--font-sans);
 }
+
+body { color: var(--color-text); }
+input, select, textarea, button { color: var(--color-text); background: transparent; }
+::placeholder { color: var(--color-muted); }
 
 .drag_region { -webkit-app-region: drag; }
 .no_drag { -webkit-app-region: no-drag; }
@@ -58,6 +67,13 @@ html, body, #root {
   border: 1px solid color-mix(in oklab, var(--color-border) 70%, transparent);
   border-radius: var(--radius-card);
   box-shadow: var(--shadow-soft);
+}
+
+.panel {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-modal);
+  box-shadow: var(--shadow-hover);
 }
 
 .code-block pre code.hljs {

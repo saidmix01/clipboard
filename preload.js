@@ -33,6 +33,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   ,openCodeEditor: (code) => ipcRenderer.send('open-code-editor', code)
   ,registerDevice: (clientId) => ipcRenderer.invoke('register-device', clientId)
   ,authLogin: (body) => ipcRenderer.invoke('auth-login', body)
+  ,clearUserData: () => ipcRenderer.invoke('clear-user-data')
   ,listDevices: () => ipcRenderer.invoke('list-devices')
   ,loadDeviceHistory: (deviceName) => ipcRenderer.invoke('load-device-history', deviceName)
   ,switchActiveDevice: (deviceName) => ipcRenderer.invoke('switch-active-device', deviceName)
@@ -42,4 +43,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.on('sync-progress', listener)
     return () => ipcRenderer.removeListener('sync-progress', listener)
   }
+  ,getPreferences: () => ipcRenderer.invoke('get-preferences')
+  ,setPreferences: (patch) => ipcRenderer.invoke('set-preferences', patch)
 })

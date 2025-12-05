@@ -13,44 +13,9 @@ import HistoryList from './components/HistoryList'
 import SidebarFilters from './components/SidebarFilters'
 import SearchQuickSwitcher from './components/SearchQuickSwitcher'
 import SettingsMenu from './components/SettingsMenu'
+import OnboardingTour from './components/OnboardingTour'
 import type { HistoryItem, FilterType } from './types'
-import { FaCopy, FaPaste, FaCog, FaHeart, FaSignOutAlt } from 'react-icons/fa'
 
-function isCodeSnippet (text: string): boolean {
-  const trimmed = text.trim()
-
-  if (trimmed.startsWith('data:image')) return false
-
-  try {
-    const parsed = JSON.parse(trimmed)
-    if (typeof parsed === 'object' && parsed !== null) {
-      return true
-    }
-  } catch (_) {}
-
-  const hasCodeIndicators = [
-    '{',
-    '}',
-    '=>',
-    'function',
-    'const ',
-    'let ',
-    'class ',
-    'import ',
-    'export ',
-    'return ',
-    '//',
-    '/*',
-    '*/'
-  ].some(keyword => text.includes(keyword))
-
-  const lines = text.split('\n')
-
-  const looksMultilineCode =
-    lines.length > 2 && lines.some(line => /[{};=]/.test(line.trim()))
-
-  return hasCodeIndicators || looksMultilineCode
-}
 
 // tipos movidos a ./types
 
@@ -64,7 +29,6 @@ function App () {
   const [token, setToken] = useState<string | null>(null)
   const [globalLoading, setGlobalLoading] = useState(false)
   const [userAvatar, setUserAvatar] = useState<string | null>(null)
-  const [avatarError, setAvatarError] = useState<boolean>(false)
 
   const logout = () => {
     setToken(null)
@@ -117,7 +81,6 @@ function App () {
   }
 
   // Ref para el contenedor scrollable y para cada item
-  const containerScrollRef = useRef<HTMLDivElement>(null)
   const itemRefs = useRef<(HTMLDivElement | null)[]>([])
 
   const highlightMatch = (
@@ -184,9 +147,9 @@ function App () {
   }, [])
 
   useEffect(() => {
-    const fetchMe = async () => {
+    async function fetchAvatar() {
       try {
-        setAvatarError(false)
+        
         if (!token) { setUserAvatar(null); return }
         const res = await fetch(`${API_BASE}/users/me`, { headers: { Authorization: `Bearer ${token}` } })
         const data = await res.json()
@@ -207,14 +170,14 @@ function App () {
         setUserAvatar(null)
       }
     }
-    fetchMe()
+    fetchAvatar()
   }, [token])
 
   useEffect(() => {
     if (!showUserModal && token) {
       (async () => {
         try {
-          setAvatarError(false)
+          
           const res = await fetch(`${API_BASE}/users/me`, { headers: { Authorization: `Bearer ${token}` } })
           const data = await res.json()
           const payload: any = (data && typeof data === 'object' ? (data.data ?? data) : {})
@@ -234,6 +197,7 @@ function App () {
       })()
     }
   }, [showUserModal, token])
+
 
   useEffect(() => {
     if ((window as any).electronAPI?.onClipboardUpdate) {
@@ -291,11 +255,24 @@ function App () {
   }, [darkMode])
 
   const [appVersion, setAppVersion] = useState<string>('')
+  const [showTour, setShowTour] = useState<boolean>(false)
 
   useEffect(() => {
     if ((window as any).electronAPI?.getAppVersion) {
       ;(window as any).electronAPI.getAppVersion().then(setAppVersion)
     }
+  }, [])
+
+  useEffect(() => {
+    async function checkFirstRun () {
+      try {
+        const prefs = await (window as any).electronAPI?.getPreferences?.()
+        if (!prefs || prefs.firstRunGuideDone !== true) {
+          setShowTour(true)
+        }
+      } catch {}
+    }
+    checkFirstRun()
   }, [])
 
   const [selectedIndex, setSelectedIndex] = useState<number>(-1)
@@ -373,15 +350,7 @@ function App () {
       <motion.div initial={{ opacity: 0, y: 30 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.5, ease: 'easeOut' }}>
         <Toaster position='top-center' />
         <AppShell darkMode={darkMode}>
-          <TopBar
-            token={token}
-            userAvatar={userAvatar && !avatarError ? userAvatar : null}
-            onLogin={() => setShowLogin(true)}
-            onLogout={logout}
-            onRegister={() => setShowRegister(true)}
-            onUserModal={() => setShowUserModal(true)}
-            onSettingsToggle={() => setSettingsOpen(prev => !prev)}
-          />
+          <TopBar />
           <SettingsMenu
             open={settingsOpen}
             darkMode={darkMode}
@@ -390,6 +359,25 @@ function App () {
             onForceUpdate={() => { setSettingsOpen(false); toast('Buscando actualizaciones...'); (window as any).electronAPI?.forceUpdate?.() }}
             onToggleDark={() => { setSettingsOpen(false); setDarkMode(prev => !prev) }}
             onClearHistory={() => { setSettingsOpen(false); (window as any).electronAPI?.clearHistory?.(); toast.success('Historial eliminado') }}
+            onSyncNow={async () => {
+              try {
+                setSettingsOpen(false)
+                setGlobalLoading(true)
+                toast('Sincronizando…')
+                const dev = await (window as any).electronAPI?.getActiveDevice?.()
+                const hist = await (window as any).electronAPI?.loadDeviceHistory?.(dev || '')
+                if (Array.isArray(hist)) {
+                  setHistory(hist)
+                  toast.success('Sincronización completada')
+                } else {
+                  toast.error('No se pudo obtener el historial')
+                }
+              } catch {
+                toast.error('Error al sincronizar')
+              } finally {
+                setGlobalLoading(false)
+              }
+            }}
           />
           <div className="px-3 pt-1">
             <input
@@ -405,7 +393,6 @@ function App () {
               isOpen={showLogin}
               onClose={() => setShowLogin(false)}
               onLoginSuccess={handleLoginSuccess}
-              isDarkMode={darkMode}
               mode='login'
               onGlobalLoading={setGlobalLoading}
             />
@@ -413,19 +400,16 @@ function App () {
               isOpen={showRegister}
               onClose={() => setShowRegister(false)}
               onLoginSuccess={handleLoginSuccess}
-              isDarkMode={darkMode}
               mode='register'
               onGlobalLoading={setGlobalLoading}
             />
             <UserModal
               isOpen={showUserModal}
               onClose={() => setShowUserModal(false)}
-              isDarkMode={darkMode}
             />
             <DeviceSwitchModal
               isOpen={showDeviceSwitch}
               onClose={() => setShowDeviceSwitch(false)}
-              isDarkMode={darkMode}
               onApplied={(newHistory: HistoryItem[]) => {
                 if (Array.isArray(newHistory)) setHistory(newHistory)
               }}
@@ -435,7 +419,6 @@ function App () {
 
           <HistoryList
             items={filteredHistory}
-            darkMode={darkMode}
             search={search}
             selectedIndex={selectedIndex}
             onToggleFavorite={(item) => {
@@ -466,11 +449,30 @@ function App () {
 
           <Dock
             items={[
-              { label: 'Copiar', icon: <FaCopy />, onClick: () => toast('Selecciona un elemento para copiar') },
-              { label: 'Pegar', icon: <FaPaste />, onClick: () => (window as any).electronAPI?.pasteText?.() },
-              { label: 'Favoritos', icon: <FaHeart />, onClick: () => setFilter('favorite') },
-              { label: 'Ajustes', icon: <FaCog />, onClick: () => setSettingsOpen(true) },
+              { label: 'Copiar', icon: null as any, onClick: () => toast('Selecciona un elemento para copiar') },
+              { label: 'Pegar', icon: null as any, onClick: () => (window as any).electronAPI?.pasteText?.() },
+              { label: 'Favoritos', icon: null as any, onClick: () => setFilter('favorite') },
+              { label: 'Ajustes', icon: null as any, onClick: () => setSettingsOpen(true) },
+              ...(token ? [
+                { label: 'Perfil', icon: null as any, onClick: () => setShowUserModal(true) },
+                { label: 'Cerrar sesión', icon: null as any, onClick: logout }
+              ] : [
+                { label: 'Iniciar sesión', icon: null as any, onClick: () => setShowLogin(true) },
+                { label: 'Registrarse', icon: null as any, onClick: () => setShowRegister(true) }
+              ])
             ]}
+            userAvatar={userAvatar}
+          />
+
+          <OnboardingTour
+            open={showTour}
+            onClose={() => setShowTour(false)}
+            onComplete={async () => {
+              try {
+                await (window as any).electronAPI?.setPreferences?.({ firstRunGuideDone: true })
+              } catch {}
+              setShowTour(false)
+            }}
           />
 
           {globalLoading && (

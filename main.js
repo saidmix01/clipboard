@@ -1165,3 +1165,24 @@ ipcMain.handle('clear-user-data', async () => {
     log.error('clear-user-data error', error?.message || error)
   }
 })
+
+ipcMain.handle('get-preferences', async () => {
+  try {
+    const obj = readDeviceConfigObj()
+    return obj.preferences || {}
+  } catch {
+    return {}
+  }
+})
+
+ipcMain.handle('set-preferences', async (_, patch) => {
+  try {
+    const obj = readDeviceConfigObj()
+    const prefs = (patch && typeof patch === 'object') ? patch : {}
+    obj.preferences = { ...(obj.preferences || {}), ...prefs }
+    writeDeviceConfigObj(obj)
+    return obj.preferences
+  } catch {
+    return {}
+  }
+})

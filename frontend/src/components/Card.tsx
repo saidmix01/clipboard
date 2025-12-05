@@ -35,11 +35,10 @@ type Props = {
   onCopy: () => void
   onToggleFavorite: () => void
   highlightMatch: (text: string, query: string) => React.ReactNode[] | string
-  darkMode: boolean
   search: string
 }
 
-export default function Card({ item, selected, onCopy, onToggleFavorite, highlightMatch, darkMode, search }: Props) {
+export default function Card({ item, selected, onCopy, onToggleFavorite, highlightMatch, search }: Props) {
   const [expanded, setExpanded] = useState(false)
   const isImage = item.value.startsWith('data:image')
   const isCode = isCodeSnippet(item.value)
@@ -51,7 +50,7 @@ export default function Card({ item, selected, onCopy, onToggleFavorite, highlig
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.18, ease: [0.22, 0.9, 0.38, 1] }}
       className={`relative mb-2 p-2 rounded-[12px] border border-[color:var(--color-border)] ${selected ? 'ring-2 ring-[color:var(--color-primary)]' : ''}`}
-      style={{ cursor: 'pointer', backgroundColor: 'var(--color-surface)' }}
+      style={{ cursor: 'pointer', backgroundColor: 'var(--color-surface)', maxHeight: expanded ? undefined : '140px', overflow: 'hidden' }}
       onClick={onCopy}
     >
       <button
@@ -65,11 +64,13 @@ export default function Card({ item, selected, onCopy, onToggleFavorite, highlig
 
       <div>
         {isImage ? (
-          <img src={item.value} alt="imagen" className="max-w-full rounded-[10px]" />
+          <img src={item.value} alt="imagen" className="max-w-full rounded-[10px]" style={{ maxHeight: expanded ? undefined : 120, objectFit: 'cover' }} />
         ) : isCode ? (
-          <CodeBlock code={item.value} />
+          <div style={{ maxHeight: expanded ? undefined : 120, overflow: 'hidden' }}>
+            <CodeBlock code={item.value} />
+          </div>
         ) : (
-          <div className="text-sm text-[color:var(--color-text)] break-words">
+          <div className="text-sm text-[color:var(--color-text)] break-words" style={{ maxHeight: expanded ? undefined : 120, overflow: 'hidden' }}>
             {highlightMatch(item.value, search)}
           </div>
         )}

@@ -4,7 +4,6 @@ import type { HistoryItem } from '../types'
 
 type Props = {
   items: HistoryItem[]
-  darkMode: boolean
   search: string
   selectedIndex: number
   onToggleFavorite: (item: HistoryItem) => void
@@ -12,7 +11,7 @@ type Props = {
   highlightMatch: (text: string, query: string) => React.ReactNode[] | string
 }
 
-export default function HistoryList({ items, darkMode, search, selectedIndex, onToggleFavorite, onCopy, highlightMatch }: Props) {
+export default function HistoryList({ items, search, selectedIndex, onToggleFavorite, onCopy, highlightMatch }: Props) {
   const itemRefs = useRef<(HTMLDivElement | null)[]>([])
   return (
     <div className="flex-1 overflow-auto px-2 py-2 text-[color:var(--color-text)]" style={{ scrollbarWidth: 'thin' }}>
@@ -23,7 +22,6 @@ export default function HistoryList({ items, darkMode, search, selectedIndex, on
           <div key={idx} ref={el => { itemRefs.current[idx] = el }}>
             <Card
               item={item}
-              darkMode={darkMode}
               search={search}
               selected={idx === selectedIndex}
               onToggleFavorite={() => onToggleFavorite(item)}
