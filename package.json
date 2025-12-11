@@ -23,14 +23,17 @@
     "files": [
       "frontend/dist/**/*",
       "main.js",
+      "db.js",
       "preload.js",
       "config.js",
       "helpers/**/*",
-      "package.json"
+      "package.json",
+      "node_modules/sql.js/dist/sql-wasm.wasm"
     ],
     "asarUnpack": [
       "helpers/paste.exe",
-      "helpers/paste-image.exe"
+      "helpers/paste-image.exe",
+      "node_modules/sql.js/dist/sql-wasm.wasm"
     ],
     "directories": {
       "buildResources": "assets"
@@ -62,6 +65,7 @@
   "dependencies": {
     "axios": "^1.10.0",
     "electron-log": "^5.4.1",
-    "electron-updater": "^6.6.2"
+    "electron-updater": "^6.6.2",
+    "sql.js": "^1.11.0"
   }
 }

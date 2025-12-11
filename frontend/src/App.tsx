@@ -20,7 +20,7 @@ import type { HistoryItem, FilterType } from './types'
 // tipos movidos a ./types
 
 function App () {
-  const [history, setHistory] = useState<HistoryItem[]>([])
+  const [, setHistory] = useState<HistoryItem[]>([])
   const [search, setSearch] = useState<string>('')
   const containerRef = useRef<HTMLDivElement>(null)
   const [showLogin, setShowLogin] = useState(false)
@@ -54,10 +54,10 @@ function App () {
       })
       const data = await res.json()
       const payload = (data && typeof data === 'object' ? (data.data ?? data) : {}) as any
-      const success = (data && typeof data === 'object' ? data.success : undefined)
+      const okFlag = (data && typeof data === 'object') ? (data.success ?? data.status) : undefined
       const newToken = payload?.token
       const newRefresh = payload?.refreshToken
-      if ((success ?? res.ok) && newToken) {
+      if ((okFlag ?? res.ok) && newToken) {
         handleLoginSuccess(newToken)
         const newSession = { ...sess, token: newToken, refreshToken: newRefresh || rt }
         localStorage.setItem('session', JSON.stringify(newSession))
@@ -104,38 +104,28 @@ function App () {
   }
 
   const [filter, setFilter] = useState<FilterType>('all')
-
-  let filteredHistory = [...history]
-    .filter(item => {
-      const isImage = item.value.startsWith('data:image')
-      const isFavorite = item.favorite
-
-      if (filter === 'text' && isImage) return false
-      if (filter === 'image' && !isImage) return false
-      if (filter === 'favorite' && !isFavorite) return false
-
-      return item.value.toLowerCase().includes(search.toLowerCase())
-    })
-    .sort((a, b) => Number(b.favorite) - Number(a.favorite))
-
-  if (!search.trim()) {
-    filteredHistory = filteredHistory.slice(0, 50)
-  }
+  const [displayed, setDisplayed] = useState<HistoryItem[]>([])
+  const [listLoading, setListLoading] = useState<boolean>(false)
+  const [syncing, setSyncing] = useState<boolean>(false)
+  const [syncPct, setSyncPct] = useState<number>(0)
 
   useEffect(() => {
+    try {
+      const raw = localStorage.getItem('session')
+      if (raw) {
+        const sess = JSON.parse(raw)
+        if (sess?.refreshToken) { refreshAuthToken(); return }
+        if (sess?.token) {
+          handleLoginSuccess(sess.token)
+          ;(window as any).electronAPI?.setAuthToken(sess.token)
+          return
+        }
+      }
+    } catch {}
     const token = localStorage.getItem('x-token')
     if (token) {
       handleLoginSuccess(token)
       ;(window as any).electronAPI?.setAuthToken(token)
-    } else {
-      const raw = localStorage.getItem('session')
-      if (raw) {
-        try {
-          const sess = JSON.parse(raw)
-          if (sess?.token) handleLoginSuccess(sess.token)
-          if (sess?.refreshToken) refreshAuthToken()
-        } catch {}
-      }
     }
   }, [])
 
@@ -203,6 +193,19 @@ function App () {
     if ((window as any).electronAPI?.onClipboardUpdate) {
       ;(window as any).electronAPI.onClipboardUpdate((data: HistoryItem[]) => {
         setHistory(data)
+        const q = search.trim()
+        setListLoading(true)
+        if (q.length === 0) {
+          const payload = { filter, limit: 50 }
+          Promise.resolve((window as any).electronAPI?.listRecent?.(payload))
+            .then((res: HistoryItem[]) => { if (Array.isArray(res)) setDisplayed(res) })
+            .finally(() => setListLoading(false))
+        } else {
+          const payload = { query: q, filter }
+          Promise.resolve((window as any).electronAPI?.searchHistory?.(payload))
+            .then((res: HistoryItem[]) => { if (Array.isArray(res)) setDisplayed(res) })
+            .finally(() => setListLoading(false))
+        }
       })
     }
   }, [])
@@ -264,6 +267,27 @@ function App () {
   }, [])
 
   useEffect(() => {
+    if ((window as any).electronAPI?.onSyncProgress) {
+      const off = (window as any).electronAPI.onSyncProgress((data: any) => {
+        try {
+          const msg = (data && typeof data === 'object') ? String(data.message || '') : ''
+          const pct = (data && typeof data === 'object') ? Number(data.percentage || 0) : 0
+          setSyncing(pct > 0 && pct < 100)
+          setSyncPct(pct)
+          if (pct === 100) {
+            if (msg.toLowerCase().includes('fallida')) {
+              toast.error('Sincronización fallida')
+            } else {
+              toast.success('Sincronización completada')
+            }
+          }
+        } catch {}
+      })
+      return () => { try { off?.() } catch {} }
+    }
+  }, [])
+
+  useEffect(() => {
     async function checkFirstRun () {
       try {
         const prefs = await (window as any).electronAPI?.getPreferences?.()
@@ -284,53 +308,39 @@ function App () {
   useEffect(() => {
     const itemEl = itemRefs.current[selectedIndex]
     if (itemEl && itemEl.scrollIntoView) {
-      itemEl.scrollIntoView({
-        behavior: 'smooth',
-        block: 'nearest',
-        inline: 'nearest'
-      })
+      itemEl.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'nearest' })
     }
-  }, [selectedIndex, filteredHistory])
+  }, [selectedIndex, displayed])
 
   useEffect(() => {
     const keyListener = (e: KeyboardEvent) => {
-      if (filteredHistory.length === 0) return
-
+      if (displayed.length === 0) return
       if (e.key === 'ArrowDown') {
         e.preventDefault()
-        setSelectedIndex(prev => (prev + 1) % filteredHistory.length)
+        setSelectedIndex(prev => (prev + 1) % displayed.length)
       } else if (e.key === 'ArrowUp') {
         e.preventDefault()
-        setSelectedIndex(prev =>
-          prev <= 0 ? filteredHistory.length - 1 : prev - 1
-        )
+        setSelectedIndex(prev => (prev <= 0 ? displayed.length - 1 : prev - 1))
       } else if (e.key === 'Enter') {
         e.preventDefault()
-        if (selectedIndex >= 0 && selectedIndex < filteredHistory.length) {
-          const item = filteredHistory[selectedIndex]
+        if (selectedIndex >= 0 && selectedIndex < displayed.length) {
+          const item = displayed[selectedIndex]
           if (item.value.startsWith('data:image')) {
             ;(window as any).electronAPI?.copyImage?.(item.value)
-            setTimeout(() => {
-              ;(window as any).electronAPI.pasteImage()
-            }, 300)
+            setTimeout(() => { ;(window as any).electronAPI.pasteImage() }, 300)
             toast.success('Imagen copiada al portapapeles')
           } else {
             ;(window as any).electronAPI?.copyText(item.value)
-            setTimeout(() => {
-              ;(window as any).electronAPI?.pasteText()
-            }, 100)
+            setTimeout(() => { ;(window as any).electronAPI?.pasteText() }, 100)
             toast.success('Pegado automáticamente')
           }
-          setTimeout(() => {
-            ;(window as any).electronAPI?.hideWindow?.()
-          }, 500)
+          setTimeout(() => { ;(window as any).electronAPI?.hideWindow?.() }, 500)
         }
       }
     }
-
     window.addEventListener('keydown', keyListener)
     return () => window.removeEventListener('keydown', keyListener)
-  }, [filteredHistory, selectedIndex])
+  }, [displayed, selectedIndex])
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -344,6 +354,22 @@ function App () {
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
   }, [])
+
+  useEffect(() => {
+    const q = search.trim()
+    setListLoading(true)
+    if (q.length === 0) {
+      const payload = { filter, limit: 50 }
+      Promise.resolve((window as any).electronAPI?.listRecent?.(payload))
+        .then((res: HistoryItem[]) => { if (Array.isArray(res)) setDisplayed(res) })
+        .finally(() => setListLoading(false))
+    } else {
+      const payload = { query: q, filter }
+      Promise.resolve((window as any).electronAPI?.searchHistory?.(payload))
+        .then((res: HistoryItem[]) => { if (Array.isArray(res)) setDisplayed(res) })
+        .finally(() => setListLoading(false))
+    }
+  }, [search, filter])
 
   return (
     <>
@@ -418,17 +444,16 @@ function App () {
           <SidebarFilters filter={filter} onChange={setFilter} />
 
           <HistoryList
-            items={filteredHistory}
+            items={displayed}
             search={search}
             selectedIndex={selectedIndex}
             onToggleFavorite={(item) => {
-              const newHistory = [...history]
-              const realIndex = history.findIndex(h => h.value === item.value)
-              if (realIndex !== -1) {
-                newHistory[realIndex].favorite = !newHistory[realIndex].favorite
-                setHistory(newHistory)
-                ;(window as any).electronAPI?.toggleFavorite?.(item)
-              }
+              ;(window as any).electronAPI?.toggleFavorite?.(item)
+              const payload = { query: search, filter }
+              setListLoading(true)
+              Promise.resolve((window as any).electronAPI?.searchHistory?.(payload))
+                .then((res: HistoryItem[]) => { if (Array.isArray(res)) setDisplayed(res) })
+                .finally(() => setListLoading(false))
             }}
             onCopy={(item) => {
               if (item.value.startsWith('data:image')) {
@@ -444,6 +469,14 @@ function App () {
             }}
             highlightMatch={highlightMatch}
           />
+          {listLoading && (
+            <div className="px-3 py-1 text-[color:var(--color-muted)] text-xs">Cargando…</div>
+          )}
+          {syncing && (
+            <div className="fixed top-2 right-2 z-[20000] glass px-3 py-2">
+              <div className="spinner"><span className="ring"></span><span>Sincronizando… {Math.round(syncPct)}%</span></div>
+            </div>
+          )}
 
           <div className="text-right px-2 pb-1 text-[11px] text-[color:var(--color-muted)] mt-1" title='Versión de la app'>v{appVersion}</div>
 

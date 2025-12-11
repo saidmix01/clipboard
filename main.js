@@ -13,6 +13,7 @@ const path = require('path')
 const axios = require('axios')
 const fs = require('fs')
 const os = require('os')
+const db = require('./db')
 const legacyHistoryPath = path.join(os.homedir(), '.clipboard-history.json')
 const { exec, execFile } = require('child_process')
 
@@ -31,32 +32,7 @@ function normalizeHistory (raw) {
 autoUpdater.logger = log
 autoUpdater.logger.transports.file.level = 'info'
 
-// Cargar historial guardado
-if (fs.existsSync(legacyHistoryPath)) {
-  try {
-    const data = fs.readFileSync(legacyHistoryPath, 'utf-8')
-    history = normalizeHistory(JSON.parse(data))
-    log.info('Historial cargado', { count: history.length })
-  } catch (err) {
-    log.error('Error al leer historial', err)
-  }
-}
-
-if (!fs.existsSync(legacyHistoryPath)) {
-  try {
-    const alt1 = path.join(__dirname, '.clipboard-history.json')
-    const alt2 = path.join(__dirname, 'clipboard-history.json')
-    const src = [alt1, alt2].find(p => fs.existsSync(p))
-    if (src) {
-      const data = fs.readFileSync(src, 'utf-8')
-      history = normalizeHistory(JSON.parse(data))
-      fs.writeFileSync(legacyHistoryPath, JSON.stringify(history, null, 2), 'utf-8')
-      log.info('Historial importado', { count: history.length })
-    }
-  } catch (err) {
-    log.error('Error importando historial', err)
-  }
-}
+// No dependemos de JSON legacy para cargar historial. Todo se gestiona con SQLite.
 
 //Pegado de texto
 function performPaste (mainWindow) {
@@ -251,20 +227,24 @@ function createWindow () {
   })
 }
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
+  await db.init(app)
   createWindow()
   autoUpdater.forceDevUpdateConfig = true
   try {
     const cfg = readDeviceConfigObj()
     if (Array.isArray(cfg.history)) {
-      history = normalizeHistory(cfg.history)
+      db.importItems(getCurrentDeviceName(), normalizeHistory(cfg.history))
+      history = db.getAll(getCurrentDeviceName())
       log.info('Historial (device) cargado', { count: history.length })
     } else if (fs.existsSync(legacyHistoryPath)) {
       const data = fs.readFileSync(legacyHistoryPath, 'utf-8')
       const parsed = JSON.parse(data)
-      cfg.history = normalizeHistory(parsed)
+      const items = normalizeHistory(parsed)
+      db.importItems(getCurrentDeviceName(), items)
+      cfg.history = []
       writeDeviceConfigObj(cfg)
-      history = cfg.history
+      history = db.getAll(getCurrentDeviceName())
       log.info('Historial migrado desde legacy')
     }
   } catch (err) {
@@ -308,16 +288,8 @@ app.whenReady().then(() => {
         }
 
         lastImageDataUrl = dataUrl
-        history.unshift({ value: dataUrl, favorite: false })
-
-        // Eliminar duplicados y ordenar; no recortar a 50 al guardar
-        history = history
-          .filter(item => item && typeof item.value === 'string')
-          .sort((a, b) => Number(b.favorite) - Number(a.favorite))
-
-        if (history.length > 200) history.length = 200
-
-        writeDeviceHistory(history)
+        db.insert(getCurrentDeviceName(), dataUrl)
+        history = db.getAll(getCurrentDeviceName())
         mainWindow.webContents.send('clipboard-update', history)
         return
       }
@@ -328,18 +300,8 @@ app.whenReady().then(() => {
         text.trim() !== '' &&
         !history.some(item => item.value === text)
       ) {
-        history.unshift({ value: text, favorite: false })
-
-        // Eliminar duplicados de texto
-        history = history.filter(
-          (item, index, self) =>
-            index === self.findIndex(t => t.value === item.value)
-        )
-
-        if (history.length > 200) history.length = 200
-
-        writeDeviceHistory(history)
-
+        db.insert(getCurrentDeviceName(), text)
+        history = db.getAll(getCurrentDeviceName())
         mainWindow.webContents.send('clipboard-update', history)
       }
     }, 1000)
@@ -379,7 +341,9 @@ app.setLoginItemSettings({
 // Evento para forzar la actualización desde el frontend
 ipcMain.on('force-update', () => {
   log.info('🧪 Botón forzó búsqueda de actualización...')
-  autoUpdater.checkForUpdates()
+  Promise.resolve(autoUpdater.checkForUpdates()).catch(err => {
+    try { log.error('checkForUpdates error', err?.message || err) } catch {}
+  })
 })
 
 // Eventos para debug y actualizaciones
@@ -439,7 +403,7 @@ ipcMain.handle('clear-history', () => {
   history = []
 
   try {
-    writeDeviceHistory(history)
+    db.clear(getCurrentDeviceName())
     mainWindow.webContents.send('clipboard-update', history)
     log.info('Historial borrado')
   } catch (err) {
@@ -575,10 +539,10 @@ ipcMain.on('toggle-favorite', async (event, payload) => {
       }
       return item
     })
-    writeDeviceHistory(updated)
+    db.setFavorite(getCurrentDeviceName(), value, newFavorite)
 
     // También actualizamos la variable en memoria
-    history = updated
+    history = db.getAll(getCurrentDeviceName())
 
     // Enviar al frontend
     if (mainWindow?.webContents) {
@@ -610,6 +574,12 @@ try { BACKEND_URL = require('./config').BACKEND_URL || BACKEND_URL } catch {}
 let authToken = null
 let deviceId = null
 let activeDeviceName = null
+let syncLock = false
+let favoritesSyncCooldownUntil = 0
+
+function getCurrentDeviceName () {
+  return sanitizeDeviceName(activeDeviceName || os.hostname())
+}
 
 function getCurrentDeviceConfigPath () {
   const baseDir = path.join(app.getPath('userData'), 'devices')
@@ -659,8 +629,7 @@ function writeDeviceConfigObj (obj) {
 
 function readDeviceHistory () {
   try {
-    const obj = readDeviceConfigObj()
-    return normalizeHistory(obj.history || [])
+    return db.getAll(getCurrentDeviceName())
   } catch {
     return []
   }
@@ -668,9 +637,7 @@ function readDeviceHistory () {
 
 function writeDeviceHistory (hist) {
   try {
-    const obj = readDeviceConfigObj()
-    obj.history = normalizeHistory(hist)
-    writeDeviceConfigObj(obj)
+    db.importItems(getCurrentDeviceName(), normalizeHistory(hist))
   } catch (err) {
     log.error('Error al guardar historial (device)', err)
   }
@@ -696,11 +663,9 @@ function listLocalDevices () {
 
 function readDeviceHistoryByName (rawName) {
   try {
-    const cfgPath = getDeviceConfigPathByName(rawName)
-    if (!fs.existsSync(cfgPath)) return []
-    const raw = fs.readFileSync(cfgPath, 'utf-8')
-    const obj = JSON.parse(raw)
-    return normalizeHistory(obj.history || [])
+    const name = sanitizeDeviceName(rawName)
+    const all = db.getAll(name)
+    return normalizeHistory(all)
   } catch {
     return []
   }
@@ -817,7 +782,17 @@ ipcMain.handle('switch-active-device', async (_, deviceName) => {
     if (mainWindow?.webContents) {
       mainWindow.webContents.send('clipboard-update', history)
     }
-    await syncClipboardHistory()
+    if (mainWindow?.webContents) {
+      mainWindow.webContents.send('sync-progress', { percentage: 1, message: 'Sincronizando…' })
+    }
+    let finished = false
+    const syncPromise = (async () => { await syncClipboardHistory(); finished = true })()
+    const timeoutMs = 30 * 1000
+    const timeout = new Promise(resolve => setTimeout(resolve, timeoutMs))
+    await Promise.race([syncPromise, timeout])
+    if (!finished && mainWindow?.webContents) {
+      mainWindow.webContents.send('sync-progress', { percentage: 30, message: 'Sincronización en segundo plano' })
+    }
     return history
   } catch (e) {
     log.error('switch-active-device error', e?.message || e)
@@ -892,6 +867,7 @@ async function fetchBackendClipboard () {
       : []
     history = mapped
     writeDeviceHistory(history)
+    history = db.getAll(getCurrentDeviceName())
     if (mainWindow?.webContents) {
       mainWindow.webContents.send('clipboard-update', history)
     }
@@ -960,6 +936,8 @@ function readLocalHistory () {
 
 async function syncClipboardHistory () {
   try {
+    if (syncLock) return
+    syncLock = true
     if (!authToken) return
     const axiosInstance = getAxiosInstance()
     if (mainWindow?.webContents) { mainWindow.webContents.send('sync-progress', { percentage: 5, message: 'Iniciando sincronización' }) }
@@ -979,9 +957,6 @@ async function syncClipboardHistory () {
     const backendByValue = new Map(backendItems.map(it => [it.value, it]))
     if (mainWindow?.webContents) { mainWindow.webContents.send('sync-progress', { percentage: 25, message: 'Descargando historial' }) }
 
-    const localItems = readLocalHistory()
-    if (mainWindow?.webContents) { mainWindow.webContents.send('sync-progress', { percentage: 35, message: 'Leyendo historial local' }) }
-
     await ensureDeviceRegistered()
 
     let ident = null
@@ -989,45 +964,39 @@ async function syncClipboardHistory () {
       ident = await resolveDeviceIdentifiers(activeDeviceName)
     }
 
-    let filtered = backendItems
-    if (activeDeviceName && ident && (ident.deviceId || ident.clientId)) {
-      filtered = backendItems.filter(be => {
-        if (ident.deviceId && be.deviceId) return String(be.deviceId) === String(ident.deviceId)
-        if (ident.clientId && be.clientId) return String(be.clientId) === String(ident.clientId)
-        return true
-      })
-    }
+    const filtered = (activeDeviceName && ident && (ident.deviceId || ident.clientId))
+      ? backendItems.filter(be => {
+          if (ident.deviceId && be.deviceId) return String(be.deviceId) === String(ident.deviceId)
+          if (ident.clientId && be.clientId) return String(be.clientId) === String(ident.clientId)
+          return true
+        })
+      : backendItems
 
     const backendByValueFiltered = new Map(filtered.map(it => [it.value, it]))
+    const remoteValues = filtered.map(it => it.value)
+    const localForRemote = db.getByValues(getCurrentDeviceName(), remoteValues)
+    if (mainWindow?.webContents) { mainWindow.webContents.send('sync-progress', { percentage: 35, message: 'Leyendo historial local' }) }
 
-    for (const it of localItems) {
+    const localByValue = new Map(localForRemote.map(it => [it.value, it]))
+    const localNotInRemote = db.getNotIn(getCurrentDeviceName(), remoteValues)
+    for (const it of localNotInRemote) {
       if (!it || typeof it.value !== 'string') continue
       const isImage = it.value.startsWith('data:image')
-      const backend = activeDeviceName ? backendByValueFiltered.get(it.value) : backendByValue.get(it.value)
-      if (!backend) {
-        const type = isImage ? 'image' : 'text'
-        const meta = isImage ? { format: 'dataURL' } : {}
-        const overrides = ident && (ident.deviceId || ident.clientId) ? { deviceId: ident.deviceId, clientId: ident.clientId } : {}
-        await saveClipboardRecord(type, it.value, meta, overrides)
-      } else if (backend.favorite !== !!it.favorite) {
-        await updateClipboardRecord(backend.id, { favorite: !!it.favorite })
+      const overrides = ident && (ident.deviceId || ident.clientId) ? { deviceId: ident.deviceId, clientId: ident.clientId } : {}
+      await saveClipboardRecord(isImage ? 'image' : 'text', it.value, isImage ? { format: 'dataURL' } : {}, overrides)
+    }
+    for (const be of filtered) {
+      const loc = localByValue.get(be.value)
+      if (loc && be.favorite !== !!loc.favorite) {
+        await updateClipboardRecord(be.id, { favorite: !!loc.favorite })
       }
     }
     if (mainWindow?.webContents) { mainWindow.webContents.send('sync-progress', { percentage: 65, message: 'Subiendo cambios locales' }) }
 
-    const localValues = new Set(localItems.map(it => it.value))
-    for (const be of filtered) {
-      if (!localValues.has(be.value)) {
-        history.unshift({ value: be.value, favorite: !!be.favorite })
-      }
-    }
+    db.importItems(getCurrentDeviceName(), filtered.map(x => ({ value: x.value, favorite: !!x.favorite })))
+    history = db.getAll(getCurrentDeviceName())
     if (mainWindow?.webContents) { mainWindow.webContents.send('sync-progress', { percentage: 85, message: 'Fusionando con remoto' }) }
-    history = history
-      .filter(item => item && typeof item.value === 'string')
-      .filter((item, index, self) => index === self.findIndex(t => t.value === item.value))
-      .sort((a, b) => Number(b.favorite) - Number(a.favorite))
-    if (history.length > 200) history.length = 200
-    writeDeviceHistory(history)
+    history = db.getAll(getCurrentDeviceName())
     if (mainWindow?.webContents) {
       mainWindow.webContents.send('clipboard-update', history)
     }
@@ -1036,6 +1005,10 @@ async function syncClipboardHistory () {
     log.info('syncClipboardHistory completo')
   } catch (error) {
     log.error('syncClipboardHistory error', error?.message || error)
+    if (mainWindow?.webContents) { mainWindow.webContents.send('sync-progress', { percentage: 100, message: 'Sincronización fallida' }) }
+  }
+  finally {
+    syncLock = false
   }
 }
 
@@ -1073,6 +1046,8 @@ function readLocalFavorites () {
 
 async function syncFavorites () {
   try {
+    if (!authToken) return
+    if (Date.now() < favoritesSyncCooldownUntil) return
     const localFavorites = readLocalFavorites()
     const backendFavorites = await fetchBackendFavorites()
 
@@ -1094,17 +1069,17 @@ async function syncFavorites () {
 
     log.info('syncFavorites sincronización completa')
   } catch (error) {
-    log.error('syncFavorites error', { message: error.message })
+    const status = error && error.response && error.response.status
+    if (status === 404) {
+      favoritesSyncCooldownUntil = Date.now() + (10 * 60 * 1000)
+      log.warn('syncFavorites deshabilitado temporalmente (404)', { cooldownMin: 10 })
+    } else {
+      log.error('syncFavorites error', { message: error.message })
+    }
   }
 }
 
 // Dentro de app.whenReady()
-setInterval(() => {
-  syncFavorites()
-}, 60000)
-
-syncFavorites()
-
 setInterval(() => {
   syncClipboardHistory()
 }, 15 * 60 * 1000)
@@ -1185,4 +1160,29 @@ ipcMain.handle('set-preferences', async (_, patch) => {
   } catch {
     return {}
   }
+})
+ipcMain.handle('search-history', async (_, payload) => {
+  try {
+    const q = (payload && typeof payload === 'object') ? String(payload.query || '') : ''
+    const f = (payload && typeof payload === 'object') ? String(payload.filter || 'all') : 'all'
+    const items = db.search(getCurrentDeviceName(), q, f)
+    return items
+  } catch {
+    return []
+  }
+})
+ipcMain.handle('list-recent', async (_, payload) => {
+  try {
+    const f = (payload && typeof payload === 'object') ? String(payload.filter || 'all') : 'all'
+    const limit = (payload && typeof payload === 'object') ? Number(payload.limit || 50) : 50
+    return db.getRecent(getCurrentDeviceName(), f, limit)
+  } catch {
+    return []
+  }
+})
+process.on('unhandledRejection', (reason) => {
+  try { log.error('unhandledRejection', reason?.message || reason) } catch {}
+})
+process.on('uncaughtException', (error) => {
+  try { log.error('uncaughtException', error?.message || error) } catch {}
 })

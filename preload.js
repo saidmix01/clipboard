@@ -45,4 +45,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
   }
   ,getPreferences: () => ipcRenderer.invoke('get-preferences')
   ,setPreferences: (patch) => ipcRenderer.invoke('set-preferences', patch)
+  ,searchHistory: (payload) => ipcRenderer.invoke('search-history', payload)
+  ,listRecent: (payload) => ipcRenderer.invoke('list-recent', payload)
 })
