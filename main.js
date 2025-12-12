@@ -19,6 +19,7 @@ const { exec, execFile } = require('child_process')
 
 let mainWindow
 let history = []
+const childWindows = new Set()
 
 function normalizeHistory (raw) {
   if (!Array.isArray(raw)) return []
@@ -187,7 +188,7 @@ function createWindow () {
   // Enviar historial al frontend
   mainWindow.webContents.on('did-finish-load', () => {
     try {
-      history = normalizeHistory(history)
+      history = authToken ? db.getAll(getCurrentDeviceName()) : db.getAllGuest(getCurrentDeviceName())
     } catch {
       history = []
     }
@@ -224,6 +225,7 @@ function createWindow () {
   mainWindow.on('close', event => {
     event.preventDefault()
     mainWindow.hide()
+    try { childWindows.forEach(w => { try { w.close() } catch {} }) } catch {}
   })
 }
 
@@ -250,13 +252,14 @@ app.whenReady().then(async () => {
   } catch (err) {
     log.error('Error al leer historial (device)', err)
   }
+  try { if (!authToken) { db.trimGuestToLimit(getCurrentDeviceName(), 50); history = db.getAllGuest(getCurrentDeviceName()) } } catch {}
 
   const pollClipboard = () => {
     let lastImageDataUrl = ''
 
     // Normalizar historial ya cargado y enviar al renderer inmediatamente
     try {
-      history = Array.isArray(history) ? normalizeHistory(history) : []
+      history = authToken ? db.getAll(getCurrentDeviceName()) : db.getAllGuest(getCurrentDeviceName())
     } catch {
       history = []
     }
@@ -288,8 +291,14 @@ app.whenReady().then(async () => {
         }
 
         lastImageDataUrl = dataUrl
-        db.insert(getCurrentDeviceName(), dataUrl)
-        history = db.getAll(getCurrentDeviceName())
+        if (authToken) {
+          db.insert(getCurrentDeviceName(), dataUrl)
+          history = db.getAll(getCurrentDeviceName())
+        } else {
+          db.insertGuest(getCurrentDeviceName(), dataUrl)
+          db.trimGuestToLimit(getCurrentDeviceName(), 50)
+          history = db.getAllGuest(getCurrentDeviceName())
+        }
         mainWindow.webContents.send('clipboard-update', history)
         return
       }
@@ -300,8 +309,14 @@ app.whenReady().then(async () => {
         text.trim() !== '' &&
         !history.some(item => item.value === text)
       ) {
-        db.insert(getCurrentDeviceName(), text)
-        history = db.getAll(getCurrentDeviceName())
+        if (authToken) {
+          db.insert(getCurrentDeviceName(), text)
+          history = db.getAll(getCurrentDeviceName())
+        } else {
+          db.insertGuest(getCurrentDeviceName(), text)
+          db.trimGuestToLimit(getCurrentDeviceName(), 50)
+          history = db.getAllGuest(getCurrentDeviceName())
+        }
         mainWindow.webContents.send('clipboard-update', history)
       }
     }, 1000)
@@ -331,6 +346,10 @@ app.whenReady().then(async () => {
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit()
+})
+
+app.on('before-quit', () => {
+  try { childWindows.forEach(w => { try { w.destroy() } catch {} }) } catch {}
 })
 
 app.setLoginItemSettings({
@@ -385,13 +404,14 @@ autoUpdater.on('update-downloaded', () => {
 ipcMain.handle('get-clipboard-history', async () => {
   try {}
   catch {}
-  return history
+  return authToken ? db.getAll(getCurrentDeviceName()) : db.getAllGuest(getCurrentDeviceName())
 })
 
 ipcMain.handle('hide-window', () => {
   if (mainWindow) {
     mainWindow.hide()
   }
+  try { childWindows.forEach(w => { try { w.close() } catch {} }) } catch {}
 })
 
 ipcMain.on('copy-to-clipboard', (_, text) => {
@@ -403,7 +423,8 @@ ipcMain.handle('clear-history', () => {
   history = []
 
   try {
-    db.clear(getCurrentDeviceName())
+    if (authToken) db.clear(getCurrentDeviceName())
+    else db.clearGuest(getCurrentDeviceName())
     mainWindow.webContents.send('clipboard-update', history)
     log.info('Historial borrado')
   } catch (err) {
@@ -427,6 +448,7 @@ ipcMain.on('viewer-minimize', () => {
 })
 ipcMain.on('open-image-viewer', (_, dataUrl) => {
   try {
+    if (!authToken) return
     const win = new BrowserWindow({
       width: 1000,
       height: 800,
@@ -436,12 +458,14 @@ ipcMain.on('open-image-viewer', (_, dataUrl) => {
       backgroundColor: '#00FFFFFF',
       hasShadow: true,
       show: true,
+      parent: mainWindow,
       webPreferences: {
         nodeIntegration: true,
         contextIsolation: false,
         sandbox: false
       }
     })
+    try { childWindows.add(win); win.on('closed', () => { try { childWindows.delete(win) } catch {} }) } catch {}
     const display = screen.getPrimaryDisplay()
     const wa = display.workArea
     const mainBounds = mainWindow?.getBounds() || { width: 400, x: wa.x + wa.width - 400, y: wa.y, height: wa.height }
@@ -450,6 +474,7 @@ ipcMain.on('open-image-viewer', (_, dataUrl) => {
     const html = `<!doctype html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1"/><style>body{margin:0;background:#111;display:flex;align-items:center;justify-content:center;height:100vh;color:#ddd;font-family:system-ui}#wrap{position:relative;cursor:crosshair}#img{max-width:95vw;max-height:95vh;border-radius:6px;user-select:none;cursor:crosshair}#sel{position:absolute;border:2px solid #00aaff;background:rgba(0,170,255,0.2);display:none;pointer-events:none}#panel{position:fixed;top:10px;left:10px;background:#222;border:1px solid #333;border-radius:6px;padding:8px;display:flex;gap:8px;align-items:center}button{background:#333;border:1px solid #444;color:#eee;padding:6px 10px;border-radius:4px;cursor:pointer}button:disabled{opacity:.6;cursor:not-allowed}#res{position:fixed;bottom:10px;left:10px;right:10px;background:#1a1a1a;border:1px solid #333;border-radius:6px;padding:10px;max-height:40vh;overflow:auto;white-space:pre-wrap}</style></head><body><div id="panel"><button id="ocr" disabled>OCR selección</button><button id="copy" disabled>Copiar</button><span id="status"></span></div><div id="wrap"><img id="img" src="${dataUrl}"/><div id="sel"></div></div><div id="res" style="display:none"></div><script src="https://unpkg.com/tesseract.js@v4.0.3/dist/tesseract.min.js"></script><script>const img=document.getElementById('img');const sel=document.getElementById('sel');const ocrBtn=document.getElementById('ocr');const copyBtn=document.getElementById('copy');const statusEl=document.getElementById('status');const resEl=document.getElementById('res');let start=null;let rect=null;function px(n){return Math.round(n)+'px'}function setStatus(t){statusEl.textContent=t}function resetSel(){sel.style.display='none';ocrBtn.disabled=true;copyBtn.disabled=true;resEl.style.display='none';resEl.textContent='';rect=null}function within(e){const r=img.getBoundingClientRect();return e.clientX>=r.left&&e.clientX<=r.right&&e.clientY>=r.top&&e.clientY<=r.bottom}window.addEventListener('mousedown',e=>{if(!within(e))return;const r=img.getBoundingClientRect();start={x:e.clientX,y:e.clientY};sel.style.display='block';sel.style.left=px(start.x);sel.style.top=px(start.y);sel.style.width='0px';sel.style.height='0px';setStatus('Seleccionando...')});window.addEventListener('mousemove',e=>{if(!start)return;const x=Math.min(e.clientX,start.x);const y=Math.min(e.clientY,start.y);const w=Math.abs(e.clientX-start.x);const h=Math.abs(e.clientY-start.y);sel.style.left=px(x);sel.style.top=px(y);sel.style.width=px(w);sel.style.height=px(h)});window.addEventListener('mouseup',e=>{if(!start)return;const r=img.getBoundingClientRect();const x=Math.min(e.clientX,start.x);const y=Math.min(e.clientY,start.y);const w=Math.abs(e.clientX-start.x);const h=Math.abs(e.clientY-start.y);start=null;if(w<5||h<5){resetSel();setStatus('');return}rect={x:x-r.left,y:y-r.top,w:w,h:h};ocrBtn.disabled=false;copyBtn.disabled=true;setStatus('Selección lista')});async function cropToCanvas(){const dispW=img.clientWidth;const dispH=img.clientHeight;const natW=img.naturalWidth;const natH=img.naturalHeight;const scaleX=natW/dispW;const scaleY=natH/dispH;const sx=Math.max(0,Math.round(rect.x*scaleX));const sy=Math.max(0,Math.round(rect.y*scaleY));const sw=Math.min(natW-sx,Math.round(rect.w*scaleX));const sh=Math.min(natH-sy,Math.round(rect.h*scaleY));const c=document.createElement('canvas');c.width=sw;c.height=sh;const ctx=c.getContext('2d');ctx.drawImage(img,sx,sy,sw,sh,0,0,sw,sh);return c}async function runOCR(){try{setStatus('Procesando...');const c=await cropToCanvas();const r=await Tesseract.recognize(c,'spa',{logger:m=>{}});resEl.style.display='block';resEl.textContent=r.data.text||'';copyBtn.disabled=!resEl.textContent.trim();setStatus('Listo')}catch(err){resEl.style.display='block';resEl.textContent='Error: '+(err&&err.message||'');copyBtn.disabled=true;setStatus('')}}ocrBtn.addEventListener('click',()=>{if(!rect)return;runOCR()});copyBtn.addEventListener('click',async()=>{try{await navigator.clipboard.writeText(resEl.textContent||'');setStatus('Copiado')}catch(e){setStatus('No se pudo copiar')}});img.addEventListener('load',()=>{resetSel();setStatus('')});</script></body></html>`
     win.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html))
     win.webContents.on('did-finish-load', () => {
+      const __no = null
       const inj = `(()=>{const { clipboard } = require('electron');const img=document.getElementById('img');const wrap=document.getElementById('wrap');const sel=document.getElementById('sel');const statusEl=document.getElementById('status');const resEl=document.getElementById('res');let startClient=null;let startWrap=null;let rect=null;let processing=false;function px(n){return Math.round(n)+'px'}function setStatus(t){statusEl.textContent=t}function resetSel(){sel.style.display='none';resEl.style.display='none';resEl.textContent='';rect=null}function within(e){const r=img.getBoundingClientRect();return e.clientX>=r.left&&e.clientX<=r.right&&e.clientY>=r.top&&e.clientY<=r.bottom}function clampToImg(x,y){const imgR=img.getBoundingClientRect();const wrapR=wrap.getBoundingClientRect();const minX=imgR.left-wrapR.left;const minY=imgR.top-wrapR.top;const maxX=minX+img.clientWidth;const maxY=minY+img.clientHeight;return{cx:Math.max(minX,Math.min(maxX,x)),cy:Math.max(minY,Math.min(maxY,y))}}const overlay=(()=>{const o=document.createElement('div');o.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.55);display:none;align-items:center;justify-content:center;z-index:9999';const box=document.createElement('div');box.style.cssText='display:flex;flex-direction:column;align-items:center;gap:10px';const spinner=document.createElement('div');spinner.style.cssText='border:4px solid #555;border-top:4px solid #0af;border-radius:50%;width:42px;height:42px;animation:spin 1s linear infinite';const text=document.createElement('div');text.id='loadingText';text.style.cssText='color:#eee;font-family:system-ui';const style=document.createElement('style');style.textContent='@keyframes spin{to{transform:rotate(360deg)}}';document.head.appendChild(style);box.appendChild(spinner);box.appendChild(text);o.appendChild(box);document.body.appendChild(o);return{show:(t)=>{text.textContent=t;o.style.display='flex'},hide:()=>{o.style.display='none'}}})();document.addEventListener('mousedown',e=>{if(!within(e))return;const wrapR=wrap.getBoundingClientRect();startClient={x:e.clientX,y:e.clientY};const relX=e.clientX-wrapR.left;const relY=e.clientY-wrapR.top;const cl=clampToImg(relX,relY);startWrap={x:cl.cx,y:cl.cy};sel.style.display='block';sel.style.left=px(startWrap.x);sel.style.top=px(startWrap.y);sel.style.width='0px';sel.style.height='0px';setStatus('Seleccionando...');e.stopPropagation();e.preventDefault()},{capture:true});document.addEventListener('mousemove',e=>{if(!startWrap)return;const wrapR=wrap.getBoundingClientRect();const relX=e.clientX-wrapR.left;const relY=e.clientY-wrapR.top;const cl=clampToImg(relX,relY);const x=Math.min(cl.cx,startWrap.x);const y=Math.min(cl.cy,startWrap.y);const w=Math.abs(cl.cx-startWrap.x);const h=Math.abs(cl.cy-startWrap.y);sel.style.left=px(x);sel.style.top=px(y);sel.style.width=px(w);sel.style.height=px(h);e.stopPropagation();e.preventDefault()},{capture:true});async function cropToCanvas(){const dispW=img.clientWidth;const dispH=img.clientHeight;const natW=img.naturalWidth;const natH=img.naturalHeight;const scaleX=natW/dispW;const scaleY=natH/dispH;const sx=Math.max(0,Math.round(rect.x*scaleX));const sy=Math.max(0,Math.round(rect.y*scaleY));const sw=Math.min(natW-sx,Math.round(rect.w*scaleX));const sh=Math.min(natH-sy,Math.round(rect.h*scaleY));const c=document.createElement('canvas');c.width=sw;c.height=sh;const ctx=c.getContext('2d');ctx.drawImage(img,sx,sy,sw,sh,0,0,sw,sh);return c}async function runOCR(){if(!rect||processing)return;try{processing=true;overlay.show('Procesando OCR...');setStatus('Procesando...');const c=await cropToCanvas();const r=await Tesseract.recognize(c,'spa',{logger:()=>{}});const text=(r&&r.data&&r.data.text)?r.data.text:'';resEl.style.display='block';resEl.textContent=text;overlay.show('Copiando...');try{clipboard.writeText(text||'');setStatus('Copiado')}catch(e){setStatus('No se pudo copiar')}}catch(err){resEl.style.display='block';resEl.textContent='Error: '+(err&&err.message||'');setStatus('')}finally{processing=false;overlay.hide()}}document.addEventListener('mouseup',e=>{if(!startClient||!startWrap)return;const imgR=img.getBoundingClientRect();const xClient=Math.min(e.clientX,startClient.x);const yClient=Math.min(e.clientY,startClient.y);const wClient=Math.abs(e.clientX-startClient.x);const hClient=Math.abs(e.clientY-startClient.y);startClient=null;startWrap=null;if(wClient<5||hClient<5){resetSel();setStatus('');return}rect={x:xClient-imgR.left,y:yClient-imgR.top,w:wClient,h:hClient};setStatus('Seleccion lista');e.stopPropagation();e.preventDefault();runOCR()},{capture:true});img.addEventListener('load',()=>{resetSel();setStatus('')})})()`
       win.webContents.executeJavaScript(inj)
       const ui = `(()=>{const { ipcRenderer }=require('electron');document.body.style.background='transparent';const style=document.createElement('style');style.textContent=`+
@@ -465,6 +490,7 @@ ipcMain.on('open-image-viewer', (_, dataUrl) => {
 })
 ipcMain.on('open-code-editor', (_, codeText) => {
   try {
+    if (!authToken) return
     const win = new BrowserWindow({
       width: 1000,
       height: 800,
@@ -474,18 +500,21 @@ ipcMain.on('open-code-editor', (_, codeText) => {
       backgroundColor: '#00FFFFFF',
       hasShadow: true,
       show: true,
+      parent: mainWindow,
       webPreferences: { nodeIntegration: true, contextIsolation: false, sandbox: false }
     })
+    try { childWindows.add(win); win.on('closed', () => { try { childWindows.delete(win) } catch {} }) } catch {}
     const display = screen.getPrimaryDisplay()
     const wa = display.workArea
     const mainBounds = mainWindow?.getBounds() || { width: 400, x: wa.x + wa.width - 400, y: wa.y, height: wa.height }
     const viewerWidth = Math.max(300, wa.width - mainBounds.width)
     win.setBounds({ x: wa.x, y: wa.y, width: viewerWidth, height: wa.height })
-    const html = `<!doctype html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1"/><style>body{margin:0;background:transparent}#window{position:fixed;inset:0;border:1px solid rgba(255,255,255,.2);border-radius:10px;background:rgba(45,45,45,.85);backdrop-filter:blur(10px);box-shadow:0 8px 24px rgba(0,0,0,.35);overflow:hidden;display:flex;flex-direction:column}#header{display:flex;align-items:center;justify-content:space-between;padding:8px 10px;border-bottom:1px solid rgba(255,255,255,.15);-webkit-app-region:drag;color:#eee}#title{font-size:14px;margin:0}#controls{display:flex;gap:8px;-webkit-app-region:no-drag}#controls button{width:28px;height:28px;display:flex;align-items:center;justify-content:center;background:#3a3a3a;border:1px solid #4a4a4a;color:#eee;border-radius:6px;cursor:pointer;transition:background .2s,border-color .2s,color .2s}#controls button:hover{border-color:#ff8c00;background:rgba(255,140,0,.25);color:#fff}#controls #close{background:#d32f2f;border-color:#b71c1c;color:#fff}#content{flex:1;position:relative;display:flex;flex-direction:column}#toolbar{display:flex;gap:8px;padding:8px;background:rgba(0,0,0,.25);border-bottom:1px solid rgba(255,255,255,.1)}#toolbar button{background:#3a3a3a;border:1px solid #4a4a4a;color:#eee;padding:6px 10px;border-radius:4px;cursor:pointer;transition:background .2s,border-color .2s,color .2s}#toolbar button:hover{border-color:#ff8c00;background:rgba(255,140,0,.25);color:#fff}#code{flex:1;margin:0;padding:12px;overflow:auto;background:transparent;color:#eee;font-family:Consolas,Menlo,monospace;font-size:13px;line-height:1.5;white-space:pre}</style></head><body><div id="window"><div id="header"><h5 id="title">📄 Código</h5><div id="controls"><button id="close">✕</button></div></div><div id="content"><div id="toolbar"><button id="copy">Copiar</button></div><pre id="code"></pre></div></div></body></html>`
-    win.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html))
+    win.loadFile(path.join(__dirname, 'viewer', 'code-editor.html'))
     win.webContents.on('did-finish-load', () => {
-      const inj = `(()=>{const { clipboard } = require('electron');const code=${JSON.stringify(String(codeText||''))};const pre=document.getElementById('code');pre.textContent=code;const btnClose=document.getElementById('close');const btnCopy=document.getElementById('copy');if(btnClose){btnClose.addEventListener('click',()=>window.close())}if(btnCopy){btnCopy.addEventListener('click',()=>clipboard.writeText(code))}document.addEventListener('keydown',(e)=>{if(e.key==='Escape'){window.close()}});})();`
-      win.webContents.executeJavaScript(inj)
+      try {
+        const b64 = Buffer.from(String(codeText || ''), 'utf-8').toString('base64')
+        win.webContents.send('set-content', b64)
+      } catch {}
     })
   } catch (err) {
     log.error('Error abriendo editor de código', err)
@@ -525,6 +554,7 @@ ipcMain.on('paste-text', () => {
 // Escuchar favorito
 ipcMain.on('toggle-favorite', async (event, payload) => {
   try {
+    if (!authToken) return
     const current = readDeviceHistory()
     if (!Array.isArray(current)) return
 
@@ -809,23 +839,23 @@ ipcMain.handle('list-devices', async () => {
   }
 })
 
-ipcMain.handle('load-device-history', async (_, deviceName) => {
-  try {
-    const list = listLocalDevices()
-    const target = sanitizeDeviceName(deviceName)
-    if (!list.includes(target)) {
+  ipcMain.handle('load-device-history', async (_, deviceName) => {
+    try {
+      const list = listLocalDevices()
+      const target = sanitizeDeviceName(deviceName)
+      if (!list.includes(target)) {
+        return []
+      }
+      const devHist = authToken ? readDeviceHistoryByName(target) : db.getAllGuest(target)
+      history = devHist
+      if (mainWindow?.webContents) {
+        mainWindow.webContents.send('clipboard-update', history)
+      }
+      return history
+    } catch {
       return []
     }
-    const devHist = readDeviceHistoryByName(target)
-    history = devHist
-    if (mainWindow?.webContents) {
-      mainWindow.webContents.send('clipboard-update', history)
-    }
-    return devHist
-  } catch {
-    return []
-  }
-})
+  })
 
 ipcMain.handle('get-active-device', async () => {
   try {
@@ -1165,8 +1195,11 @@ ipcMain.handle('search-history', async (_, payload) => {
   try {
     const q = (payload && typeof payload === 'object') ? String(payload.query || '') : ''
     const f = (payload && typeof payload === 'object') ? String(payload.filter || 'all') : 'all'
-    const items = db.search(getCurrentDeviceName(), q, f)
-    return items
+    if (!authToken) {
+      if (f === 'favorite') return []
+      return db.searchGuest(getCurrentDeviceName(), q, f)
+    }
+    return db.search(getCurrentDeviceName(), q, f)
   } catch {
     return []
   }
@@ -1175,6 +1208,10 @@ ipcMain.handle('list-recent', async (_, payload) => {
   try {
     const f = (payload && typeof payload === 'object') ? String(payload.filter || 'all') : 'all'
     const limit = (payload && typeof payload === 'object') ? Number(payload.limit || 50) : 50
+    if (!authToken) {
+      if (f === 'favorite') return []
+      return db.getRecentGuest(getCurrentDeviceName(), f, limit)
+    }
     return db.getRecent(getCurrentDeviceName(), f, limit)
   } catch {
     return []

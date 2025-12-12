@@ -36,9 +36,11 @@ type Props = {
   onToggleFavorite: () => void
   highlightMatch: (text: string, query: string) => React.ReactNode[] | string
   search: string
+  canFavorite?: boolean
+  canOpenModal?: boolean
 }
 
-export default function Card({ item, selected, onCopy, onToggleFavorite, highlightMatch, search }: Props) {
+export default function Card({ item, selected, onCopy, onToggleFavorite, highlightMatch, search, canFavorite = true, canOpenModal = true }: Props) {
   const [expanded, setExpanded] = useState(false)
   const isImage = item.value.startsWith('data:image')
   const isCode = isCodeSnippet(item.value)
@@ -53,14 +55,16 @@ export default function Card({ item, selected, onCopy, onToggleFavorite, highlig
       style={{ cursor: 'pointer', backgroundColor: 'var(--color-surface)', maxHeight: expanded ? undefined : '140px', overflow: 'hidden' }}
       onClick={onCopy}
     >
-      <button
-        onClick={(e) => { e.stopPropagation(); onToggleFavorite() }}
-        title="Marcar como favorito"
-        className="absolute top-1 right-1 p-1 rounded-md hover:bg-[color:var(--color-bg)]"
-        style={{ color: item.favorite ? 'var(--color-accent)' : 'gray' }}
-      >
-        {item.favorite ? <StarSolid className="w-5 h-5" /> : <StarOutline className="w-5 h-5" />}
-      </button>
+      {canFavorite && (
+        <button
+          onClick={(e) => { e.stopPropagation(); onToggleFavorite() }}
+          title="Marcar como favorito"
+          className="absolute top-1 right-1 p-1 rounded-md hover:bg-[color:var(--color-bg)]"
+          style={{ color: item.favorite ? 'var(--color-accent)' : 'gray' }}
+        >
+          {item.favorite ? <StarSolid className="w-5 h-5" /> : <StarOutline className="w-5 h-5" />}
+        </button>
+      )}
 
       <div>
         {isImage ? (
@@ -81,8 +85,8 @@ export default function Card({ item, selected, onCopy, onToggleFavorite, highlig
           className="absolute left-0 bottom-0 w-full text-center text-xs py-1 border-t border-[color:var(--color-border)] bg-[color:var(--color-surface)]"
           onClick={(e) => {
             e.stopPropagation()
-            if (isImage) { (window as any).electronAPI?.openImageViewer?.(item.value); return }
-            if (isCode) { (window as any).electronAPI?.openCodeEditor?.(item.value); return }
+            if (canOpenModal && isImage) { (window as any).electronAPI?.openImageViewer?.(item.value); return }
+            if (canOpenModal) { (window as any).electronAPI?.openCodeEditor?.(item.value); return }
             setExpanded(!expanded)
           }}
         >

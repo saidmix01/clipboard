@@ -26,7 +26,7 @@ export default function SearchQuickSwitcher({ open, query, onQueryChange, onClos
             value={query}
             onChange={(e) => onQueryChange(e.target.value)}
             placeholder="Buscar…"
-            className="w-full px-4 py-3 bg-transparent text-[color:var(--color-text)] outline-none"
+            className="w-full px-4 py-3 bg-transparent text-[color:var(--color-text)] outline-none focus:bg-[color:var(--color-surface)]"
           />
         </div>
       </motion.div>

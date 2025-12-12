@@ -44,6 +44,15 @@ async function init(app) {
     CREATE UNIQUE INDEX IF NOT EXISTS idx_history_device_value ON history(device, value);
     CREATE INDEX IF NOT EXISTS idx_history_device_created ON history(device, created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_history_device_favorite ON history(device, favorite);
+    CREATE TABLE IF NOT EXISTS guest_history (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      value TEXT NOT NULL,
+      favorite INTEGER NOT NULL DEFAULT 0,
+      device TEXT NOT NULL,
+      created_at DATETIME NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_guest_device_value ON guest_history(device, value);
+    CREATE INDEX IF NOT EXISTS idx_guest_device_created ON guest_history(device, created_at DESC);
   `)
   persist()
 }
@@ -96,6 +105,91 @@ function importItems(device, items) {
   persist()
 }
 
+function trimToLimit(device, limit) {
+  const n = Math.max(1, Number(limit || 50))
+  const sql = `DELETE FROM history WHERE device=? AND id NOT IN (SELECT id FROM history WHERE device=? ORDER BY created_at DESC LIMIT ?)`
+  const stmt = db.prepare(sql)
+  stmt.bind([device, device, n])
+  stmt.step()
+  stmt.free()
+  persist()
+}
+
+function insertGuest(device, value) {
+  const stmt = db.prepare('INSERT OR IGNORE INTO guest_history(value, favorite, device, created_at) VALUES(?, ?, ?, datetime(\'now\'))')
+  stmt.bind([value, 0, device])
+  stmt.step()
+  stmt.free()
+  persist()
+}
+
+function getAllGuest(device) {
+  const stmt = db.prepare('SELECT value, favorite FROM guest_history WHERE device=? ORDER BY created_at DESC')
+  const rows = []
+  stmt.bind([device])
+  while (stmt.step()) {
+    const r = stmt.getAsObject()
+    rows.push({ value: String(r.value), favorite: !!r.favorite })
+  }
+  stmt.free()
+  return rows
+}
+
+function clearGuest(device) {
+  const stmt = db.prepare('DELETE FROM guest_history WHERE device=?')
+  stmt.bind([device])
+  stmt.step()
+  stmt.free()
+  persist()
+}
+
+function trimGuestToLimit(device, limit) {
+  const n = Math.max(1, Number(limit || 50))
+  const sql = `DELETE FROM guest_history WHERE device=? AND id NOT IN (SELECT id FROM guest_history WHERE device=? ORDER BY created_at DESC LIMIT ?)`
+  const stmt = db.prepare(sql)
+  stmt.bind([device, device, n])
+  stmt.step()
+  stmt.free()
+  persist()
+}
+
+function searchGuest(device, query, filter) {
+  const where = ['device=?']
+  const params = [device]
+  const q = String(query || '').trim()
+  if (q.length > 0) { where.push('value LIKE ?'); params.push('%' + q + '%') }
+  const f = String(filter || 'all')
+  if (f === 'image') where.push("value LIKE 'data:image%'")
+  else if (f === 'text') where.push("value NOT LIKE 'data:image%'")
+  const sql = `SELECT value, favorite FROM guest_history WHERE ${where.join(' AND ')} ORDER BY created_at DESC`
+  const stmt = db.prepare(sql)
+  stmt.bind(params)
+  const out = []
+  while (stmt.step()) {
+    const r = stmt.getAsObject()
+    out.push({ value: String(r.value), favorite: !!r.favorite })
+  }
+  stmt.free()
+  return out
+}
+
+function getRecentGuest(device, filter, limit) {
+  const f = String(filter || 'all')
+  const where = ['device=?']
+  if (f === 'image') where.push("value LIKE 'data:image%'")
+  else if (f === 'text') where.push("value NOT LIKE 'data:image%'")
+  const n = Math.max(1, Math.min(1000, Number(limit || 50)))
+  const sql = `SELECT value, favorite FROM guest_history WHERE ${where.join(' AND ')} ORDER BY created_at DESC LIMIT ${n}`
+  const stmt = db.prepare(sql)
+  stmt.bind([device])
+  const out = []
+  while (stmt.step()) {
+    const r = stmt.getAsObject()
+    out.push({ value: String(r.value), favorite: !!r.favorite })
+  }
+  stmt.free()
+  return out
+}
 function search(device, query, filter) {
   const where = ['device=?']
   const params = [device]
@@ -181,4 +275,4 @@ function getNotIn(device, values) {
   return out
 }
 
-module.exports = { init, getAll, insert, setFavorite, clear, importItems, search, getRecent, getByValues, getNotIn }
+module.exports = { init, getAll, insert, setFavorite, clear, importItems, search, getRecent, getByValues, getNotIn, trimToLimit, insertGuest, getAllGuest, clearGuest, trimGuestToLimit, searchGuest, getRecentGuest }

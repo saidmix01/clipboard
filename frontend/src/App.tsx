@@ -10,7 +10,7 @@ import AppShell from './components/AppShell'
 import TopBar from './components/TopBar'
 import Dock from './components/Dock'
 import HistoryList from './components/HistoryList'
-import SidebarFilters from './components/SidebarFilters'
+// filtros movidos a la barra inferior
 import SearchQuickSwitcher from './components/SearchQuickSwitcher'
 import SettingsMenu from './components/SettingsMenu'
 import OnboardingTour from './components/OnboardingTour'
@@ -357,6 +357,7 @@ function App () {
 
   useEffect(() => {
     const q = search.trim()
+    if (!token && filter === 'favorite') { setDisplayed([]); return }
     setListLoading(true)
     if (q.length === 0) {
       const payload = { filter, limit: 50 }
@@ -411,7 +412,7 @@ function App () {
               placeholder='Buscar en el historial…'
               value={search}
               onChange={e => setSearch(e.target.value)}
-              className="w-full px-3 py-2 rounded-md border border-[color:var(--color-border)] bg-transparent text-[color:var(--color-text)] outline-none"
+              className="w-full px-3 py-2 rounded-md border border-[color:var(--color-border)] bg-[color:var(--color-surface)] text-[color:var(--color-text)] outline-none focus:bg-[color:var(--color-surface)]"
             />
           </div>
 
@@ -441,13 +442,14 @@ function App () {
               }}
             />
 
-          <SidebarFilters filter={filter} onChange={setFilter} />
+          {/* filtros ahora en Dock */}
 
           <HistoryList
             items={displayed}
             search={search}
             selectedIndex={selectedIndex}
             onToggleFavorite={(item) => {
+              if (!token) { toast.error('Debes iniciar sesión'); return }
               ;(window as any).electronAPI?.toggleFavorite?.(item)
               const payload = { query: search, filter }
               setListLoading(true)
@@ -468,6 +470,8 @@ function App () {
               setTimeout(() => { ;(window as any).electronAPI?.hideWindow?.() }, 500)
             }}
             highlightMatch={highlightMatch}
+            canFavorite={!!token}
+            canOpenModal={!!token}
           />
           {listLoading && (
             <div className="px-3 py-1 text-[color:var(--color-muted)] text-xs">Cargando…</div>
@@ -478,14 +482,10 @@ function App () {
             </div>
           )}
 
-          <div className="text-right px-2 pb-1 text-[11px] text-[color:var(--color-muted)] mt-1" title='Versión de la app'>v{appVersion}</div>
 
           <Dock
             items={[
-              { label: 'Copiar', icon: null as any, onClick: () => toast('Selecciona un elemento para copiar') },
-              { label: 'Pegar', icon: null as any, onClick: () => (window as any).electronAPI?.pasteText?.() },
-              { label: 'Favoritos', icon: null as any, onClick: () => setFilter('favorite') },
-              { label: 'Ajustes', icon: null as any, onClick: () => setSettingsOpen(true) },
+              { label: 'Ajustes', icon: null as any, onClick: () => { if (!token) { toast.error('Debes iniciar sesión'); return } setSettingsOpen(true) } },
               ...(token ? [
                 { label: 'Perfil', icon: null as any, onClick: () => setShowUserModal(true) },
                 { label: 'Cerrar sesión', icon: null as any, onClick: logout }
@@ -495,7 +495,11 @@ function App () {
               ])
             ]}
             userAvatar={userAvatar}
+            filter={filter}
+            onChangeFilter={(f) => { if (!token && f==='favorite') { toast.error('Debes iniciar sesión'); return } setFilter(f) }}
+            disabledFavorites={!token}
           />
+          <div className="px-3 pb-1 text-right text-[11px] text-[color:var(--color-muted)]" title='Versión de la app'>v{appVersion}</div>
 
           <OnboardingTour
             open={showTour}

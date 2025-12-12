@@ -26,6 +26,7 @@
       "db.js",
       "preload.js",
       "config.js",
+      "viewer/**/*",
       "helpers/**/*",
       "package.json",
       "node_modules/sql.js/dist/sql-wasm.wasm"

@@ -44,7 +44,6 @@ html, body, #root {
 }
 
 body { color: var(--color-text); }
-input, select, textarea, button { color: var(--color-text); background: transparent; }
 button { cursor: pointer; }
 ::placeholder { color: var(--color-muted); }
 
