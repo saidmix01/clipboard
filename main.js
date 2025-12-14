@@ -5,7 +5,9 @@ const {
   clipboard,
   ipcMain,
   screen,
-  nativeImage
+  nativeImage,
+  Tray,
+  Menu
 } = require('electron')
 const { autoUpdater } = require('electron-updater')
 const log = require('electron-log')
@@ -15,11 +17,13 @@ const fs = require('fs')
 const os = require('os')
 const db = require('./db')
 const legacyHistoryPath = path.join(os.homedir(), '.clipboard-history.json')
-const { exec, execFile } = require('child_process')
+const { exec, execFile, spawnSync } = require('child_process')
 
 let mainWindow
 let history = []
 const childWindows = new Set()
+let tray
+let isQuitting = false
 
 function normalizeHistory (raw) {
   if (!Array.isArray(raw)) return []
@@ -77,15 +81,81 @@ function performPaste (mainWindow) {
       )
     }, 300)
   } else if (platform === 'linux') {
-    // Linux: requiere que xdotool esté instalado
-    setTimeout(() => {
-      exec('xdotool key ctrl+v', err => {
-        if (err) {
-          log.error('Error ejecutando xdotool', err)
-        } else {
-          log.info('Pegado automático en Linux')
+    setTimeout(async () => {
+      const isWayland = !!(process.env.XDG_SESSION_TYPE === 'wayland' || process.env.WAYLAND_DISPLAY)
+      const has = name => {
+        try {
+          const r = spawnSync(process.platform === 'win32' ? 'where' : 'which', [name], { stdio: 'ignore' })
+          return r && r.status === 0
+        } catch {
+          return false
         }
-      })
+      }
+      const tasks = []
+      const text = clipboard.readText()
+      if (isWayland && has('wtype')) {
+        tasks.push(() => new Promise(resolve => {
+          exec('wtype -M ctrl -k v -m ctrl', err => {
+            if (err) return resolve({ ok: false, err })
+            resolve({ ok: true })
+          })
+        }))
+      }
+      if (has('xdotool')) {
+        tasks.push(() => new Promise(resolve => {
+          exec('xdotool key ctrl+v', err => {
+            if (err) return resolve({ ok: false, err })
+            resolve({ ok: true })
+          })
+        }))
+      }
+      if (isWayland && has('ydotool') && typeof text === 'string' && text.trim() !== '') {
+        tasks.push(() => new Promise(resolve => {
+          const tmp = path.join(os.tmpdir(), `copyfy_text_${Date.now()}.txt`)
+          try {
+            fs.writeFileSync(tmp, text, 'utf-8')
+          } catch (e) {
+            return resolve({ ok: false, err: e })
+          }
+          exec(`ydotool type --file "${tmp}"`, err => {
+            try { fs.rmSync(tmp, { force: true }) } catch {}
+            if (err) return resolve({ ok: false, err })
+            resolve({ ok: true })
+          })
+        }))
+      }
+      if (has('xdotool') && typeof text === 'string' && text.trim() !== '') {
+        tasks.push(() => new Promise(resolve => {
+          const tmp = path.join(os.tmpdir(), `copyfy_text_${Date.now()}.txt`)
+          try {
+            fs.writeFileSync(tmp, text, 'utf-8')
+          } catch (e) {
+            return resolve({ ok: false, err: e })
+          }
+          exec(`xdotool type --clearmodifiers --delay 1 --file "${tmp}"`, err => {
+            try { fs.rmSync(tmp, { force: true }) } catch {}
+            if (err) return resolve({ ok: false, err })
+            resolve({ ok: true })
+          })
+        }))
+      }
+      let done = false
+      for (const t of tasks) {
+        const res = await t()
+        if (res && res.ok) {
+          log.info('Pegado/typing automático en Linux')
+          done = true
+          break
+        }
+      }
+      if (!done) {
+        log.error('No se pudo pegar en Linux. Instala xdotool (X11) o wtype/ydotool (Wayland).')
+        try {
+          if (mainWindow?.webContents) {
+            mainWindow.webContents.send('paste-status', { ok: false, message: 'No se pudo pegar en Linux. Instala xdotool (X11) o wtype/ydotool (Wayland).' })
+          }
+        } catch {}
+      }
     }, 300)
   } else {
     log.warn('Plataforma no compatible')
@@ -133,15 +203,40 @@ function performPasteImage (mainWindow) {
       )
     }, 300)
   } else if (platform === 'linux') {
-    // Linux: usa xdotool para Ctrl+V
     setTimeout(() => {
-      exec('xdotool key ctrl+v', err => {
-        if (err) {
-          log.error('Error pegando imagen en Linux con xdotool', err)
-        } else {
-          log.info('Imagen pegada en Linux')
+      const isWayland = !!(process.env.XDG_SESSION_TYPE === 'wayland' || process.env.WAYLAND_DISPLAY)
+      const has = name => {
+        try {
+          const r = spawnSync(process.platform === 'win32' ? 'where' : 'which', [name], { stdio: 'ignore' })
+          return r && r.status === 0
+        } catch {
+          return false
         }
-      })
+      }
+      const cmds = []
+      if (isWayland && has('wtype')) cmds.push('wtype -M ctrl -k v -m ctrl')
+      if (has('xdotool')) cmds.push('xdotool key ctrl+v')
+      const run = () => {
+        const cmd = cmds.shift()
+        if (!cmd) {
+          log.error('Error pegando imagen en Linux. Instala xdotool (X11) o wtype (Wayland).')
+          try {
+            if (mainWindow?.webContents) {
+              mainWindow.webContents.send('paste-status', { ok: false, message: 'No se pudo pegar imagen en Linux. Instala xdotool (X11) o wtype (Wayland).' })
+            }
+          } catch {}
+          return
+        }
+        exec(cmd, err => {
+          if (err) {
+            if (cmds.length) return run()
+            log.error('Error pegando imagen en Linux', err)
+          } else {
+            log.info('Imagen pegada en Linux')
+          }
+        })
+      }
+      run()
     }, 300)
   } else {
     log.warn('Plataforma no compatible para pegar imagen')
@@ -167,7 +262,7 @@ function createWindow () {
     backgroundColor: '#00FFFFFF',
     alwaysOnTop: true,
     resizable: false, // ✅ importante: no redimensionable
-    icon: path.join(__dirname, 'public', 'icon.ico'), // Usa .ico en Windows
+    icon: path.join(__dirname, 'public', 'icon.ico'),
     show: false,
     hasShadow: true, // ✅ sombra opcional
     title: '',
@@ -223,15 +318,50 @@ function createWindow () {
 
   // Evitar cierre completo
   mainWindow.on('close', event => {
+    if (!isQuitting) {
+      event.preventDefault()
+      mainWindow.hide()
+      try { childWindows.forEach(w => { try { w.close() } catch {} }) } catch {}
+    }
+  })
+
+  mainWindow.on('minimize', event => {
     event.preventDefault()
     mainWindow.hide()
-    try { childWindows.forEach(w => { try { w.close() } catch {} }) } catch {}
   })
 }
 
 app.whenReady().then(async () => {
   await db.init(app)
   createWindow()
+  const iconPath = path.join(
+    __dirname,
+    'public',
+    process.platform === 'win32' ? 'icon.ico' : 'icon.png'
+  )
+  const image = nativeImage.createFromPath(iconPath)
+  tray = new Tray(image)
+  tray.setToolTip('Copyfy++')
+  const menu = Menu.buildFromTemplate([
+    { label: 'Abrir', click: () => { if (mainWindow) { mainWindow.show(); mainWindow.focus() } } },
+    { label: 'Pegar texto', click: () => { performPaste(mainWindow) } },
+    { label: 'Pegar imagen', click: () => { performPasteImage(mainWindow) } },
+    { type: 'separator' },
+    { label: 'Salir', click: () => { isQuitting = true; app.quit() } }
+  ])
+  tray.setContextMenu(menu)
+  tray.on('click', () => {
+    if (!mainWindow) return
+    if (mainWindow.isVisible()) {
+      mainWindow.hide()
+    } else {
+      mainWindow.show()
+      mainWindow.focus()
+    }
+  })
+  if (process.platform === 'darwin' && app.dock && app.dock.hide) {
+    app.dock.hide()
+  }
   autoUpdater.forceDevUpdateConfig = true
   try {
     const cfg = readDeviceConfigObj()
@@ -324,20 +454,30 @@ app.whenReady().then(async () => {
 
   pollClipboard()
 
-  globalShortcut.register('Alt+X', () => {
+  const toggleShow = () => {
+    if (!mainWindow) {
+      createWindow()
+    }
+    if (mainWindow.isVisible()) {
+      mainWindow.hide()
+      return
+    }
     const display = screen.getPrimaryDisplay()
     const screenWidth = display.workArea.width
     const screenHeight = display.workArea.height
-
     const windowWidth = 400
     const windowHeight = screenHeight
     const x = screenWidth - windowWidth
     const y = 0
-
     mainWindow.setBounds({ x, y, width: windowWidth, height: windowHeight })
     mainWindow.show()
     mainWindow.focus()
-  })
+  }
+
+  globalShortcut.register('Alt+X', toggleShow)
+  if (process.platform === 'darwin') {
+    globalShortcut.register('Command+Option+X', toggleShow)
+  }
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
@@ -345,11 +485,15 @@ app.whenReady().then(async () => {
 })
 
 app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') app.quit()
 })
 
 app.on('before-quit', () => {
+  isQuitting = true
   try { childWindows.forEach(w => { try { w.destroy() } catch {} }) } catch {}
+})
+
+app.on('will-quit', () => {
+  try { globalShortcut.unregisterAll() } catch {}
 })
 
 app.setLoginItemSettings({
@@ -1222,4 +1366,79 @@ process.on('unhandledRejection', (reason) => {
 })
 process.on('uncaughtException', (error) => {
   try { log.error('uncaughtException', error?.message || error) } catch {}
+})
+
+function detectPkgManager () {
+  const which = name => {
+    try {
+      const r = spawnSync(process.platform === 'win32' ? 'where' : 'which', [name], { stdio: 'ignore' })
+      return r && r.status === 0
+    } catch {
+      return false
+    }
+  }
+  if (which('apt-get')) return 'apt'
+  if (which('dnf')) return 'dnf'
+  if (which('pacman')) return 'pacman'
+  if (which('zypper')) return 'zypper'
+  return null
+}
+
+function getRootRunner () {
+  const which = name => {
+    try {
+      const r = spawnSync(process.platform === 'win32' ? 'where' : 'which', [name], { stdio: 'ignore' })
+      return r && r.status === 0
+    } catch {
+      return false
+    }
+  }
+  if (which('pkexec')) return 'pkexec'
+  if (which('sudo')) return 'sudo'
+  return null
+}
+
+async function installLinuxPasteSupport () {
+  try {
+    if (process.platform !== 'linux') return { ok: false, message: 'Solo Linux' }
+    const isWayland = !!(process.env.XDG_SESSION_TYPE === 'wayland' || process.env.WAYLAND_DISPLAY)
+    const pkg = detectPkgManager()
+    const runner = getRootRunner()
+    if (!pkg) return { ok: false, message: 'No se detectó gestor de paquetes' }
+    if (!runner) return { ok: false, message: 'No se detectó pkexec/sudo' }
+    const buildCmd = names => {
+      if (pkg === 'apt') return `apt-get update && apt-get install -y ${names.join(' ')}`
+      if (pkg === 'dnf') return `dnf install -y ${names.join(' ')}`
+      if (pkg === 'pacman') return `pacman -Sy --noconfirm ${names.join(' ')}`
+      if (pkg === 'zypper') return `zypper --non-interactive install ${names.join(' ')}`
+      return ''
+    }
+    const names = isWayland ? ['wtype', 'ydotool'] : ['xdotool']
+    const cmd = buildCmd(names.filter(Boolean))
+    if (!cmd) return { ok: false, message: 'No se pudo construir comando de instalación' }
+    const full = runner === 'pkexec' ? `pkexec bash -lc "${cmd}"` : `sudo bash -lc "${cmd}"`
+    return await new Promise(resolve => {
+      exec(full, err => {
+        if (err) {
+          log.error('installLinuxPasteSupport error', err)
+          resolve({ ok: false, message: 'Instalación fallida' })
+        } else {
+          resolve({ ok: true, message: 'Instalación completada' })
+        }
+      })
+    })
+  } catch (e) {
+    log.error('installLinuxPasteSupport error', e?.message || e)
+    return { ok: false, message: 'Error instalando' }
+  }
+}
+
+ipcMain.handle('install-linux-paste-support', async () => {
+  const res = await installLinuxPasteSupport()
+  try {
+    if (mainWindow?.webContents) {
+      mainWindow.webContents.send('paste-status', res)
+    }
+  } catch {}
+  return res
 })

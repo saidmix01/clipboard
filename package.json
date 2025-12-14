@@ -9,9 +9,17 @@
     "dist": "electron-builder"
   },
   "build": {
-    "appId": "com.app.copyfy",
+    "appId": "SAIDMIX.CopyFy",
     "productName": "CopyFy++",
     "icon": "build/icon",
+    "artifactName": "${productName}-${version}-${os}-${arch}.${ext}",
+    "appx": {
+      "identityName": "SAIDMIX.CopyFy",
+      "publisher": "CN=7F54C210-7D42-4E3E-AEB0-BA23C7B9DAAC",
+      "displayName": "CopyFy++",
+      "backgroundColor": "#464646"
+    },
+    "buildVersion": "1.2.0.0",
     "publish": [
       {
         "provider": "github",
@@ -27,6 +35,7 @@
       "preload.js",
       "config.js",
       "viewer/**/*",
+      "public/**/*",
       "helpers/**/*",
       "package.json",
       "node_modules/sql.js/dist/sql-wasm.wasm"
@@ -37,11 +46,20 @@
       "node_modules/sql.js/dist/sql-wasm.wasm"
     ],
     "directories": {
-      "buildResources": "assets"
+      "buildResources": "build"
     },
     "win": {
+      "icon": "build/icon.ico",
       "target": [
-        "nsis"
+        "appx"
+      ]
+    },
+    "mac": {
+      "icon": "build/icon.icns",
+      "category": "public.app-category.utilities",
+      "target": [
+        "dmg",
+        "zip"
       ]
     },
     "linux": {
@@ -49,11 +67,19 @@
         "AppImage",
         "deb"
       ],
-      "category": "Utility"
+      "category": "Utility",
+      "icon": "build/icon.png",
+      "executableName": "copyfy",
+      "synopsis": "CopyFy++ Clipboard manager",
+      "desktop": {
+        "entry": {
+          "Categories": "Utility;"
+        }
+      }
     }
   },
   "keywords": [],
-  "author": "",
+  "author": "Said Andres Avendaño",
   "license": "ISC",
   "description": "Clipboard manager con sincronización y atajos, empaquetado para Electron",
   "devDependencies": {

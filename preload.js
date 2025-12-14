@@ -25,6 +25,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   //updates
   forceUpdate: () => ipcRenderer.send('force-update'),
   onUpdateStatus: callback => ipcRenderer.on('update-status', (_, message) => callback(message)),
+  onPasteStatus: callback => ipcRenderer.on('paste-status', (_, data) => callback(data)),
   // Version app
   getAppVersion: () => ipcRenderer.invoke('get-app-version'),
   setAuthToken: (token) => ipcRenderer.send('set-auth-token', token),
@@ -47,4 +48,5 @@ contextBridge.exposeInMainWorld('electronAPI', {
   ,setPreferences: (patch) => ipcRenderer.invoke('set-preferences', patch)
   ,searchHistory: (payload) => ipcRenderer.invoke('search-history', payload)
   ,listRecent: (payload) => ipcRenderer.invoke('list-recent', payload)
+  ,installLinuxPasteSupport: () => ipcRenderer.invoke('install-linux-paste-support')
 })
