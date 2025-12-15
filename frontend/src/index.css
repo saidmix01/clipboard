@@ -1,146 +1,108 @@
-html, body {
-  background-color: transparent !important;
+@import "tailwindcss";
+
+@theme {
+  --font-sans: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans", "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji";
+
+  --color-bg: #f6f6f7;
+  --color-surface: #ffffff;
+  --color-border: #d9d9de;
+  --color-text: #1f2937;
+  --color-muted: #6b7280;
+  --color-primary: #0a84ff;
+  --color-secondary: #34c759;
+  --color-accent: #ff9f0a;
+
+  --radius-card: 14px;
+  --radius-modal: 16px;
+
+  --shadow-soft: 0 8px 30px rgba(0,0,0,0.08);
+  --shadow-hover: 0 12px 40px rgba(0,0,0,0.12);
+
+  --traffic-red: #ff5f57;
+  --traffic-yellow: #fdbc40;
+  --traffic-green: #28c940;
 }
-body, html, #root {
+
+:root[data-theme="dark"] {
+  --color-bg: #111315;
+  --color-surface: #1c1f22;
+  --color-border: #2a2d31;
+  --color-text: #e5e7eb;
+  --color-muted: #a1a1aa;
+  --color-primary: #0a84ff;
+  --color-secondary: #30d158;
+  --color-accent: #ff9f0a;
+  color-scheme: dark;
+}
+
+html, body, #root {
   margin: 0;
   padding: 0;
   background: transparent;
   overflow: hidden;
+  font-family: var(--font-sans);
 }
 
+body { color: var(--color-text); }
+button { cursor: pointer; }
+::placeholder { color: var(--color-muted); }
 
+.drag_region { -webkit-app-region: drag; }
+.no_drag { -webkit-app-region: no-drag; }
 
-
-.drag_region {
-  -webkit-app-region: drag;
-}
-
-.no_drag {
-  -webkit-app-region: no-drag;
-}
-
-/* Scrollbar más fino y moderno */
-::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
-}
-
-::-webkit-scrollbar-track {
-  background: transparent;
-}
-
+/* Scrollbar estilo macOS */
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb {
-  background-color: rgba(100, 100, 100, 0.2);
-  border-radius: 4px;
-  transition: background-color 0.3s ease;
+  background-color: color-mix(in oklab, var(--color-border) 60%, transparent);
+  border-radius: 10px;
+}
+::-webkit-scrollbar-thumb:hover { background-color: color-mix(in oklab, var(--color-border) 80%, transparent); }
+
+/* Superficies con vibrancy / blur */
+.glass {
+  backdrop-filter: saturate(1.8) blur(12px);
+  -webkit-backdrop-filter: saturate(1.8) blur(12px);
+  background: color-mix(in oklab, var(--color-surface) 80%, transparent);
+  border: 1px solid color-mix(in oklab, var(--color-border) 70%, transparent);
+  border-radius: var(--radius-card);
+  box-shadow: var(--shadow-soft);
 }
 
-::-webkit-scrollbar-thumb:hover {
-  background-color: rgba(100, 100, 100, 0.4);
+.panel {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-modal);
+  box-shadow: var(--shadow-hover);
 }
 
-/* En modo oscuro */
-body.dark-mode ::-webkit-scrollbar-thumb {
-  background-color: rgba(200, 200, 200, 0.1);
-}
-
-body.dark-mode ::-webkit-scrollbar-thumb:hover {
-  background-color: rgba(200, 200, 200, 0.3);
-}
-
-
-
-.card-glass {
-  backdrop-filter: blur(10px);
-  -webkit-backdrop-filter: blur(10px);
-  border-radius: 8px;
-  margin: 10px 10px 0px 10px;
-  transition: background 0.3s ease, border 0.3s ease;
-}
-
-/* Modo claro */
-body:not(.dark-mode) .card-glass {
-  background: rgba(255, 255, 255, 0.6);
-  border: 1px solid rgba(200, 200, 200, 0.3);
-}
-
-/* Modo oscuro */
-body.dark-mode .card-glass {
-  background: rgba(40, 40, 40, 0.4); /* tono gris oscuro translúcido */
-  border: 1px solid rgba(100, 100, 100, 0.2);
-}
-
- /*dark mode*/
-
- /* --- MODO OSCURO --- */
-body.dark-mode {
-  color: #e0e0e0 !important;
-}
-
-body.dark-mode .card-glass {
-  background: rgba(60, 60, 60, 0.8); /* gris translúcido */
-  backdrop-filter: blur(10px);
-  -webkit-backdrop-filter: blur(10px);
-  border: 1px solid rgba(120, 120, 120, 0.8); /* gris translúcido */
-}
-
-/* Scrollbar más tenue en modo oscuro */
-body.dark-mode ::-webkit-scrollbar-thumb {
-  background-color: rgba(180, 180, 180, 0.3);
-}
-
-body.dark-mode ::-webkit-scrollbar-thumb:hover {
-  background-color: rgba(180, 180, 180, 0.5);
-}
-
-/* Botones en modo oscuro */
-body.dark-mode .btn {
-  background: rgba(90, 90, 90, 0.25);
-  color: #e0e0e0;
-  border: 1px solid rgba(120, 120, 120, 0.2);
-  backdrop-filter: blur(8px);
-}
-
-body.dark-mode .btn:hover {
-  background: rgba(110, 110, 110, 0.4);
-  border-color: rgba(140, 140, 140, 0.3);
-  color: #fff;
-}
-
-/* Etiquetas tipo filtro (Texto, Imagen, Favoritos) */
-body.dark-mode .badge,
-body.dark-mode .btn-group .btn {
-  background: rgba(100, 100, 100, 0.3);
-  color: #f1f1f1;
-  border: 1px solid rgba(120, 120, 120, 0.2);
-}
-
-/* Ítems de historial */
-body.dark-mode .history-item {
-  background: rgba(50, 50, 50, 0.2);
-  color: #eaeaea;
-  border: 1px solid rgba(120, 120, 120, 0.2);
-  border-radius: 8px;
-}
-
-/* --- MODO OSCURO PARA BLOQUES DE CÓDIGO --- */
-body.dark-mode pre code.hljs {
-  background: rgba(20, 20, 20, 0.9);  /* fondo oscuro, casi negro */
-  color: #e0e0e0;                     /* texto claro */
-  border: 1px solid rgba(100, 100, 100, 0.3);
-  border-radius: 6px;
+.code-block pre code.hljs {
+  background: color-mix(in oklab, var(--color-surface) 95%, transparent);
+  color: var(--color-text);
+  border: 1px solid var(--color-border);
+  border-radius: 10px;
   padding: 12px;
   display: block;
   overflow-x: auto;
-  font-family: 'Fira Code', monospace;
+  font-family: ui-monospace, "SFMono-Regular", Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
   font-size: 0.85rem;
 }
 
+.no-match { color: var(--color-muted); }
 
-.no-match {
-  color: #000;
+@keyframes spin {
+  to { transform: rotate(360deg); }
 }
-
-.dark-mode .no-match {
-  color: #fff !important;
+.spinner {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.spinner .ring {
+  width: 18px;
+  height: 18px;
+  border: 2px solid var(--color-border);
+  border-top-color: var(--color-primary);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
 }

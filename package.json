@@ -1,6 +1,6 @@
 {
-  "name": "portapapeles-app",
-  "version": "1.1.6",
+  "name": "copyfy",
+  "version": "1.2.0",
   "main": "main.js",
   "scripts": {
     "dev": "concurrently \"npm run dev --prefix frontend\" \"wait-on http://localhost:5173 && electron .\"",
@@ -17,20 +17,24 @@
         "provider": "github",
         "owner": "saidmix01",
         "repo": "clipboard",
-        "private": false,
-        "token": "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"
+        "private": false
       }
     ],
     "files": [
       "frontend/dist/**/*",
       "main.js",
+      "db.js",
       "preload.js",
+      "config.js",
+      "viewer/**/*",
       "helpers/**/*",
-      "package.json"
+      "package.json",
+      "node_modules/sql.js/dist/sql-wasm.wasm"
     ],
     "asarUnpack": [
       "helpers/paste.exe",
-      "helpers/paste-image.exe"
+      "helpers/paste-image.exe",
+      "node_modules/sql.js/dist/sql-wasm.wasm"
     ],
     "directories": {
       "buildResources": "assets"
@@ -51,7 +55,7 @@
   "keywords": [],
   "author": "",
   "license": "ISC",
-  "description": "",
+  "description": "Clipboard manager con sincronización y atajos, empaquetado para Electron",
   "devDependencies": {
     "concurrently": "^9.2.0",
     "electron": "^36.5.0",
@@ -61,16 +65,8 @@
   },
   "dependencies": {
     "axios": "^1.10.0",
-    "bootstrap": "^5.3.7",
-    "child_process": "^1.0.2",
     "electron-log": "^5.4.1",
-    "electron-store": "^10.1.0",
     "electron-updater": "^6.6.2",
-    "framer-motion": "^12.20.1",
-    "highlight.js": "^11.11.1",
-    "node-key-sender": "^1.0.11",
-    "os": "^0.1.2",
-    "qs": "^6.14.0",
-    "react-hot-toast": "^2.5.2"
+    "sql.js": "^1.11.0"
   }
 }

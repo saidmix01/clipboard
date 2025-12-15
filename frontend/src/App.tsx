@@ -1,57 +1,92 @@
 import { useEffect, useState, useRef } from 'react'
+import type { ReactNode } from 'react'
 import { Toaster, toast } from 'react-hot-toast'
-import hljs from 'highlight.js'
-import 'highlight.js/styles/github.css' // Puedes cambiar el estilo si luego quieres otro
 import { motion } from 'framer-motion'
+import LoginModal from './Login'
+import UserModal from './UserModal'
+import DeviceSwitchModal from './DeviceSwitchModal'
+import { API_BASE } from './config'
+import AppShell from './components/AppShell'
+import TopBar from './components/TopBar'
+import Dock from './components/Dock'
+import HistoryList from './components/HistoryList'
+// filtros movidos a la barra inferior
+import SearchQuickSwitcher from './components/SearchQuickSwitcher'
+import SettingsMenu from './components/SettingsMenu'
+import OnboardingTour from './components/OnboardingTour'
+import type { HistoryItem, FilterType } from './types'
 
-function isCodeSnippet (text: string): boolean {
-  const trimmed = text.trim()
 
-  // Detectar JSON válido
-  try {
-    const parsed = JSON.parse(trimmed)
-    if (typeof parsed === 'object' && parsed !== null) {
-      return true
-    }
-  } catch (_) {}
-
-  // Detectar estructuras de código comunes
-  const hasCodeIndicators = [
-    ';',
-    '{',
-    '}',
-    '=>',
-    'function',
-    'const ',
-    'let ',
-    'class ',
-    'import ',
-    'export ',
-    'return ',
-    '//',
-    '/*',
-    '*/'
-  ].some(keyword => text.includes(keyword))
-
-  const lines = text.split('\n')
-
-  // Al menos 3 líneas y algún símbolo sospechoso
-  const looksMultilineCode =
-    lines.length > 2 && lines.some(line => /[{;}=]/.test(line.trim()))
-
-  return hasCodeIndicators || looksMultilineCode
-}
-
-type HistoryItem = {
-  value: string
-  favorite: boolean
-}
+// tipos movidos a ./types
 
 function App () {
-  const [history, setHistory] = useState<HistoryItem[]>([])
-  const [search, setSearch] = useState('')
+  const [, setHistory] = useState<HistoryItem[]>([])
+  const [search, setSearch] = useState<string>('')
+  const containerRef = useRef<HTMLDivElement>(null)
+  const [showLogin, setShowLogin] = useState(false)
+  const [showRegister, setShowRegister] = useState(false)
+  const [showUserModal, setShowUserModal] = useState(false)
+  const [token, setToken] = useState<string | null>(null)
+  const [globalLoading, setGlobalLoading] = useState(false)
+  const [userAvatar, setUserAvatar] = useState<string | null>(null)
 
-  const highlightMatch = (text: string, query: string) => {
+  const logout = () => {
+    setToken(null)
+    localStorage.removeItem('x-token')
+    localStorage.removeItem('session')
+    try { localStorage.removeItem('clientId') } catch {}
+    ;(window as any).electronAPI?.setAuthToken?.('')
+    try { (window as any).electronAPI?.clearUserData?.() } catch {}
+    toast.success('Sesión cerrada')
+  }
+
+  async function refreshAuthToken () {
+    try {
+      const raw = localStorage.getItem('session')
+      if (!raw) return
+      const sess = JSON.parse(raw)
+      const rt = sess?.refreshToken
+      if (!rt) return
+      const res = await fetch(`${API_BASE}/auth/refresh`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ refreshToken: rt })
+      })
+      const data = await res.json()
+      const payload = (data && typeof data === 'object' ? (data.data ?? data) : {}) as any
+      const okFlag = (data && typeof data === 'object') ? (data.success ?? data.status) : undefined
+      const newToken = payload?.token
+      const newRefresh = payload?.refreshToken
+      if ((okFlag ?? res.ok) && newToken) {
+        handleLoginSuccess(newToken)
+        const newSession = { ...sess, token: newToken, refreshToken: newRefresh || rt }
+        localStorage.setItem('session', JSON.stringify(newSession))
+      }
+    } catch {}
+  }
+
+  const handleLoginSuccess = (newToken: string) => {
+    setToken(newToken)
+    localStorage.setItem('x-token', newToken)
+
+    if ((window as any).electronAPI?.setAuthToken) {
+      ;(window as any).electronAPI?.setAuthToken(newToken)
+    }
+
+    try {
+      setTimeout(() => {
+        ;(window as any).electronAPI?.registerDevice?.('')
+      }, 200)
+    } catch {}
+  }
+
+  // Ref para el contenedor scrollable y para cada item
+  const itemRefs = useRef<(HTMLDivElement | null)[]>([])
+
+  const highlightMatch = (
+    text: string,
+    query: string
+  ): ReactNode[] | string => {
     if (!query) return text
 
     const regex = new RegExp(`(${query})`, 'gi')
@@ -68,54 +103,149 @@ function App () {
     )
   }
 
-  const [filter, setFilter] = useState<'all' | 'text' | 'image' | 'favorite'>(
-    'all'
-  )
-  //Filtro
-  const filteredHistory = [...history]
-    .filter(item => {
-      const isImage =
-        typeof item.value === 'string' && item.value.startsWith('data:image')
-      const isFavorite = item.favorite
+  const [filter, setFilter] = useState<FilterType>('all')
+  const [displayed, setDisplayed] = useState<HistoryItem[]>([])
+  const [listLoading, setListLoading] = useState<boolean>(false)
+  const [syncing, setSyncing] = useState<boolean>(false)
+  const [syncPct, setSyncPct] = useState<number>(0)
 
-      // Primero aplicar el filtro por tipo
-      if (filter === 'text' && isImage) return false
-      if (filter === 'image' && !isImage) return false
-      if (filter === 'favorite' && !isFavorite) return false
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem('session')
+      if (raw) {
+        const sess = JSON.parse(raw)
+        if (sess?.refreshToken) { refreshAuthToken(); return }
+        if (sess?.token) {
+          handleLoginSuccess(sess.token)
+          ;(window as any).electronAPI?.setAuthToken(sess.token)
+          return
+        }
+      }
+    } catch {}
+    const token = localStorage.getItem('x-token')
+    if (token) {
+      handleLoginSuccess(token)
+      ;(window as any).electronAPI?.setAuthToken(token)
+    }
+  }, [])
 
-      // Luego el filtro de búsqueda
-      return (
-        typeof item.value === 'string' &&
-        item.value.toLowerCase().includes(search.toLowerCase())
-      )
-    })
-    .sort((a, b) => Number(b.favorite) - Number(a.favorite)) // ⭐ favoritos primero
-    .slice(0, 50)
+  useEffect(() => {
+    const id = setInterval(() => {
+      refreshAuthToken()
+    }, 15 * 60 * 1000)
+    return () => clearInterval(id)
+  }, [])
 
-  // Escuchar actualizaciones del portapapeles
+  useEffect(() => {
+    async function fetchAvatar() {
+      try {
+        
+        if (!token) { setUserAvatar(null); return }
+        const res = await fetch(`${API_BASE}/users/me`, { headers: { Authorization: `Bearer ${token}` } })
+        const data = await res.json()
+        const payload: any = (data && typeof data === 'object' ? (data.data ?? data) : {})
+        const u = payload?.user
+        const src: string | undefined = u?.avatarUrl
+        const resolve = (s?: string | null): string | null => {
+          if (!s) return null
+          let v = String(s).replace(/\\/g, '/')
+          if (v.startsWith('http://') || v.startsWith('https://') || v.startsWith('data:')) return v
+          if (v.startsWith('/')) return `${API_BASE}${v}`
+          if (v.startsWith('uploads/')) return `${API_BASE}/${v}`
+          if (v.includes('/uploads/')) return `${API_BASE}${v.substring(v.indexOf('/uploads/'))}`
+          return `${API_BASE}/uploads/${v}`
+        }
+        setUserAvatar(resolve(src))
+      } catch {
+        setUserAvatar(null)
+      }
+    }
+    fetchAvatar()
+  }, [token])
+
+  useEffect(() => {
+    if (!showUserModal && token) {
+      (async () => {
+        try {
+          
+          const res = await fetch(`${API_BASE}/users/me`, { headers: { Authorization: `Bearer ${token}` } })
+          const data = await res.json()
+          const payload: any = (data && typeof data === 'object' ? (data.data ?? data) : {})
+          const u = payload?.user
+          const src: string | undefined = u?.avatarUrl
+          const resolve = (s?: string | null): string | null => {
+            if (!s) return null
+            let v = String(s).replace(/\\/g, '/')
+            if (v.startsWith('http://') || v.startsWith('https://') || v.startsWith('data:')) return v
+            if (v.startsWith('/')) return `${API_BASE}${v}`
+            if (v.startsWith('uploads/')) return `${API_BASE}/${v}`
+            if (v.includes('/uploads/')) return `${API_BASE}${v.substring(v.indexOf('/uploads/'))}`
+            return `${API_BASE}/uploads/${v}`
+          }
+          setUserAvatar(resolve(src))
+        } catch {}
+      })()
+    }
+  }, [showUserModal, token])
+
+
   useEffect(() => {
     if ((window as any).electronAPI?.onClipboardUpdate) {
-      ;(window as any).electronAPI.onClipboardUpdate((data: any[]) => {
-        setHistory(data) // ✅ ya viene bien formado desde Electron
+      ;(window as any).electronAPI.onClipboardUpdate((data: HistoryItem[]) => {
+        setHistory(data)
+        const q = search.trim()
+        setListLoading(true)
+        if (q.length === 0) {
+          const payload = { filter, limit: 50 }
+          Promise.resolve((window as any).electronAPI?.listRecent?.(payload))
+            .then((res: HistoryItem[]) => { if (Array.isArray(res)) setDisplayed(res) })
+            .finally(() => setListLoading(false))
+        } else {
+          const payload = { query: q, filter }
+          Promise.resolve((window as any).electronAPI?.searchHistory?.(payload))
+            .then((res: HistoryItem[]) => { if (Array.isArray(res)) setDisplayed(res) })
+            .finally(() => setListLoading(false))
+        }
       })
     }
   }, [])
 
-  // Cerrar con Escape
+  useEffect(() => {
+    if ((window as any).electronAPI?.getClipboardHistory) {
+      ;(window as any).electronAPI.getClipboardHistory().then((data: HistoryItem[]) => {
+        if (Array.isArray(data)) setHistory(data)
+      })
+    }
+  }, [])
+
   useEffect(() => {
     const escListener = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
-        ;(window as any).electronAPI?.hideWindow?.() // ✅ llama a backend para ocultar
+        ;(window as any).electronAPI?.hideWindow?.()
       }
     }
     window.addEventListener('keydown', escListener)
     return () => window.removeEventListener('keydown', escListener)
   }, [])
 
-  //dark mode
-  const [darkMode, setDarkMode] = useState(() => {
+  useEffect(() => {
+    function handleClickOutside (event: MouseEvent) {
+      if (
+        containerRef.current &&
+        !containerRef.current.contains(event.target as Node)
+      ) {
+        ;(window as any).electronAPI?.hideWindow?.()
+      }
+    }
+    document.addEventListener('mousedown', handleClickOutside)
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside)
+    }
+  }, [])
+
+  const [darkMode, setDarkMode] = useState<boolean>(() => {
     const stored = localStorage.getItem('darkMode')
-    return stored === 'true' // si existe y es "true", activa el modo oscuro
+    return stored === 'true'
   })
 
   useEffect(() => {
@@ -123,10 +253,12 @@ function App () {
   }, [darkMode])
 
   useEffect(() => {
-    document.body.classList.toggle('dark-mode', darkMode)
+    const root = document.documentElement
+    root.setAttribute('data-theme', darkMode ? 'dark' : 'light')
   }, [darkMode])
 
-  const [appVersion, setAppVersion] = useState('')
+  const [appVersion, setAppVersion] = useState<string>('')
+  const [showTour, setShowTour] = useState<boolean>(false)
 
   useEffect(() => {
     if ((window as any).electronAPI?.getAppVersion) {
@@ -134,360 +266,265 @@ function App () {
     }
   }, [])
 
-  function ExpandableCard ({
-    content,
-    darkMode,
-    search,
-    onCopy,
-    onToggleFavorite,
-    item
-  }: {
-    content: string
-    darkMode: boolean
-    search: string
-    onCopy: () => void
-    onToggleFavorite: () => void
-    item: {
-      value: string
-      favorite: boolean
+  useEffect(() => {
+    if ((window as any).electronAPI?.onSyncProgress) {
+      const off = (window as any).electronAPI.onSyncProgress((data: any) => {
+        try {
+          const msg = (data && typeof data === 'object') ? String(data.message || '') : ''
+          const pct = (data && typeof data === 'object') ? Number(data.percentage || 0) : 0
+          setSyncing(pct > 0 && pct < 100)
+          setSyncPct(pct)
+          if (pct === 100) {
+            if (msg.toLowerCase().includes('fallida')) {
+              toast.error('Sincronización fallida')
+            } else {
+              toast.success('Sincronización completada')
+            }
+          }
+        } catch {}
+      })
+      return () => { try { off?.() } catch {} }
     }
-  }) {
-    const [expanded, setExpanded] = useState(false)
+  }, [])
 
-    const isImage = content.startsWith('data:image')
-    const isCode = isCodeSnippet(content)
-
-    const wrapperStyle: React.CSSProperties = {
-      maxHeight: expanded ? 'none' : '150px',
-      overflow: 'hidden',
-      position: 'relative'
+  useEffect(() => {
+    async function checkFirstRun () {
+      try {
+        const prefs = await (window as any).electronAPI?.getPreferences?.()
+        if (!prefs || prefs.firstRunGuideDone !== true) {
+          setShowTour(true)
+        }
+      } catch {}
     }
+    checkFirstRun()
+  }, [])
 
-    const buttonStyle: React.CSSProperties = {
-      position: 'absolute',
-      bottom: 0,
-      left: 0,
-      width: '100%',
-      textAlign: 'center',
-      background: darkMode ? '#333' : '#fff',
-      color: darkMode ? '#ccc' : '#000',
-      fontSize: '0.75rem',
-      cursor: 'pointer'
+  const [selectedIndex, setSelectedIndex] = useState<number>(-1)
+  const [settingsOpen, setSettingsOpen] = useState<boolean>(false)
+  const [showDeviceSwitch, setShowDeviceSwitch] = useState<boolean>(false)
+  const [quickOpen, setQuickOpen] = useState<boolean>(false)
+
+  // Scroll automático cuando cambia selectedIndex
+  useEffect(() => {
+    const itemEl = itemRefs.current[selectedIndex]
+    if (itemEl && itemEl.scrollIntoView) {
+      itemEl.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'nearest' })
     }
+  }, [selectedIndex, displayed])
 
-    return (
-      <div
-        className={`mb-2 p-2 border rounded position-relative ${
-          darkMode ? 'text-white border-dark' : 'bg-light'
-        }`}
-        onClick={onCopy}
-        style={{
-          cursor: 'pointer',
-          backgroundColor: darkMode ? '#3e3e3d' : '#dcdcdc'
-        }}
-      >
-        <div style={wrapperStyle}>
-          {isImage ? (
-            <img src={content} alt='imagen' style={{ maxWidth: '100%' }} />
-          ) : isCode ? (
-            <CodeBlock code={content} />
-          ) : (
-            <div
-              className={`${darkMode ? 'text-white' : 'text-dark'} small`}
-              style={{
-                overflowWrap: 'break-word',
-                wordBreak: 'break-word'
-              }}
-            >
-              {highlightMatch(content, search)}
-            </div>
-          )}
-        </div>
+  useEffect(() => {
+    const keyListener = (e: KeyboardEvent) => {
+      if (displayed.length === 0) return
+      if (e.key === 'ArrowDown') {
+        e.preventDefault()
+        setSelectedIndex(prev => (prev + 1) % displayed.length)
+      } else if (e.key === 'ArrowUp') {
+        e.preventDefault()
+        setSelectedIndex(prev => (prev <= 0 ? displayed.length - 1 : prev - 1))
+      } else if (e.key === 'Enter') {
+        e.preventDefault()
+        if (selectedIndex >= 0 && selectedIndex < displayed.length) {
+          const item = displayed[selectedIndex]
+          if (item.value.startsWith('data:image')) {
+            ;(window as any).electronAPI?.copyImage?.(item.value)
+            setTimeout(() => { ;(window as any).electronAPI.pasteImage() }, 300)
+            toast.success('Imagen copiada al portapapeles')
+          } else {
+            ;(window as any).electronAPI?.copyText(item.value)
+            setTimeout(() => { ;(window as any).electronAPI?.pasteText() }, 100)
+            toast.success('Pegado automáticamente')
+          }
+          setTimeout(() => { ;(window as any).electronAPI?.hideWindow?.() }, 500)
+        }
+      }
+    }
+    window.addEventListener('keydown', keyListener)
+    return () => window.removeEventListener('keydown', keyListener)
+  }, [displayed, selectedIndex])
 
-        <button
-          onClick={e => {
-            e.stopPropagation()
-            onToggleFavorite()
-          }}
-          className={`btn btn-sm ${
-            item.favorite ? 'btn-warning' : 'btn-outline-warning'
-          }`}
-          title='Marcar como favorito'
-          style={{
-            position: 'absolute',
-            top: '4px',
-            right: '4px',
-            zIndex: 10
-          }}
-        >
-          ⭐
-        </button>
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      const isK = e.key.toLowerCase() === 'k'
+      const meta = e.ctrlKey || e.metaKey
+      if (isK && meta) {
+        e.preventDefault()
+        setQuickOpen(true)
+      }
+    }
+    window.addEventListener('keydown', handler)
+    return () => window.removeEventListener('keydown', handler)
+  }, [])
 
-        {content.length > 300 && (
-          <div
-            style={buttonStyle}
-            onClick={e => {
-              e.stopPropagation()
-              setExpanded(!expanded)
-            }}
-          >
-            {expanded ? '▲ Ver menos' : '▼ Ver más'}
-          </div>
-        )}
-      </div>
-    )
-  }
+  useEffect(() => {
+    const q = search.trim()
+    if (!token && filter === 'favorite') { setDisplayed([]); return }
+    setListLoading(true)
+    if (q.length === 0) {
+      const payload = { filter, limit: 50 }
+      Promise.resolve((window as any).electronAPI?.listRecent?.(payload))
+        .then((res: HistoryItem[]) => { if (Array.isArray(res)) setDisplayed(res) })
+        .finally(() => setListLoading(false))
+    } else {
+      const payload = { query: q, filter }
+      Promise.resolve((window as any).electronAPI?.searchHistory?.(payload))
+        .then((res: HistoryItem[]) => { if (Array.isArray(res)) setDisplayed(res) })
+        .finally(() => setListLoading(false))
+    }
+  }, [search, filter])
 
   return (
     <>
-      <motion.div
-        initial={{ opacity: 0, y: 30 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.5, ease: 'easeOut' }}
-      >
+      <motion.div initial={{ opacity: 0, y: 30 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.5, ease: 'easeOut' }}>
         <Toaster position='top-center' />
-
-        <div
-          className='d-flex justify-content-center'
-          style={{
-            background: 'transparent',
-            width: '100vw',
-            height: '100vh',
-            margin: 0,
-            padding: 0,
-            overflow: 'hidden',
-            alignItems: 'center',
-            display: 'flex'
-          }}
-        >
-          <div
-            className={`card shadow rounded-1 position-relative card-glass ${
-              darkMode ? 'text-white border-secondary' : 'text-dark border-dark'
-            }`}
-            style={{
-              width: '400px',
-              height: '500px',
-              overflow: 'hidden',
-              display: 'flex',
-              flexDirection: 'column'
-            }}
-          >
-            {/* Encabezado */}
-            <div
-              className={`card-header d-flex align-items-center justify-content-between card-glass p-2 ${
-                darkMode ? 'border-secondary' : 'border-bottom'
-              }`}
-            >
-              <div
-                style={
-                  {
-                    WebkitAppRegion: 'drag',
-                    userSelect: 'none',
-                    flexGrow: 1
-                  } as any
+        <AppShell darkMode={darkMode}>
+          <TopBar />
+          <SettingsMenu
+            open={settingsOpen}
+            darkMode={darkMode}
+            onClose={() => setSettingsOpen(false)}
+            onChangeDevice={() => { setSettingsOpen(false); setShowDeviceSwitch(true) }}
+            onForceUpdate={() => { setSettingsOpen(false); toast('Buscando actualizaciones...'); (window as any).electronAPI?.forceUpdate?.() }}
+            onToggleDark={() => { setSettingsOpen(false); setDarkMode(prev => !prev) }}
+            onClearHistory={() => { setSettingsOpen(false); (window as any).electronAPI?.clearHistory?.(); toast.success('Historial eliminado') }}
+            onSyncNow={async () => {
+              try {
+                setSettingsOpen(false)
+                setGlobalLoading(true)
+                toast('Sincronizando…')
+                const dev = await (window as any).electronAPI?.getActiveDevice?.()
+                const hist = await (window as any).electronAPI?.loadDeviceHistory?.(dev || '')
+                if (Array.isArray(hist)) {
+                  setHistory(hist)
+                  toast.success('Sincronización completada')
+                } else {
+                  toast.error('No se pudo obtener el historial')
                 }
-              >
-                <h5 className='mb-0'>📋 Copyfy++</h5>
-              </div>
-
-              <div
-                className='d-flex gap-2'
-                style={{ WebkitAppRegion: 'no-drag' } as any}
-              >
-                <button
-                  onClick={() => {
-                    toast('Buscando actualizaciones...')
-                    ;(window as any).electronAPI?.forceUpdate?.()
-                  }}
-                  title='Buscar actualizaciones'
-                  className='btn btn-sm btn-outline-success'
-                >
-                  🔄
-                </button>
-                <button
-                  onClick={() => setDarkMode(prev => !prev)}
-                  title='Modo oscuro'
-                  className='btn btn-sm btn-outline-primary'
-                >
-                  {darkMode ? '🌞' : '🌙'}
-                </button>
-
-                <button
-                  onClick={() => {
-                    ;(window as any).electronAPI?.clearHistory?.()
-                    toast.success('Historial eliminado')
-                  }}
-                  title='Borrar historial'
-                  className='btn btn-sm btn-outline-danger'
-                >
-                  🗑️
-                </button>
-
-                <button
-                  onClick={() => (window as any).electronAPI?.hideWindow?.()}
-                  title='Ocultar ventana'
-                  className='btn btn-sm btn-outline-secondary'
-                >
-                  ❌
-                </button>
-              </div>
-            </div>
-
-            {/* Buscador */}
-            <div className={`p-3 border-bottom card-glass`}>
-              <input
-                type='text'
-                placeholder='Buscar en el historial...'
-                value={search}
-                onChange={e => setSearch(e.target.value)}
-                className={`form-control form-control-sm ${
-                  darkMode ? 'bg-dark text-white border-secondary' : ''
-                }`}
-              />
-            </div>
-            {/* Filtros */}
-            <div
-              className={`p-3 border-bottom card-glass`}
-              style={{
-                display: 'flex',
-                justifyContent: 'space-between'
-              }}
-            >
-              <button
-                className={`btn btn-sm ${
-                  filter === 'all' ? 'btn-secondary' : 'btn-outline-secondary'
-                }`}
-                onClick={() => setFilter('all')}
-              >
-                Todo
-              </button>
-              <button
-                className={`btn btn-sm ${
-                  filter === 'text' ? 'btn-secondary' : 'btn-outline-secondary'
-                }`}
-                onClick={() => setFilter('text')}
-              >
-                🔤 Texto
-              </button>
-              <button
-                className={`btn btn-sm ${
-                  filter === 'image' ? 'btn-secondary' : 'btn-outline-secondary'
-                }`}
-                onClick={() => setFilter('image')}
-              >
-                🖼️ Imagen
-              </button>
-              <button
-                className={`btn btn-sm ${
-                  filter === 'favorite'
-                    ? 'btn-secondary'
-                    : 'btn-outline-secondary'
-                }`}
-                onClick={() => setFilter('favorite')}
-              >
-                ⭐ Favoritos
-              </button>
-            </div>
-
-            {/* Lista del historial */}
-            <div
-              className={`flex-grow-1 overflow-auto ${
-                darkMode ? 'text-white' : 'text-dark'
-              }`}
-              style={{
-                scrollbarColor: darkMode ? '#666 #222' : undefined,
-                scrollbarWidth: 'thin',
-                padding: '10px'
-              }}
-            >
-              {filteredHistory.length === 0 ? (
-                <p
-                  className={`text-muted text-center small mb-0 no-match ${
-                    darkMode ? 'dark-mode' : ''
-                  }`}
-                >
-                  Sin coincidencias
-                </p>
-              ) : (
-                filteredHistory.map((item, idx) => {
-                  return (
-                    <ExpandableCard
-                      key={idx}
-                      content={item.value}
-                      darkMode={darkMode}
-                      search={search}
-                      onCopy={() => {
-                        if (
-                          typeof item.value === 'string' &&
-                          item.value.startsWith('data:image')
-                        ) {
-                          ;(window as any).electronAPI?.copyImage?.(item.value)
-                          setTimeout(() => {
-                            ;(window as any).electronAPI.pasteImage()
-                          }, 300)
-                          toast.success('Imagen copiada al portapapeles')
-                        } else {
-                          ;(window as any).electronAPI?.copyText(item.value)
-                          setTimeout(() => {
-                            ;(window as any).electronAPI?.pasteText()
-                          }, 100)
-                          toast.success('Pegado automáticamente')
-                        }
-                        setTimeout(() => {
-                          ;(window as any).electronAPI?.hideWindow?.()
-                        }, 500)
-                      }}
-                      item={item}
-                      onToggleFavorite={() => {
-                        const newHistory = [...history]
-                        newHistory[idx].favorite = !newHistory[idx].favorite
-                        setHistory(newHistory)
-
-                        // También actualiza en el backend
-                        ;(window as any).electronAPI?.toggleFavorite?.(
-                          item.value
-                        )
-                      }}
-                    />
-                  )
-                })
-              )}
-            </div>
-
-            {/* Pie de versión */}
-            <div
-              className='text-end px-2 pb-1'
-              style={{
-                fontSize: '0.7rem',
-                color: darkMode ? '#ccc' : '#666',
-                marginTop: '2px'
-              }}
-            >
-              <span title='Versión de la app'>v{appVersion}</span>
-            </div>
+              } catch {
+                toast.error('Error al sincronizar')
+              } finally {
+                setGlobalLoading(false)
+              }
+            }}
+          />
+          <div className="px-3 pt-1">
+            <input
+              type='text'
+              placeholder='Buscar en el historial…'
+              value={search}
+              onChange={e => setSearch(e.target.value)}
+              className="w-full px-3 py-2 rounded-md border border-[color:var(--color-border)] bg-[color:var(--color-surface)] text-[color:var(--color-text)] outline-none focus:bg-[color:var(--color-surface)]"
+            />
           </div>
-        </div>
-      </motion.div> 
+
+            <LoginModal
+              isOpen={showLogin}
+              onClose={() => setShowLogin(false)}
+              onLoginSuccess={handleLoginSuccess}
+              mode='login'
+              onGlobalLoading={setGlobalLoading}
+            />
+            <LoginModal
+              isOpen={showRegister}
+              onClose={() => setShowRegister(false)}
+              onLoginSuccess={handleLoginSuccess}
+              mode='register'
+              onGlobalLoading={setGlobalLoading}
+            />
+            <UserModal
+              isOpen={showUserModal}
+              onClose={() => setShowUserModal(false)}
+            />
+            <DeviceSwitchModal
+              isOpen={showDeviceSwitch}
+              onClose={() => setShowDeviceSwitch(false)}
+              onApplied={(newHistory: HistoryItem[]) => {
+                if (Array.isArray(newHistory)) setHistory(newHistory)
+              }}
+            />
+
+          {/* filtros ahora en Dock */}
+
+          <HistoryList
+            items={displayed}
+            search={search}
+            selectedIndex={selectedIndex}
+            onToggleFavorite={(item) => {
+              if (!token) { toast.error('Debes iniciar sesión'); return }
+              ;(window as any).electronAPI?.toggleFavorite?.(item)
+              const payload = { query: search, filter }
+              setListLoading(true)
+              Promise.resolve((window as any).electronAPI?.searchHistory?.(payload))
+                .then((res: HistoryItem[]) => { if (Array.isArray(res)) setDisplayed(res) })
+                .finally(() => setListLoading(false))
+            }}
+            onCopy={(item) => {
+              if (item.value.startsWith('data:image')) {
+                ;(window as any).electronAPI?.copyImage?.(item.value)
+                setTimeout(() => { ;(window as any).electronAPI.pasteImage() }, 300)
+                toast.success('Imagen copiada al portapapeles')
+              } else {
+                ;(window as any).electronAPI?.copyText(item.value)
+                setTimeout(() => { ;(window as any).electronAPI?.pasteText() }, 100)
+                toast.success('Pegado automáticamente')
+              }
+              setTimeout(() => { ;(window as any).electronAPI?.hideWindow?.() }, 500)
+            }}
+            highlightMatch={highlightMatch}
+            canFavorite={!!token}
+            canOpenModal={!!token}
+          />
+          {listLoading && (
+            <div className="px-3 py-1 text-[color:var(--color-muted)] text-xs">Cargando…</div>
+          )}
+          {syncing && (
+            <div className="fixed top-2 right-2 z-[20000] glass px-3 py-2">
+              <div className="spinner"><span className="ring"></span><span>Sincronizando… {Math.round(syncPct)}%</span></div>
+            </div>
+          )}
+
+
+          <Dock
+            items={[
+              { label: 'Ajustes', icon: null as any, onClick: () => { if (!token) { toast.error('Debes iniciar sesión'); return } setSettingsOpen(true) } },
+              ...(token ? [
+                { label: 'Perfil', icon: null as any, onClick: () => setShowUserModal(true) },
+                { label: 'Cerrar sesión', icon: null as any, onClick: logout }
+              ] : [
+                { label: 'Iniciar sesión', icon: null as any, onClick: () => setShowLogin(true) },
+                { label: 'Registrarse', icon: null as any, onClick: () => setShowRegister(true) }
+              ])
+            ]}
+            userAvatar={userAvatar}
+            filter={filter}
+            onChangeFilter={(f) => { if (!token && f==='favorite') { toast.error('Debes iniciar sesión'); return } setFilter(f) }}
+            disabledFavorites={!token}
+          />
+          <div className="px-3 pb-1 text-right text-[11px] text-[color:var(--color-muted)]" title='Versión de la app'>v{appVersion}</div>
+
+          <OnboardingTour
+            open={showTour}
+            onClose={() => setShowTour(false)}
+            onComplete={async () => {
+              try {
+                await (window as any).electronAPI?.setPreferences?.({ firstRunGuideDone: true })
+              } catch {}
+              setShowTour(false)
+            }}
+          />
+
+          {globalLoading && (
+            <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-[20000]">
+              <div className="glass p-4">Procesando...</div>
+            </div>
+          )}
+
+          <SearchQuickSwitcher open={quickOpen} query={search} onQueryChange={setSearch} onClose={() => setQuickOpen(false)} />
+        </AppShell>
+      </motion.div>
     </>
   )
 }
 
-function CodeBlock ({ code }: { code: string }) {
-  const ref = useRef<HTMLElement>(null)
-
-  useEffect(() => {
-    if (ref.current) {
-      hljs.highlightElement(ref.current)
-    }
-  }, [code])
-
-  return (
-    <pre className='code-block'>
-      <code ref={ref} className='language-javascript'>
-        {code}
-      </code>
-    </pre>
-  )
-}
+// componentes de tarjeta y código movidos a ./components
 
 export default App

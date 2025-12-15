@@ -19,7 +19,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // 👇 ESTA ES LA QUE FALTA
   pasteText: () => ipcRenderer.send('paste-text'),
 
-  toggleFavorite: (value) => ipcRenderer.send('toggle-favorite', value),
+  toggleFavorite: (payload) => ipcRenderer.send('toggle-favorite', payload),
   //Pegar imagen
   pasteImage: () => ipcRenderer.invoke('pasteImage'),
   //updates
@@ -27,4 +27,24 @@ contextBridge.exposeInMainWorld('electronAPI', {
   onUpdateStatus: callback => ipcRenderer.on('update-status', (_, message) => callback(message)),
   // Version app
   getAppVersion: () => ipcRenderer.invoke('get-app-version'),
+  setAuthToken: (token) => ipcRenderer.send('set-auth-token', token),
+  getClipboardHistory: () => ipcRenderer.invoke('get-clipboard-history')
+  ,openImageViewer: (dataUrl) => ipcRenderer.send('open-image-viewer', dataUrl)
+  ,openCodeEditor: (code) => ipcRenderer.send('open-code-editor', code)
+  ,registerDevice: (clientId) => ipcRenderer.invoke('register-device', clientId)
+  ,authLogin: (body) => ipcRenderer.invoke('auth-login', body)
+  ,clearUserData: () => ipcRenderer.invoke('clear-user-data')
+  ,listDevices: () => ipcRenderer.invoke('list-devices')
+  ,loadDeviceHistory: (deviceName) => ipcRenderer.invoke('load-device-history', deviceName)
+  ,switchActiveDevice: (deviceName) => ipcRenderer.invoke('switch-active-device', deviceName)
+  ,getActiveDevice: () => ipcRenderer.invoke('get-active-device')
+  ,onSyncProgress: (callback) => {
+    const listener = (_, data) => callback(data)
+    ipcRenderer.on('sync-progress', listener)
+    return () => ipcRenderer.removeListener('sync-progress', listener)
+  }
+  ,getPreferences: () => ipcRenderer.invoke('get-preferences')
+  ,setPreferences: (patch) => ipcRenderer.invoke('set-preferences', patch)
+  ,searchHistory: (payload) => ipcRenderer.invoke('search-history', payload)
+  ,listRecent: (payload) => ipcRenderer.invoke('list-recent', payload)
 })
