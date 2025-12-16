@@ -19,7 +19,7 @@
       "displayName": "CopyFy++",
       "backgroundColor": "#464646"
     },
-    "buildVersion": "1.2.0.0",
+    "buildVersion": "1.2.1.0",
     "publish": [
       {
         "provider": "github",
