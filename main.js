@@ -18,12 +18,244 @@ const os = require('os')
 const db = require('./db')
 const legacyHistoryPath = path.join(os.homedir(), '.clipboard-history.json')
 const { exec, execFile, spawnSync } = require('child_process')
+const crypto = require('crypto')
 
 let mainWindow
 let history = []
 const childWindows = new Set()
 let tray
 let isQuitting = false
+
+function uriToPath (uri) {
+  let u = String(uri || '').trim()
+  if (!u) return ''
+  if (u.startsWith('file://')) {
+    if (process.platform === 'win32') {
+      u = decodeURI(u.replace(/^file:\/\/\//, ''))
+      return u.replace(/\//g, '\\')
+    } else {
+      return decodeURI(u.replace(/^file:\/\//, ''))
+    }
+  }
+  return u
+}
+
+function parseCFHDrop (buf) {
+  try {
+    if (!Buffer.isBuffer(buf) || buf.length < 6) return []
+    const pFiles = buf.readUInt32LE(0)
+    const fWide = !!buf.readUInt16LE(4)
+    const start = Math.min(Math.max(pFiles, 0), buf.length)
+    const slice = buf.subarray(start)
+    if (fWide) {
+      const raw = slice.toString('utf16le')
+      return raw.split('\0').map(s => String(s || '').trim()).filter(Boolean)
+    } else {
+      const raw = slice.toString('ascii')
+      return raw.split('\0').map(s => String(s || '').trim()).filter(Boolean)
+    }
+  } catch {
+    return []
+  }
+}
+
+function readClipboardFileUris () {
+  try {
+    const formats = (clipboard.availableFormats() || []).map(f => String(f || '').toLowerCase())
+    const out = []
+    if (formats.includes('text/uri-list')) {
+      const buf = clipboard.readBuffer('text/uri-list')
+      const txt = Buffer.isBuffer(buf) ? buf.toString('utf-8') : ''
+      for (const line of String(txt || '').split(/\r?\n/)) {
+        const s = String(line || '').trim()
+        if (s) out.push(s)
+      }
+    }
+    if (formats.includes('public.file-url')) {
+      const buf = clipboard.readBuffer('public.file-url')
+      const txt = Buffer.isBuffer(buf) ? buf.toString('utf-8') : ''
+      for (const line of String(txt || '').split(/\r?\n/)) {
+        const s = String(line || '').trim()
+        if (s) out.push(s)
+      }
+    }
+    if (formats.includes('nsfilenamespboardtype')) {
+      const buf = clipboard.readBuffer('NSFilenamesPboardType')
+      const txt = Buffer.isBuffer(buf) ? buf.toString('utf-8') : ''
+      for (const line of String(txt || '').split(/\r?\n/)) {
+        const s = String(line || '').trim()
+        if (s) out.push(s)
+      }
+    }
+    {
+      const bufW = clipboard.readBuffer('FileNameW')
+      if (Buffer.isBuffer(bufW) && bufW.length > 0) {
+        const raw = bufW.toString('utf16le')
+        const parts = String(raw || '').split('\0').map(s => String(s || '').trim()).filter(Boolean)
+        for (const p of parts) out.push(p)
+      }
+      const bufA = clipboard.readBuffer('FileName')
+      if (Buffer.isBuffer(bufA) && bufA.length > 0) {
+        const raw = bufA.toString('ascii')
+        const parts = String(raw || '').split('\0').map(s => String(s || '').trim()).filter(Boolean)
+        for (const p of parts) out.push(p)
+      }
+      const bufDrop = clipboard.readBuffer('CF_HDROP')
+      if (Buffer.isBuffer(bufDrop) && bufDrop.length > 0) {
+        const parts = parseCFHDrop(bufDrop)
+        for (const p of parts) out.push(p)
+      }
+    }
+    if (formats.includes('x-special/gnome-copied-files')) {
+      const buf = clipboard.readBuffer('x-special/gnome-copied-files')
+      const txt = Buffer.isBuffer(buf) ? buf.toString('utf-8') : ''
+      const lines = String(txt || '').split(/\r?\n/)
+      const rest = lines.filter((_, i) => i > 0)
+      for (const line of rest) {
+        const s = String(line || '').trim()
+        if (s) out.push(s)
+      }
+    }
+    return out
+  } catch {
+    return []
+  }
+}
+
+function getImagePathFromClipboard () {
+  try {
+    const uris = readClipboardFileUris()
+    const paths = uris.map(uriToPath).filter(Boolean)
+    const exts = new Set(['.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp', '.tif', '.tiff', '.ico'])
+    for (const p of paths) {
+      const ext = path.extname(p).toLowerCase()
+      if (exts.has(ext) && fs.existsSync(p)) return p
+    }
+    return null
+  } catch {
+    return null
+  }
+}
+
+function getImageHistoryDir () {
+  const dir = path.join(app.getPath('userData'), 'clipboard-images')
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true })
+  return dir
+}
+
+function readClipboardImageSmart () {
+  try {
+    let img = clipboard.readImage()
+    if (img && !img.isEmpty()) return img
+    const formats = clipboard.availableFormats() || []
+    const tryFormats = ['image/png', 'PNG', 'image/jpeg', 'JFIF', 'image/webp', 'WEBP', 'image/bmp', 'BMP', 'image/tiff', 'TIFF', 'image/gif', 'GIF']
+    for (const f of formats) {
+      if (tryFormats.includes(f)) {
+        const buf = clipboard.readBuffer(f)
+        if (Buffer.isBuffer(buf) && buf.length > 0) {
+          try {
+            const ni = nativeImage.createFromBuffer(buf)
+            if (ni && !ni.isEmpty()) return ni
+          } catch {}
+        }
+      }
+    }
+    for (const f of formats) {
+      const buf = clipboard.readBuffer(f)
+      if (!Buffer.isBuffer(buf) || buf.length === 0) continue
+      let mime = ''
+      const s = String(f || '')
+      if (s.startsWith('image/')) mime = s.toLowerCase()
+      else if (s === 'PNG') mime = 'image/png'
+      else if (s === 'JFIF') mime = 'image/jpeg'
+      else if (s === 'WEBP') mime = 'image/webp'
+      else if (s === 'BMP') mime = 'image/bmp'
+      else if (s === 'TIFF') mime = 'image/tiff'
+      else if (s === 'GIF') mime = 'image/gif'
+      if (!mime) continue
+      try {
+        const dataUrl = `data:${mime};base64,${buf.toString('base64')}`
+        const ni = nativeImage.createFromDataURL(dataUrl)
+        if (ni && !ni.isEmpty()) return ni
+      } catch {}
+    }
+    const html = clipboard.readHTML()
+    if (typeof html === 'string' && html) {
+      const m = html.match(/data:image[^"' ]+/i)
+      if (m && m[0]) {
+        try {
+          const ni = nativeImage.createFromDataURL(m[0])
+          if (ni && !ni.isEmpty()) return ni
+        } catch {}
+      }
+    }
+    const p = getImagePathFromClipboard()
+    if (p) {
+      const ni = nativeImage.createFromPath(p)
+      if (ni && !ni.isEmpty()) return ni
+    }
+    if (process.platform === 'linux') {
+      const sel = clipboard.readImage('selection')
+      if (sel && !sel.isEmpty()) return sel
+    }
+    return nativeImage.createEmpty()
+  } catch {
+    return nativeImage.createEmpty()
+  }
+}
+
+function saveClipboardImagePNG (image) {
+  if (!image || image.isEmpty()) return null
+  const png = image.toPNG()
+  if (!png || png.length === 0) return null
+  const hash = crypto.createHash('sha256').update(png).digest('hex')
+  const dir = getImageHistoryDir()
+  const fileName = `${Date.now()}-${hash.slice(0, 8)}.png`
+  const filePath = path.join(dir, fileName)
+  fs.writeFileSync(filePath, png)
+  const manifestPath = path.join(dir, 'images.json')
+  let manifest = []
+  try {
+    if (fs.existsSync(manifestPath)) {
+      const raw = fs.readFileSync(manifestPath, 'utf-8')
+      manifest = JSON.parse(raw)
+    }
+  } catch {}
+  manifest.push({ file: fileName, hash, createdAt: new Date().toISOString() })
+  try { fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2), 'utf-8') } catch {}
+  return filePath
+}
+
+function startClipboardImagePolling (intervalMs = 1000) {
+  let lastHash = ''
+  let lastFormatsSig = ''
+  setInterval(() => {
+    try {
+      let img = readClipboardImageSmart()
+      if (img && img.isEmpty()) {
+        if (process.platform === 'linux') {
+          const selImg = clipboard.readImage('selection')
+          if (!selImg.isEmpty()) img = selImg
+        }
+        try {
+          const fmts = (clipboard.availableFormats() || []).join('|')
+          if (fmts && fmts !== lastFormatsSig) {
+            lastFormatsSig = fmts
+            try { log.info('Clipboard formats', { formats: fmts }) } catch {}
+          }
+        } catch {}
+      }
+      if (img && !img.isEmpty()) {
+        const png = img.toPNG()
+        const hash = crypto.createHash('sha256').update(png).digest('hex')
+        if (hash !== lastHash) {
+          const saved = saveClipboardImagePNG(img)
+          lastHash = hash
+        }
+      }
+    } catch {}
+  }, Math.max(250, Number(intervalMs) || 1000))
+}
 
 function normalizeHistory (raw) {
   if (!Array.isArray(raw)) return []
@@ -399,7 +631,63 @@ app.whenReady().then(async () => {
     }
 
     setInterval(() => {
-      const image = clipboard.readImage()
+      try {
+        const currentImage = clipboard.readImage()
+        if (currentImage.isEmpty()) {
+          const imgPath = getImagePathFromClipboard()
+          if (imgPath) {
+            const ni = nativeImage.createFromPath(imgPath)
+            if (!ni.isEmpty()) {
+              clipboard.writeImage(ni)
+              try { saveClipboardImagePNG(ni) } catch {}
+              const dataUrl = ni.toDataURL()
+              if (
+                typeof dataUrl === 'string' &&
+                dataUrl.startsWith('data:image') &&
+                dataUrl.trim().length > 30 &&
+                dataUrl !== lastImageDataUrl &&
+                !history.some(item => typeof item === 'object' && item.value === dataUrl)
+              ) {
+                lastImageDataUrl = dataUrl
+                if (authToken) {
+                  db.insert(getCurrentDeviceName(), dataUrl)
+                  history = db.getAll(getCurrentDeviceName())
+                } else {
+                  db.insertGuest(getCurrentDeviceName(), dataUrl)
+                  db.trimGuestToLimit(getCurrentDeviceName(), 50)
+                  history = db.getAllGuest(getCurrentDeviceName())
+                }
+                if (mainWindow?.webContents) {
+                  mainWindow.webContents.send('clipboard-update', history)
+                }
+              }
+            }
+          }
+        }
+      } catch {}
+      const image = readClipboardImageSmart()
+      if (image.isEmpty() && process.platform === 'linux') {
+        const selImg = clipboard.readImage('selection')
+        if (!selImg.isEmpty()) {
+          const dataUrl = selImg.toDataURL()
+          if (typeof dataUrl === 'string' && dataUrl.startsWith('data:image') && dataUrl.trim().length > 30) {
+            try { saveClipboardImagePNG(selImg) } catch {}
+            lastImageDataUrl = dataUrl
+            if (authToken) {
+              db.insert(getCurrentDeviceName(), dataUrl)
+              history = db.getAll(getCurrentDeviceName())
+            } else {
+              db.insertGuest(getCurrentDeviceName(), dataUrl)
+              db.trimGuestToLimit(getCurrentDeviceName(), 50)
+              history = db.getAllGuest(getCurrentDeviceName())
+            }
+            if (mainWindow?.webContents) {
+              mainWindow.webContents.send('clipboard-update', history)
+            }
+            return
+          }
+        }
+      }
       const text = clipboard.readText()
 
       // --- Si hay nueva imagen ---
@@ -421,6 +709,10 @@ app.whenReady().then(async () => {
         }
 
         lastImageDataUrl = dataUrl
+        try {
+          const savedPath = saveClipboardImagePNG(image)
+          if (savedPath) { try { log.info('Imagen guardada', { savedPath }) } catch {} }
+        } catch {}
         if (authToken) {
           db.insert(getCurrentDeviceName(), dataUrl)
           history = db.getAll(getCurrentDeviceName())
@@ -453,6 +745,7 @@ app.whenReady().then(async () => {
   }
 
   pollClipboard()
+  startClipboardImagePolling(1000)
 
   const toggleShow = () => {
     if (!mainWindow) {

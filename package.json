@@ -1,6 +1,6 @@
 {
   "name": "copyfy",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "main": "main.js",
   "scripts": {
     "dev": "concurrently \"npm run dev --prefix frontend\" \"wait-on http://localhost:5173 && electron .\"",
@@ -84,7 +84,7 @@
   "description": "Clipboard manager con sincronización y atajos, empaquetado para Electron",
   "devDependencies": {
     "concurrently": "^9.2.0",
-    "electron": "^36.5.0",
+    "electron": "^28.3.3",
     "electron-builder": "^26.0.12",
     "node-gyp": "^11.2.0",
     "wait-on": "^8.0.3"
