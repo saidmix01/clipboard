@@ -49,4 +49,5 @@ contextBridge.exposeInMainWorld('electronAPI', {
   ,searchHistory: (payload) => ipcRenderer.invoke('search-history', payload)
   ,listRecent: (payload) => ipcRenderer.invoke('list-recent', payload)
   ,installLinuxPasteSupport: () => ipcRenderer.invoke('install-linux-paste-support')
+  ,deleteHistoryItem: (id) => ipcRenderer.invoke('delete-history-item', id)
 })

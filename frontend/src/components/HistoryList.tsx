@@ -11,9 +11,10 @@ type Props = {
   highlightMatch: (text: string, query: string) => React.ReactNode[] | string
   canFavorite?: boolean
   canOpenModal?: boolean
+  onContextMenu?: (e: React.MouseEvent, item: HistoryItem) => void
 }
 
-export default function HistoryList({ items, search, selectedIndex, onToggleFavorite, onCopy, highlightMatch, canFavorite, canOpenModal }: Props) {
+export default function HistoryList({ items, search, selectedIndex, onToggleFavorite, onCopy, highlightMatch, canFavorite, canOpenModal, onContextMenu }: Props) {
   const itemRefs = useRef<(HTMLDivElement | null)[]>([])
   return (
     <div className="flex-1 overflow-auto px-2 py-2 text-[color:var(--color-text)]" style={{ scrollbarWidth: 'thin' }}>
@@ -31,6 +32,7 @@ export default function HistoryList({ items, search, selectedIndex, onToggleFavo
               highlightMatch={highlightMatch}
               canFavorite={!!canFavorite}
               canOpenModal={!!canOpenModal}
+              onContextMenu={(e) => onContextMenu?.(e, item)}
             />
           </div>
         ))

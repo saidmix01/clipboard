@@ -564,6 +564,7 @@ function createWindow () {
 }
 
 app.whenReady().then(async () => {
+  try { require('./autolaunch').configureAutoLaunch() } catch (e) { log.error('Autolaunch setup failed', e) }
   await db.init(app)
   createWindow()
   const iconPath = path.join(
@@ -618,6 +619,7 @@ app.whenReady().then(async () => {
 
   const pollClipboard = () => {
     let lastImageDataUrl = ''
+    let lastText = ''
 
     // Normalizar historial ya cargado y enviar al renderer inmediatamente
     try {
@@ -645,14 +647,16 @@ app.whenReady().then(async () => {
                 typeof dataUrl === 'string' &&
                 dataUrl.startsWith('data:image') &&
                 dataUrl.trim().length > 30 &&
-                dataUrl !== lastImageDataUrl &&
-                !history.some(item => typeof item === 'object' && item.value === dataUrl)
+                dataUrl !== lastImageDataUrl
               ) {
                 lastImageDataUrl = dataUrl
                 if (authToken) {
-                  db.insert(getCurrentDeviceName(), dataUrl)
-                  history = db.getAll(getCurrentDeviceName())
-                } else {
+          db.insert(getCurrentDeviceName(), dataUrl)
+          history = db.getAll(getCurrentDeviceName())
+          saveClipboardRecord('image', dataUrl, { format: 'dataURL' })
+            .then(rid => { if(rid) db.updateRemoteIdByValue(getCurrentDeviceName(), dataUrl, rid) })
+            .catch(err => log.error('Immediate save error (image path)', err))
+        } else {
                   db.insertGuest(getCurrentDeviceName(), dataUrl)
                   db.trimGuestToLimit(getCurrentDeviceName(), 50)
                   history = db.getAllGuest(getCurrentDeviceName())
@@ -676,6 +680,9 @@ app.whenReady().then(async () => {
             if (authToken) {
               db.insert(getCurrentDeviceName(), dataUrl)
               history = db.getAll(getCurrentDeviceName())
+              saveClipboardRecord('image', dataUrl, { format: 'dataURL' })
+                .then(rid => { if(rid) db.updateRemoteIdByValue(getCurrentDeviceName(), dataUrl, rid) })
+                .catch(err => log.error('Immediate save error (linux sel)', err))
             } else {
               db.insertGuest(getCurrentDeviceName(), dataUrl)
               db.trimGuestToLimit(getCurrentDeviceName(), 50)
@@ -700,10 +707,7 @@ app.whenReady().then(async () => {
           !dataUrl.startsWith('data:image') ||
           dataUrl === 'data:image/png;base64,' || // imagen vacía común
           dataUrl.trim().length < 30 || // corta, posiblemente vacía
-          dataUrl === lastImageDataUrl || // repetida
-          history.some(
-            item => typeof item === 'object' && item.value === dataUrl
-          )
+          dataUrl === lastImageDataUrl // repetida
         ) {
           return
         }
@@ -716,6 +720,7 @@ app.whenReady().then(async () => {
         if (authToken) {
           db.insert(getCurrentDeviceName(), dataUrl)
           history = db.getAll(getCurrentDeviceName())
+          saveClipboardRecord('image', dataUrl, { format: 'dataURL' }).catch(err => log.error('Immediate save error (image)', err))
         } else {
           db.insertGuest(getCurrentDeviceName(), dataUrl)
           db.trimGuestToLimit(getCurrentDeviceName(), 50)
@@ -729,11 +734,13 @@ app.whenReady().then(async () => {
       if (
         typeof text === 'string' &&
         text.trim() !== '' &&
-        !history.some(item => item.value === text)
+        text !== lastText
       ) {
+        lastText = text
         if (authToken) {
           db.insert(getCurrentDeviceName(), text)
           history = db.getAll(getCurrentDeviceName())
+          saveClipboardRecord('text', text).catch(err => log.error('Immediate save error (text)', err))
         } else {
           db.insertGuest(getCurrentDeviceName(), text)
           db.trimGuestToLimit(getCurrentDeviceName(), 50)
@@ -789,10 +796,7 @@ app.on('will-quit', () => {
   try { globalShortcut.unregisterAll() } catch {}
 })
 
-app.setLoginItemSettings({
-  openAtLogin: true,
-  path: process.execPath
-})
+
 
 // Evento para forzar la actualización desde el frontend
 ipcMain.on('force-update', () => {
@@ -866,6 +870,43 @@ ipcMain.handle('clear-history', () => {
     log.info('Historial borrado')
   } catch (err) {
     log.error('Error al borrar historial', err)
+  }
+})
+
+// Borrar item especifico
+ipcMain.handle('delete-history-item', async (_, id) => {
+  try {
+    const item = db.getById(id)
+    log.info('Solicitud de borrado:', { id, found: !!item, hasAuth: !!authToken })
+    
+    if (authToken && item) {
+       try {
+          const axiosInstance = getAxiosInstance()
+          const clientId = activeDeviceName || os.hostname()
+          const payload = { clientId, value: item.value }
+          
+          log.info('Enviando POST al backend (by-value):', { url: '/clipboard/by-value', payload })
+          await axiosInstance.post('/clipboard/by-value', payload, {
+            headers: { 'Content-Type': 'application/json' }
+          })
+          
+          log.info('Borrado del backend exitoso')
+        } catch (e) {
+         log.error('Error borrando del backend', e?.message || e)
+       }
+    } else {
+      if (!authToken) log.info('No se borra del backend: No hay token')
+      else if (!item) log.info('No se borra del backend: Item no encontrado localmente')
+    }
+    
+    db.deleteById(id)
+    history = authToken ? db.getAll(getCurrentDeviceName()) : db.getAllGuest(getCurrentDeviceName())
+    mainWindow.webContents.send('clipboard-update', history)
+    log.info('Item borrado localmente:', id)
+    return { success: true }
+  } catch (err) {
+    log.error('Error al borrar item', err)
+    return { success: false, error: err.message }
   }
 })
 
@@ -1035,8 +1076,8 @@ ipcMain.handle('pasteImage', () => {
 ipcMain.handle('get-app-version', () => {
   return app.getVersion()
 })
-// let BACKEND_URL = 'https://copyfy.webcolsoluciones.com.co'
-let BACKEND_URL = 'http://localhost:3000'
+let BACKEND_URL = 'https://copyfy.webcolsoluciones.com.co'
+//let BACKEND_URL = 'http://localhost:3000'
 try { BACKEND_URL = require('./config').BACKEND_URL || BACKEND_URL } catch {}
 let authToken = null
 let deviceId = null
@@ -1378,9 +1419,16 @@ async function saveClipboardRecord (type, value, meta = {}, overrides = {}) {
       ? { type, value, meta, clientId: desiredClientId, deviceId: desiredDeviceId }
       : { type, value, meta, clientId: desiredClientId }
     log.info('clipboard save request', { type, deviceId: desiredDeviceId })
-    await axiosInstance.post('/clipboard', payload)
+    const res = await axiosInstance.post('/clipboard', payload)
+    const data = res?.data
+    const item = (data && typeof data === 'object') ? (data.data ?? data) : null
+    return item?.id
   } catch (error) {
-    log.error('clipboard save error', error?.message || error)
+    if (error.response && error.response.status === 413) {
+      log.warn('clipboard save skipped: payload too large (413)', { type, size: value?.length })
+    } else {
+      log.error('clipboard save error', error?.message || error)
+    }
   }
 }
 

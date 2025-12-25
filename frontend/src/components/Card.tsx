@@ -38,9 +38,10 @@ type Props = {
   search: string
   canFavorite?: boolean
   canOpenModal?: boolean
+  onContextMenu?: (e: React.MouseEvent) => void
 }
 
-export default function Card({ item, selected, onCopy, onToggleFavorite, highlightMatch, search, canFavorite = true, canOpenModal = true }: Props) {
+export default function Card({ item, selected, onCopy, onToggleFavorite, highlightMatch, search, canFavorite = true, canOpenModal = true, onContextMenu }: Props) {
   const [expanded, setExpanded] = useState(false)
   const isImage = item.value.startsWith('data:image')
   const isCode = isCodeSnippet(item.value)
@@ -54,6 +55,7 @@ export default function Card({ item, selected, onCopy, onToggleFavorite, highlig
       className={`relative mb-2 p-2 rounded-[12px] border border-[color:var(--color-border)] ${selected ? 'ring-2 ring-[color:var(--color-primary)]' : ''}`}
       style={{ cursor: 'pointer', backgroundColor: 'var(--color-surface)', maxHeight: expanded ? undefined : '140px', overflow: 'hidden' }}
       onClick={onCopy}
+      onContextMenu={onContextMenu}
     >
       {canFavorite && (
         <button

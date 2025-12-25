@@ -23,11 +23,30 @@ export default function OnboardingTour({ open, onClose, onComplete }: Props) {
       )
     },
     {
+      title: 'Buscador rápido (Ctrl + K)',
+      body: (
+        <>
+          <p className="mt-2">Pulsa <b>Ctrl + K</b> para abrir el buscador rápido y escribir tu consulta.</p>
+          <p className="mt-1 text-[color:var(--color-muted)]">Presiona <b>Escape</b> para cerrarlo. Ideal para moverte sin usar el mouse.</p>
+        </>
+      )
+    },
+    {
       title: 'Inicia sesión o regístrate',
       body: (
         <>
           <p className="mt-2">Usa el Dock inferior para <b>Iniciar sesión</b> o <b>Registrarse</b>.</p>
           <p className="mt-1 text-[color:var(--color-muted)]">Así sincronizas tu portapapeles y dispositivos en la nube.</p>
+          <p className="mt-1 text-[color:var(--color-muted)]">Tu avatar se muestra en el Dock; desde <b>Perfil</b> puedes gestionar tu cuenta.</p>
+        </>
+      )
+    },
+    {
+      title: 'Sincronización y dispositivos',
+      body: (
+        <>
+          <p className="mt-2">En <b>Ajustes</b> puedes <b>Sincronizar ahora</b> y <b>Cambiar dispositivo</b>.</p>
+          <p className="mt-1 text-[color:var(--color-muted)]">La app muestra el <b>progreso de sincronización</b> y descarga/sube cambios automáticamente.</p>
         </>
       )
     },
@@ -46,6 +65,7 @@ export default function OnboardingTour({ open, onClose, onComplete }: Props) {
         <>
           <p className="mt-2">Selecciona con ↑ ↓ y pulsa <b>Enter</b> para copiar y pegar automáticamente.</p>
           <p className="mt-1 text-[color:var(--color-muted)]">Las imágenes también se copian y se pegan en apps compatibles.</p>
+          <p className="mt-1 text-[color:var(--color-muted)]">Incluye <b>visor de imágenes</b> con <b>OCR de selección</b> para extraer texto de zonas específicas.</p>
         </>
       )
     },
@@ -55,6 +75,16 @@ export default function OnboardingTour({ open, onClose, onComplete }: Props) {
         <>
           <p className="mt-2">En <b>Ajustes</b> puedes cambiar tema, sincronizar y gestionar dispositivos.</p>
           <p className="mt-1 text-[color:var(--color-muted)]">Si algo falla, usa “Sincronizar ahora” para refrescar tu historial.</p>
+          <p className="mt-1 text-[color:var(--color-muted)]">También puedes <b>buscar actualizaciones</b> y alternar <b>modo claro/oscuro</b>.</p>
+        </>
+      )
+    },
+    {
+      title: 'Gestión del historial',
+      body: (
+        <>
+          <p className="mt-2">Borra elementos o limpia el historial completo desde la interfaz.</p>
+          <p className="mt-1 text-[color:var(--color-muted)]">La app confirma antes de eliminar, para evitar pérdidas por accidente.</p>
         </>
       )
     }
