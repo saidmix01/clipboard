@@ -1,6 +1,6 @@
 {
   "name": "copyfy",
-  "version": "1.2.1",
+  "version": "1.2.2",
   "main": "main.js",
   "scripts": {
     "dev": "concurrently \"npm run dev --prefix frontend\" \"wait-on http://localhost:5173 && electron .\"",
@@ -19,7 +19,7 @@
       "displayName": "CopyFy++",
       "backgroundColor": "#464646"
     },
-    "buildVersion": "1.2.1.0",
+    "buildVersion": "1.2.2.0",
     "publish": [
       {
         "provider": "github",

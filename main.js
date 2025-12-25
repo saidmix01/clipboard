@@ -21,6 +21,7 @@ const { exec, execFile, spawnSync } = require('child_process')
 const crypto = require('crypto')
 
 let mainWindow
+let quickWindow
 let history = []
 const childWindows = new Set()
 let tray
@@ -546,6 +547,11 @@ function createWindow () {
         height: windowHeight
       })
     }, stepTime)
+    setTimeout(() => {
+      try { mainWindow.focus() } catch {}
+      try { mainWindow.webContents.focus() } catch {}
+      try { mainWindow.webContents.send('focus-search') } catch {}
+    }, 150)
   })
 
   // Evitar cierre completo
@@ -560,6 +566,13 @@ function createWindow () {
   mainWindow.on('minimize', event => {
     event.preventDefault()
     mainWindow.hide()
+  })
+  mainWindow.on('show', () => {
+    setTimeout(() => {
+      try { mainWindow.focus() } catch {}
+      try { mainWindow.webContents.focus() } catch {}
+      try { mainWindow.webContents.send('focus-search') } catch {}
+    }, 120)
   })
 }
 
@@ -589,7 +602,11 @@ app.whenReady().then(async () => {
       mainWindow.hide()
     } else {
       mainWindow.show()
-      mainWindow.focus()
+      setTimeout(() => {
+        try { mainWindow.focus() } catch {}
+        try { mainWindow.webContents.focus() } catch {}
+        try { mainWindow.webContents.send('focus-search') } catch {}
+      }, 120)
     }
   })
   if (process.platform === 'darwin' && app.dock && app.dock.hide) {
@@ -753,6 +770,20 @@ app.whenReady().then(async () => {
 
   pollClipboard()
   startClipboardImagePolling(1000)
+  if (app.isPackaged) {
+    try { mainWindow.webContents.send('update-status', 'Comprobando actualizaciones al iniciar...') } catch {}
+    setTimeout(() => {
+      try {
+        Promise.resolve(autoUpdater.checkForUpdates()).catch(err => {
+          try { log.error('checkForUpdates startup error', err?.message || err) } catch {}
+        })
+      } catch (e) {
+        try { log.error('autoUpdater startup error', e?.message || e) } catch {}
+      }
+    }, 3000)
+  } else {
+    try { mainWindow.webContents.send('update-status', 'Entorno de desarrollo: se omite la comprobación automática.') } catch {}
+  }
 
   const toggleShow = () => {
     if (!mainWindow) {
@@ -771,13 +802,21 @@ app.whenReady().then(async () => {
     const y = 0
     mainWindow.setBounds({ x, y, width: windowWidth, height: windowHeight })
     mainWindow.show()
-    mainWindow.focus()
+    setTimeout(() => {
+      try { mainWindow.focus() } catch {}
+      try { mainWindow.webContents.focus() } catch {}
+      try { mainWindow.webContents.send('focus-search') } catch {}
+    }, 120)
   }
 
   globalShortcut.register('Alt+X', toggleShow)
   if (process.platform === 'darwin') {
     globalShortcut.register('Command+Option+X', toggleShow)
   }
+
+  // Quick switcher desactivado
+
+  // Quick switcher desactivado
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
@@ -796,11 +835,48 @@ app.on('will-quit', () => {
   try { globalShortcut.unregisterAll() } catch {}
 })
 
+// Quick switcher desactivado
+
+ipcMain.on('set-search-query', (_, q) => {
+  try {
+    const s = typeof q === 'string' ? q : ''
+    if (mainWindow?.webContents) {
+      mainWindow.webContents.send('set-search-query', s)
+      try {
+        const qTrim = String(s || '').trim()
+        let items = []
+        if (qTrim.length === 0) {
+          if (!authToken) {
+            items = db.getRecentGuest(getCurrentDeviceName(), 'all', 50)
+          } else {
+            items = db.getRecent(getCurrentDeviceName(), 'all', 50)
+          }
+        } else {
+          if (!authToken) {
+            items = db.searchGuest(getCurrentDeviceName(), qTrim, 'all')
+          } else {
+            items = db.search(getCurrentDeviceName(), qTrim, 'all')
+          }
+        }
+        mainWindow.webContents.send('apply-search', { query: s, items })
+      } catch (e) {
+        try { log.error('apply-search error', e?.message || e) } catch {}
+      }
+    }
+  } catch (e) {
+    try { log.error('set-search-query main error', e?.message || e) } catch {}
+  }
+})
+
 
 
 // Evento para forzar la actualización desde el frontend
 ipcMain.on('force-update', () => {
   log.info('🧪 Botón forzó búsqueda de actualización...')
+  if (!app.isPackaged) {
+    try { mainWindow.webContents.send('update-status', 'Solo disponible en producción.') } catch {}
+    return
+  }
   Promise.resolve(autoUpdater.checkForUpdates()).catch(err => {
     try { log.error('checkForUpdates error', err?.message || err) } catch {}
   })
