@@ -27,6 +27,21 @@ const childWindows = new Set()
 let tray
 let isQuitting = false
 
+const gotTheLock = app.requestSingleInstanceLock()
+
+if (!gotTheLock) {
+  app.quit()
+} else {
+  app.on('second-instance', (event, commandLine, workingDirectory) => {
+    // Si alguien intenta correr una segunda instancia, enfocamos nuestra ventana
+    if (mainWindow) {
+      if (mainWindow.isMinimized()) mainWindow.restore()
+      if (!mainWindow.isVisible()) mainWindow.show()
+      mainWindow.focus()
+    }
+  })
+}
+
 function uriToPath (uri) {
   let u = String(uri || '').trim()
   if (!u) return ''
@@ -809,9 +824,19 @@ app.whenReady().then(async () => {
     }, 120)
   }
 
-  globalShortcut.register('Alt+X', toggleShow)
+  // Limpiar atajos previos para evitar conflictos
+  try { globalShortcut.unregisterAll() } catch {}
+
+  const ret = globalShortcut.register('Alt+X', toggleShow)
+  if (!ret) {
+    try { log.warn('Fallo al registrar shortcut Alt+X') } catch {}
+  }
+
   if (process.platform === 'darwin') {
     globalShortcut.register('Command+Option+X', toggleShow)
+  } else if (process.platform === 'linux') {
+    // Alternativa para Linux donde Alt suele estar reservado
+    globalShortcut.register('Control+Alt+X', toggleShow)
   }
 
   // Quick switcher desactivado
