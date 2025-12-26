@@ -79,7 +79,10 @@
     }
   },
   "keywords": [],
-  "author": "Said Andres Avendaño",
+  "author": {
+    "name": "Said Andres Avendaño",
+    "email": "tuemail@correo.com"
+  },
   "license": "ISC",
   "description": "Clipboard manager con sincronización y atajos, empaquetado para Electron",
   "devDependencies": {
