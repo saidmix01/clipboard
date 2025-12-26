@@ -801,13 +801,18 @@ app.whenReady().then(async () => {
   }
 
   const toggleShow = () => {
+    log.info('Shortcut toggleShow triggered')
     if (!mainWindow) {
       createWindow()
     }
-    if (mainWindow.isVisible()) {
+    
+    // Si la ventana está visible y NO está minimizada, la ocultamos
+    if (mainWindow.isVisible() && !mainWindow.isMinimized()) {
       mainWindow.hide()
       return
     }
+
+    // Si está oculta o minimizada, la mostramos
     const display = screen.getPrimaryDisplay()
     const screenWidth = display.workArea.width
     const screenHeight = display.workArea.height
@@ -816,7 +821,10 @@ app.whenReady().then(async () => {
     const x = screenWidth - windowWidth
     const y = 0
     mainWindow.setBounds({ x, y, width: windowWidth, height: windowHeight })
+    
+    if (mainWindow.isMinimized()) mainWindow.restore()
     mainWindow.show()
+    
     setTimeout(() => {
       try { mainWindow.focus() } catch {}
       try { mainWindow.webContents.focus() } catch {}
