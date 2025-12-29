@@ -27,6 +27,11 @@ const childWindows = new Set()
 let tray
 let isQuitting = false
 
+if (process.platform === 'linux') {
+  try { app.setName('copyfy') } catch {}
+  try { app.commandLine.appendSwitch('ozone-platform', 'x11') } catch {}
+}
+
 const gotTheLock = app.requestSingleInstanceLock()
 
 if (!gotTheLock) {

@@ -73,7 +73,11 @@
       "synopsis": "CopyFy++ Clipboard manager",
       "desktop": {
         "entry": {
-          "Categories": "Utility;"
+          "Categories": "Utility;",
+          "Name": "CopyFy++",
+          "TryExec": "copyfy",
+          "Terminal": "false",
+          "StartupWMClass": "copyfy"
         }
       }
     }
