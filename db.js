@@ -237,7 +237,6 @@ function getRecent(device, filter, limit) {
   if (f === 'image') where.push("value LIKE 'data:image%'")
   else if (f === 'text') where.push("value NOT LIKE 'data:image%'")
   else if (f === 'favorite') where.push('favorite=1')
-  else if (f === 'all') where.push('favorite=0')
   const n = Math.max(1, Math.min(1000, Number(limit || 50)))
   const sql = `SELECT id, value, favorite FROM history WHERE ${where.join(' AND ')} ORDER BY created_at DESC, id DESC LIMIT ${n}`
   const stmt = db.prepare(sql)
