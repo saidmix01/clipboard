@@ -366,13 +366,20 @@ function updateRemoteId(device, clientItemId, remoteId) {
 
 function importItems(device, items) {
   const insertStmt = db.prepare('INSERT OR IGNORE INTO history(value, favorite, device, created_at) VALUES(?, ?, ?, strftime(\'%Y-%m-%d %H:%M:%f\', \'now\'))')
+  const updateStmt = db.prepare('UPDATE history SET remote_id=?, favorite=?, updated_at=strftime(\'%Y-%m-%d %H:%M:%f\', \'now\'), is_synced=1 WHERE device=? AND value=?')
   for (const it of Array.isArray(items) ? items : []) {
     if (!it || typeof it.value !== 'string') continue
-    insertStmt.bind([it.value, it.favorite ? 1 : 0, device])
+    const fav = it.favorite ? 1 : 0
+    insertStmt.bind([it.value, fav, device])
     insertStmt.step()
     insertStmt.reset()
+    const rid = it.id ? String(it.id) : null
+    updateStmt.bind([rid, fav, device, it.value])
+    updateStmt.step()
+    updateStmt.reset()
   }
   insertStmt.free()
+  updateStmt.free()
   persist()
 }
 
@@ -472,7 +479,6 @@ function search(device, query, filter) {
   if (f === 'image') where.push("value LIKE 'data:image%'")
   else if (f === 'text') where.push("value NOT LIKE 'data:image%'")
   else if (f === 'favorite') where.push('favorite=1')
-  else if (f === 'all') where.push('favorite=0')
   where.push('is_deleted=0')
   const sql = `SELECT value, favorite FROM history WHERE ${where.join(' AND ')} ORDER BY created_at DESC, id DESC`
   const stmt = db.prepare(sql)

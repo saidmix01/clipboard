@@ -993,10 +993,35 @@ ipcMain.on('copy-to-clipboard', (_, text) => {
   clipboard.writeText(text)
 })
 //limpiar historial
-ipcMain.handle('clear-history', () => {
-  history = []
-
+ipcMain.handle('clear-history', async () => {
   try {
+    if (authToken) {
+      const axiosInstance = getAxiosInstance()
+      const clientId = activeDeviceName || os.hostname()
+      try {
+        log.info('Intentando DELETE backend por clientId (path param)', { url: `/clipboard/by-client/${clientId}` })
+        await axiosInstance.delete(`/clipboard/by-client/${clientId}`)
+        log.info('Historial borrado en backend (DELETE path)')
+      } catch (e) {
+        try { log.warn('DELETE path falló, probando POST /clipboard/by-client', e?.message || e) } catch {}
+        try {
+          const payload = { clientId }
+          log.info('Intentando POST backend por clientId (body)', { url: '/clipboard/by-client', payload })
+          await axiosInstance.post('/clipboard/by-client', payload, { headers: { 'Content-Type': 'application/json' } })
+          log.info('Historial borrado en backend (POST body)')
+        } catch (e2) {
+          try { log.warn('POST /clipboard/by-client falló, probando DELETE /clipboard con params', e2?.message || e2) } catch {}
+          try {
+            log.info('Intentando DELETE backend por clientId (query param)', { url: '/clipboard', params: { clientId } })
+            await axiosInstance.delete('/clipboard', { params: { clientId } })
+            log.info('Historial borrado en backend (DELETE query)')
+          } catch (e3) {
+            log.error('Error borrando historial en backend con todos los intentos', e3?.message || e3)
+          }
+        }
+      }
+    }
+    history = []
     if (authToken) db.clear(getCurrentDeviceName())
     else db.clearGuest(getCurrentDeviceName())
     mainWindow.webContents.send('clipboard-update', history)
@@ -1197,9 +1222,24 @@ ipcMain.on('toggle-favorite', async (event, payload) => {
       mainWindow.webContents.send('clipboard-update', history)
     }
  
+    let remoteId = null
     if (authToken && id) {
       try {
-        await updateClipboardRecord(id, { favorite: !!newFavorite })
+        const rec = db.getById(id)
+        remoteId = rec && rec.remote_id
+        log.info('toggle-favorite remote', { localId: id, remoteId, value, favorite: !!newFavorite })
+        if (remoteId) {
+          await updateClipboardRecord(remoteId, { favorite: !!newFavorite })
+        }
+      } catch {}
+    }
+    if (!remoteId) {
+      try { 
+        log.info('toggle-favorite missing remote_id, syncing')
+        await syncWithServer() 
+        const rec2 = db.getById(id)
+        const remoteId2 = rec2 && rec2.remote_id
+        log.info('toggle-favorite post-sync remote', { localId: id, remoteId: remoteId2, value, favorite: !!newFavorite })
       } catch {}
     }
   } catch (err) {
@@ -1442,8 +1482,11 @@ ipcMain.handle('switch-active-device', async (_, deviceName) => {
     if (mainWindow?.webContents) {
       mainWindow.webContents.send('sync-progress', { percentage: 1, message: 'Sincronizando…' })
     }
-    let finished = false
-    const syncPromise = (async () => { await syncClipboardHistory(); finished = true })()
+  let finished = false
+    const syncPromise = (async () => { 
+      await syncClipboardHistory(); 
+      finished = true 
+    })()
     const timeoutMs = 30 * 1000
     const timeout = new Promise(resolve => setTimeout(resolve, timeoutMs))
     await Promise.race([syncPromise, timeout])
@@ -1596,12 +1639,16 @@ async function saveClipboardRecord (type, value, meta = {}, overrides = {}) {
     const clientIdOverride = overrides && overrides.clientId ? String(overrides.clientId) : null
     const deviceIdOverride = overrides && overrides.deviceId ? overrides.deviceId : null
     const hostname = os.hostname()
-    const desiredClientId = clientIdOverride ?? (activeDeviceName || hostname)
+    let desiredClientId = clientIdOverride ?? (activeDeviceName || hostname)
     let desiredDeviceId = null
     if (deviceIdOverride) {
       desiredDeviceId = deviceIdOverride
     } else if (sanitizeDeviceName(desiredClientId) === sanitizeDeviceName(hostname)) {
       desiredDeviceId = deviceId || (await ensureDeviceRegistered())
+    } else {
+      const resolved = await resolveDeviceIdentifiers(desiredClientId)
+      desiredDeviceId = resolved.deviceId || null
+      desiredClientId = resolved.clientId || desiredClientId
     }
     const payload = desiredDeviceId
       ? { type, value, meta, clientId: desiredClientId, deviceId: desiredDeviceId }
@@ -1623,9 +1670,11 @@ async function saveClipboardRecord (type, value, meta = {}, overrides = {}) {
 async function updateClipboardRecord (id, patch) {
   try {
     const axiosInstance = getAxiosInstance()
+    log.info('clipboard update request', { id, patch: (patch && typeof patch==='object')?patch:{} })
     await axiosInstance.put(`/clipboard/${id}`,(patch && typeof patch==='object')?patch:{})
   } catch (error) {
     log.error('clipboard update error', error?.message || error)
+    try { if (error && error.response) { log.error('clipboard update response', error.response.data) } } catch {}
   }
 }
 
@@ -1783,8 +1832,9 @@ async function syncClipboardHistory () {
     
     const backendItems = Array.isArray(items)
       ? items.map(it => ({
-          value: String(it.value ?? ''),
-          favorite: !!it.favorite
+          id: it && (it.id || (it.item && it.item.id)) || null,
+          value: String((it && (it.value || (it.item && it.item.value))) ?? ''),
+          favorite: !!(it && (it.favorite || (it.item && it.item.favorite)))
         }))
       : []
 
@@ -1811,21 +1861,27 @@ async function syncClipboardHistory () {
 
 async function fetchBackendFavorites () {
   const axiosInstance = getAxiosInstance()
+  log.info('favorite get request', { url: `${BACKEND_URL}/favorite/get_favorites` })
   const res = await axiosInstance.get('/favorite/get_favorites')
+  try { log.info('favorite get response', { status: res.status, data: res.data }) } catch {}
   if (!res.data.status) throw new Error('Error al obtener favoritos')
   return res.data.data
 }
 
 async function createFavorite (value) {
   const axiosInstance = getAxiosInstance()
+  log.info('favorite save request', { url: `${BACKEND_URL}/favorite/save`, body: { value } })
   const res = await axiosInstance.post('/favorite/save', { value })
+  try { log.info('favorite save response', { status: res.status, data: res.data }) } catch {}
   if (!res.data.status) throw new Error('Error al crear favorito')
   return res.data.data
 }
 
 async function deleteFavorite (value) {
   const axiosInstance = getAxiosInstance()
+  log.info('favorite delete request', { url: `${BACKEND_URL}/favorite/delete`, body: { value } })
   const res = await axiosInstance.post(`/favorite/delete`,{value})
+  try { log.info('favorite delete response', { status: res.status, data: res.data }) } catch {}
   if (!res.data.status) {
     log.error('Error al eliminar favorito:', res.data.message)
     throw new Error('Error al eliminar favorito')
@@ -1846,9 +1902,11 @@ async function syncFavorites () {
     if (!authToken) return
     if (Date.now() < favoritesSyncCooldownUntil) return
     const localFavorites = readLocalFavorites()
+    log.info('syncFavorites start', { localCount: localFavorites.length })
     const backendFavorites = await fetchBackendFavorites()
 
     const backendValues = backendFavorites.map(fav => fav.value)
+    log.info('syncFavorites local/remote', { local: localFavorites.slice(0, 50), remote: backendValues.slice(0, 50) })
 
     for (const value of localFavorites) {
       if (!backendValues.includes(value)) {
