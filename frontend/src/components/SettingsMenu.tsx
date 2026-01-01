@@ -1,5 +1,5 @@
 import DetailsModal from './DetailsModal'
-import { ComputerDesktopIcon, ArrowPathIcon, MoonIcon, SunIcon, TrashIcon, CloudArrowDownIcon } from '@heroicons/react/24/outline'
+import { ComputerDesktopIcon, ArrowPathIcon, MoonIcon, SunIcon, TrashIcon, CloudArrowDownIcon, InformationCircleIcon } from '@heroicons/react/24/outline'
 
 type Props = {
   open: boolean
@@ -10,9 +10,10 @@ type Props = {
   onToggleDark: () => void
   onClearHistory: () => void
   onSyncNow: () => void
+  onOpenAbout: () => void
 }
 
-export default function SettingsMenu({ open, darkMode, onClose, onChangeDevice, onForceUpdate, onToggleDark, onClearHistory, onSyncNow }: Props) {
+export default function SettingsMenu({ open, darkMode, onClose, onChangeDevice, onForceUpdate, onToggleDark, onClearHistory, onSyncNow, onOpenAbout }: Props) {
   if (!open) return null
   return (
     <DetailsModal open={open} onClose={onClose}>
@@ -38,6 +39,10 @@ export default function SettingsMenu({ open, darkMode, onClose, onChangeDevice, 
           <button className="flex items-center gap-2 px-3 py-2 rounded-md text-left hover:bg-[color:var(--color-bg)]" onClick={onClearHistory}>
             <TrashIcon className="w-5 h-5" />
             <span>Borrar historial</span>
+          </button>
+          <button className="flex items-center gap-2 px-3 py-2 rounded-md text-left hover:bg-[color:var(--color-bg)]" onClick={onOpenAbout}>
+            <InformationCircleIcon className="w-5 h-5" />
+            <span>Acerca de</span>
           </button>
         </div>
       </div>

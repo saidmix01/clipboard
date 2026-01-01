@@ -7,7 +7,8 @@ const {
   screen,
   nativeImage,
   Tray,
-  Menu
+  Menu,
+  shell
 } = require('electron')
 const { autoUpdater } = require('electron-updater')
 const log = require('electron-log')
@@ -654,7 +655,15 @@ app.whenReady().then(async () => {
   } catch (err) {
     log.error('Error al leer historial (device)', err)
   }
-  try { if (!authToken) { db.trimGuestToLimit(getCurrentDeviceName(), 50); history = db.getAllGuest(getCurrentDeviceName()) } } catch {}
+  try { 
+    if (authToken) { 
+      Promise.resolve(enforceHistoryLimit(1000)).catch(() => {})
+      history = db.getAll(getCurrentDeviceName())
+    } else { 
+      enforceGuestLimit(1000)
+      history = db.getAllGuest(getCurrentDeviceName()) 
+    } 
+  } catch {}
 
   const pollClipboard = () => {
     let lastImageDataUrl = ''
@@ -690,14 +699,15 @@ app.whenReady().then(async () => {
               ) {
                 lastImageDataUrl = dataUrl
                 if (authToken) {
-          db.insert(getCurrentDeviceName(), dataUrl)
-          history = db.getAll(getCurrentDeviceName())
-          saveClipboardRecord('image', dataUrl, { format: 'dataURL' })
-            .then(rid => { if(rid) db.updateRemoteIdByValue(getCurrentDeviceName(), dataUrl, rid) })
-            .catch(err => log.error('Immediate save error (image path)', err))
-        } else {
+                  db.insert(getCurrentDeviceName(), dataUrl)
+                  Promise.resolve(enforceHistoryLimit(1000)).catch(() => {})
+                  history = db.getAll(getCurrentDeviceName())
+                  saveClipboardRecord('image', dataUrl, { format: 'dataURL' })
+                    .then(rid => { if(rid) db.updateRemoteIdByValue(getCurrentDeviceName(), dataUrl, rid) })
+                    .catch(err => log.error('Immediate save error (image path)', err))
+                } else {
                   db.insertGuest(getCurrentDeviceName(), dataUrl)
-                  db.trimGuestToLimit(getCurrentDeviceName(), 50)
+                  enforceGuestLimit(1000)
                   history = db.getAllGuest(getCurrentDeviceName())
                 }
                 if (mainWindow?.webContents) {
@@ -718,13 +728,14 @@ app.whenReady().then(async () => {
             lastImageDataUrl = dataUrl
             if (authToken) {
               db.insert(getCurrentDeviceName(), dataUrl)
+              Promise.resolve(enforceHistoryLimit(1000)).catch(() => {})
               history = db.getAll(getCurrentDeviceName())
               saveClipboardRecord('image', dataUrl, { format: 'dataURL' })
                 .then(rid => { if(rid) db.updateRemoteIdByValue(getCurrentDeviceName(), dataUrl, rid) })
                 .catch(err => log.error('Immediate save error (linux sel)', err))
             } else {
               db.insertGuest(getCurrentDeviceName(), dataUrl)
-              db.trimGuestToLimit(getCurrentDeviceName(), 50)
+              enforceGuestLimit(1000)
               history = db.getAllGuest(getCurrentDeviceName())
             }
             if (mainWindow?.webContents) {
@@ -758,11 +769,12 @@ app.whenReady().then(async () => {
         } catch {}
         if (authToken) {
           db.insert(getCurrentDeviceName(), dataUrl)
+          Promise.resolve(enforceHistoryLimit(1000)).catch(() => {})
           history = db.getAll(getCurrentDeviceName())
           saveClipboardRecord('image', dataUrl, { format: 'dataURL' }).catch(err => log.error('Immediate save error (image)', err))
         } else {
           db.insertGuest(getCurrentDeviceName(), dataUrl)
-          db.trimGuestToLimit(getCurrentDeviceName(), 50)
+          enforceGuestLimit(1000)
           history = db.getAllGuest(getCurrentDeviceName())
         }
         mainWindow.webContents.send('clipboard-update', history)
@@ -778,11 +790,12 @@ app.whenReady().then(async () => {
         lastText = text
         if (authToken) {
           db.insert(getCurrentDeviceName(), text)
+          Promise.resolve(enforceHistoryLimit(1000)).catch(() => {})
           history = db.getAll(getCurrentDeviceName())
           saveClipboardRecord('text', text).catch(err => log.error('Immediate save error (text)', err))
         } else {
           db.insertGuest(getCurrentDeviceName(), text)
-          db.trimGuestToLimit(getCurrentDeviceName(), 50)
+          enforceGuestLimit(1000)
           history = db.getAllGuest(getCurrentDeviceName())
         }
         mainWindow.webContents.send('clipboard-update', history)
@@ -858,9 +871,13 @@ app.whenReady().then(async () => {
 
   // Quick switcher desactivado
 
-  app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow()
-  })
+  // Iniciar sincronización periódica solo después de que todo esté listo
+  setInterval(() => {
+    syncClipboardHistory()
+  }, 15 * 60 * 1000)
+
+  // Primera sincronización
+  syncClipboardHistory()
 })
 
 app.on('window-all-closed', () => {
@@ -1118,6 +1135,13 @@ ipcMain.on('open-code-editor', (_, codeText) => {
 //Traducir texto
 ipcMain.handle('translate-to-english', async (_, text) => {
   try {
+    const deeplKey = (() => {
+      try { return require('./config').DEEPL_KEY } catch { return process.env.DEEPL_KEY || process.env.DEEPL_API_KEY || '' }
+    })()
+    if (!deeplKey) {
+      log.warn('Traducción deshabilitada: falta DEEPL_KEY')
+      return 'Configura la API de DeepL para traducir'
+    }
     const params = new URLSearchParams()
     params.append('text', text)
     params.append('source_lang', 'ES')
@@ -1128,8 +1152,7 @@ ipcMain.handle('translate-to-english', async (_, text) => {
       params,
       {
         headers: {
-          Authorization:
-            'DeepL-Auth-Key 51c9648c-92ca-47d5-9e3f-7382148e6089:fx', // Reemplaza con tu clave real
+          Authorization: `DeepL-Auth-Key ${deeplKey}`,
           'Content-Type': 'application/x-www-form-urlencoded'
         }
       }
@@ -1137,7 +1160,7 @@ ipcMain.handle('translate-to-english', async (_, text) => {
 
     return response.data.translations[0].text
   } catch (error) {
-    console.error('Error en traducción:', error.response?.data || error.message)
+    log.error('Error en traducción:', error.response?.data || error.message)
     return 'Error de traducción'
   }
 })
@@ -1173,16 +1196,14 @@ ipcMain.on('toggle-favorite', async (event, payload) => {
     if (mainWindow?.webContents) {
       mainWindow.webContents.send('clipboard-update', history)
     }
-
-    console.log('⭐ Favorito actualizado:', value)
-
+ 
     if (authToken && id) {
       try {
         await updateClipboardRecord(id, { favorite: !!newFavorite })
       } catch {}
     }
   } catch (err) {
-    console.error('❌ Error actualizando favoritos:', err)
+    log.error('❌ Error actualizando favoritos:', err)
   }
 })
 
@@ -1193,8 +1214,18 @@ ipcMain.handle('pasteImage', () => {
 ipcMain.handle('get-app-version', () => {
   return app.getVersion()
 })
+ipcMain.on('open-external-url', (_, url) => {
+  try {
+    if (mainWindow) mainWindow.hide()
+    try { childWindows.forEach(w => { try { w.close() } catch {} }) } catch {}
+    const targetRaw = String(url || '').trim() || 'https://copyfy.lat/novedades'
+    const target = (/^https?:\/\//i.test(targetRaw)) ? targetRaw : 'https://copyfy.lat/novedades'
+    Promise.resolve(shell.openExternal(target)).catch(err => { try { log.error('shell.openExternal error', err?.message || err) } catch {} })
+  } catch (err) {
+    log.error('Error abriendo navegador externo', err)
+  }
+})
 let BACKEND_URL = 'https://copyfy.webcolsoluciones.com.co'
-//let BACKEND_URL = 'http://localhost:3000'
 try { BACKEND_URL = require('./config').BACKEND_URL || BACKEND_URL } catch {}
 let authToken = null
 let deviceId = null
@@ -1373,9 +1404,9 @@ async function ensureLocalDevices () {
 
 ipcMain.on('set-auth-token', (event, token) => {
   authToken = token
-  console.log('✅ Token recibido en main.js:', authToken)
   syncClipboardHistory()
   ensureLocalDevices()
+  Promise.resolve(enforceHistoryLimit(1000)).catch(() => {})
 })
 
 async function resolveDeviceIdentifiers (rawName) {
@@ -1407,6 +1438,7 @@ ipcMain.handle('switch-active-device', async (_, deviceName) => {
     if (mainWindow?.webContents) {
       mainWindow.webContents.send('clipboard-update', history)
     }
+    try { authToken ? await enforceHistoryLimit(1000) : enforceGuestLimit(1000) } catch {}
     if (mainWindow?.webContents) {
       mainWindow.webContents.send('sync-progress', { percentage: 1, message: 'Sincronizando…' })
     }
@@ -1415,6 +1447,7 @@ ipcMain.handle('switch-active-device', async (_, deviceName) => {
     const timeoutMs = 30 * 1000
     const timeout = new Promise(resolve => setTimeout(resolve, timeoutMs))
     await Promise.race([syncPromise, timeout])
+    try { authToken ? await enforceHistoryLimit(1000) : enforceGuestLimit(1000) } catch {}
     if (!finished && mainWindow?.webContents) {
       mainWindow.webContents.send('sync-progress', { percentage: 30, message: 'Sincronización en segundo plano' })
     }
@@ -1460,6 +1493,9 @@ ipcMain.handle('get-active-device', async () => {
   }
 })
 
+const https = require('https')
+const http = require('http')
+
 function getAxiosInstance () {
   if (!authToken) {
     throw new Error('No hay token de autenticación disponible')
@@ -1467,11 +1503,46 @@ function getAxiosInstance () {
 
   return axios.create({
     baseURL: BACKEND_URL,
+    maxBodyLength: Infinity,
+    maxContentLength: Infinity,
+    httpAgent: new http.Agent({ keepAlive: true, maxSockets: 50 }),
+    httpsAgent: new https.Agent({ keepAlive: true, maxSockets: 50 }),
     headers: {
       Authorization: `Bearer ${authToken}`,
       'Content-Type': 'application/json'
     }
   })
+}
+
+async function enforceHistoryLimit (limit = 1000) {
+  try {
+    const device = getCurrentDeviceName()
+    const count = db.countActive(device)
+    if (count > limit) {
+      db.trimToLimit(device, limit)
+      if (authToken) {
+        try {
+          const axiosInstance = getAxiosInstance()
+          const ids = await resolveDeviceIdentifiers(device)
+          if (ids && ids.deviceId) {
+            await axiosInstance.post('/clipboard/trim', { deviceId: ids.deviceId })
+          }
+        } catch (e) {
+          try { log.error('trim backend error', e?.message || e) } catch {}
+        }
+      }
+    }
+  } catch {}
+}
+
+function enforceGuestLimit (limit = 1000) {
+  try {
+    const device = getCurrentDeviceName()
+    const count = db.countGuestActive(device)
+    if (count > limit) {
+      db.trimGuestToLimit(device, limit)
+    }
+  } catch {}
 }
 
 async function fetchBackendClipboard () {
@@ -1566,73 +1637,167 @@ function readLocalHistory () {
   }
 }
 
+async function syncWithServer() {
+  try {
+    const dirtyItems = db.getDirtyItems(getCurrentDeviceName())
+    if (dirtyItems.length === 0) return
+
+    const axiosInstance = getAxiosInstance()
+    // Ensure we have a valid clientId (device identifier)
+    const clientId = activeDeviceName || os.hostname()
+
+    // BATCH PROCESSING: Dynamic batching based on size (1MB chunks)
+    // We increase MAX_BATCH_SIZE significantly to let payload size drive the splitting
+    const MAX_BATCH_SIZE = 10000; 
+    const MAX_PAYLOAD_SIZE = 1024 * 1024 * 1; // ~1MB limit (Nginx default)
+
+    // Helper to calculate approximate size
+    const getSize = (obj) => JSON.stringify(obj).length;
+
+    const batches = [];
+    let currentBatch = [];
+    let currentSize = 0;
+
+    for (const item of dirtyItems) {
+        const itemChange = {
+            id: item.id,
+            clientId: item.clientId,
+            type: item.value.startsWith('data:image') ? 'image' : 'text',
+            value: item.value,
+            favorite: item.favorite,
+            version: item.version,
+            updatedAt: item.updatedAt
+        };
+        
+        const itemSize = getSize(itemChange);
+
+        // If a single item is too big, skip it or truncate (logging warning)
+        if (itemSize > MAX_PAYLOAD_SIZE) {
+            log.warn('Skipping item too large for sync', { id: item.id, size: itemSize });
+            continue; 
+        }
+
+        if (currentBatch.length >= MAX_BATCH_SIZE || (currentSize + itemSize) > MAX_PAYLOAD_SIZE) {
+             batches.push(currentBatch);
+             currentBatch = [];
+             currentSize = 0;
+        }
+
+        currentBatch.push(itemChange);
+        currentSize += itemSize;
+    }
+
+    if (currentBatch.length > 0) {
+        batches.push(currentBatch);
+    }
+
+    // Parallel processing with concurrency limit
+    // Increased to 10 concurrent requests to maximize throughput
+    const CONCURRENCY = 10;
+    log.info(`Syncing ${batches.length} batches with concurrency ${CONCURRENCY}`);
+    
+    for (let i = 0; i < batches.length; i += CONCURRENCY) {
+        const chunk = batches.slice(i, i + CONCURRENCY);
+        await Promise.all(chunk.map(batch => sendBatch(axiosInstance, clientId, batch)));
+    }
+    
+  } catch (error) {
+    log.error('syncWithServer error', error?.message || error)
+    // Don't throw, just log, so periodic sync keeps trying
+  }
+}
+
+async function sendBatch(axiosInstance, clientId, changes) {
+    if (changes.length === 0) return;
+    
+    try {
+        const payload = { clientId, changes };
+        log.info('syncWithServer sending batch', { count: changes.length });
+        
+        const res = await axiosInstance.post('/clipboard/sync', payload);
+        const { applied, conflicts } = res.data;
+
+        if (applied && Array.isArray(applied)) {
+            const appliedClientIds = applied.map(a => a.clientId).filter(Boolean);
+            if (appliedClientIds.length > 0) {
+                db.markSynced(getCurrentDeviceName(), appliedClientIds);
+            }
+            // Update remote IDs for new items
+            for (const appItem of applied) {
+                if (appItem.id && appItem.clientId) {
+                    db.updateRemoteId(getCurrentDeviceName(), appItem.clientId, appItem.id);
+                }
+            }
+        }
+
+        if (conflicts && Array.isArray(conflicts)) {
+            for (const conflict of conflicts) {
+                if (conflict.server) {
+                    db.updateFromConflict(getCurrentDeviceName(), conflict.server);
+                }
+            }
+        }
+        log.info('Batch synced successfully', { applied: applied?.length });
+    } catch (e) {
+        log.error('Batch sync failed', e.message);
+        if (e.response && e.response.status === 413) {
+            log.error('Batch too large even after splitting. Retrying items individually...');
+            // Fallback: Try syncing items one by one
+            if (changes.length > 1) {
+                for (const item of changes) {
+                    try {
+                        await sendBatch(axiosInstance, clientId, [item]);
+                    } catch (innerError) {
+                        log.error('Individual item sync failed', { id: item.clientId, error: innerError.message });
+                        // If individual item fails with 413, we can't do much but skip it
+                    }
+                }
+                return; // Handled via fallback
+            } else {
+                 log.error('Single item too large to sync', { id: changes[0].clientId });
+            }
+        }
+        throw e;
+    }
+}
+
 async function syncClipboardHistory () {
   try {
     if (syncLock) return
     syncLock = true
     if (!authToken) return
     const axiosInstance = getAxiosInstance()
-    if (mainWindow?.webContents) { mainWindow.webContents.send('sync-progress', { percentage: 5, message: 'Iniciando sincronización' }) }
+    
+    if (mainWindow?.webContents) { mainWindow.webContents.send('sync-progress', { percentage: 10, message: 'Sincronizando cambios locales' }) }
+    
+    // 1. Push local changes
+    await syncWithServer()
+    
+    if (mainWindow?.webContents) { mainWindow.webContents.send('sync-progress', { percentage: 50, message: 'Obteniendo cambios remotos' }) }
+
+    // 2. Pull remote items (new items)
     const clientId = activeDeviceName || os.hostname()
     const res = await axiosInstance.get('/clipboard', { params: { clientId } })
     const data = res?.data
     const items = (data && typeof data === 'object' ? (data.data?.items ?? data.items ?? []) : [])
+    
     const backendItems = Array.isArray(items)
       ? items.map(it => ({
-          id: it.id,
           value: String(it.value ?? ''),
-          favorite: !!it.favorite,
-          deviceId: it.deviceId || (it.device && it.device.id) || null,
-          clientId: it.clientId || (it.meta && it.meta.clientId) || (it.device && it.device.clientId) || null
+          favorite: !!it.favorite
         }))
       : []
-    const backendByValue = new Map(backendItems.map(it => [it.value, it]))
-    if (mainWindow?.webContents) { mainWindow.webContents.send('sync-progress', { percentage: 25, message: 'Descargando historial' }) }
 
-    await ensureDeviceRegistered()
-
-    let ident = null
-    if (activeDeviceName) {
-      ident = await resolveDeviceIdentifiers(activeDeviceName)
+    // Import new items (db.importItems uses INSERT OR IGNORE)
+    if (backendItems.length > 0) {
+      db.importItems(getCurrentDeviceName(), backendItems)
     }
 
-    const filtered = (activeDeviceName && ident && (ident.deviceId || ident.clientId))
-      ? backendItems.filter(be => {
-          if (ident.deviceId && be.deviceId) return String(be.deviceId) === String(ident.deviceId)
-          if (ident.clientId && be.clientId) return String(be.clientId) === String(ident.clientId)
-          return true
-        })
-      : backendItems
-
-    const backendByValueFiltered = new Map(filtered.map(it => [it.value, it]))
-    const remoteValues = filtered.map(it => it.value)
-    const localForRemote = db.getByValues(getCurrentDeviceName(), remoteValues)
-    if (mainWindow?.webContents) { mainWindow.webContents.send('sync-progress', { percentage: 35, message: 'Leyendo historial local' }) }
-
-    const localByValue = new Map(localForRemote.map(it => [it.value, it]))
-    const localNotInRemote = db.getNotIn(getCurrentDeviceName(), remoteValues)
-    for (const it of localNotInRemote) {
-      if (!it || typeof it.value !== 'string') continue
-      const isImage = it.value.startsWith('data:image')
-      const overrides = ident && (ident.deviceId || ident.clientId) ? { deviceId: ident.deviceId, clientId: ident.clientId } : {}
-      await saveClipboardRecord(isImage ? 'image' : 'text', it.value, isImage ? { format: 'dataURL' } : {}, overrides)
-    }
-    for (const be of filtered) {
-      const loc = localByValue.get(be.value)
-      if (loc && be.favorite !== !!loc.favorite) {
-        await updateClipboardRecord(be.id, { favorite: !!loc.favorite })
-      }
-    }
-    if (mainWindow?.webContents) { mainWindow.webContents.send('sync-progress', { percentage: 65, message: 'Subiendo cambios locales' }) }
-
-    db.importItems(getCurrentDeviceName(), filtered.map(x => ({ value: x.value, favorite: !!x.favorite })))
-    history = db.getAll(getCurrentDeviceName())
-    if (mainWindow?.webContents) { mainWindow.webContents.send('sync-progress', { percentage: 85, message: 'Fusionando con remoto' }) }
     history = db.getAll(getCurrentDeviceName())
     if (mainWindow?.webContents) {
       mainWindow.webContents.send('clipboard-update', history)
+      mainWindow.webContents.send('sync-progress', { percentage: 100, message: 'Completado' })
     }
-    if (mainWindow?.webContents) { mainWindow.webContents.send('sync-progress', { percentage: 100, message: 'Completado' }) }
 
     log.info('syncClipboardHistory completo')
   } catch (error) {
@@ -1711,12 +1876,7 @@ async function syncFavorites () {
   }
 }
 
-// Dentro de app.whenReady()
-setInterval(() => {
-  syncClipboardHistory()
-}, 15 * 60 * 1000)
 
-syncClipboardHistory()
 
 ipcMain.handle('register-device', async (_, clientId) => {
   try {

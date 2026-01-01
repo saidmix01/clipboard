@@ -4,9 +4,10 @@ type Props = {
   isOpen: boolean
   onConfirm: () => void
   onCancel: () => void
+  isLoading?: boolean
 }
 
-export default function DeleteModal({ isOpen, onConfirm, onCancel }: Props) {
+export default function DeleteModal({ isOpen, onConfirm, onCancel, isLoading = false }: Props) {
   return (
     <AnimatePresence>
       {isOpen && (
@@ -37,15 +38,21 @@ export default function DeleteModal({ isOpen, onConfirm, onCancel }: Props) {
             <div className="flex justify-end gap-3">
               <button
                 onClick={onCancel}
-                className="px-4 py-2 text-sm rounded-lg bg-[color:var(--color-bg)] text-[color:var(--color-text)] hover:opacity-80 transition-opacity"
+                className="px-4 py-2 text-sm rounded-lg bg-[color:var(--color-bg)] text-[color:var(--color-text)] hover:opacity-80 transition-opacity disabled:opacity-60"
+                disabled={isLoading}
               >
                 Cancelar
               </button>
               <button
                 onClick={onConfirm}
-                className="px-4 py-2 text-sm rounded-lg bg-red-600 text-white hover:bg-red-700 transition-colors shadow-sm"
+                className="px-4 py-2 text-sm rounded-lg bg-red-600 text-white hover:bg-red-700 transition-colors shadow-sm disabled:opacity-60"
+                disabled={isLoading}
               >
-                Eliminar
+                {isLoading ? (
+                  <span className="spinner"><span className="ring"></span><span>Eliminando…</span></span>
+                ) : (
+                  'Eliminar'
+                )}
               </button>
             </div>
           </motion.div>
