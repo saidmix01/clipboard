@@ -515,14 +515,15 @@ function createWindow () {
     backgroundColor: '#00FFFFFF',
     alwaysOnTop: true,
     resizable: false, // ✅ importante: no redimensionable
-    icon: path.join(__dirname, 'public', 'icon.ico'),
+    icon: path.join(__dirname, 'frontend', 'media', '64x64.png'),
     show: false,
     hasShadow: true, // ✅ sombra opcional
     title: '',
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
-      nodeIntegration: false // ✅ este debe ser false si usas contextBridge
+      nodeIntegration: false,
+      devTools: !app.isPackaged
     }
   })
 
@@ -602,8 +603,9 @@ app.whenReady().then(async () => {
   createWindow()
   const iconPath = path.join(
     __dirname,
-    'public',
-    process.platform === 'win32' ? 'icon.ico' : 'icon.png'
+    'frontend',
+    'media',
+    '64x64.png'
   )
   const image = nativeImage.createFromPath(iconPath)
   tray = new Tray(image)
@@ -1054,7 +1056,8 @@ ipcMain.on('open-image-viewer', (_, dataUrl) => {
       webPreferences: {
         nodeIntegration: true,
         contextIsolation: false,
-        sandbox: false
+        sandbox: false,
+        devTools: !app.isPackaged
       }
     })
     try { childWindows.add(win); win.on('closed', () => { try { childWindows.delete(win) } catch {} }) } catch {}
@@ -1093,7 +1096,7 @@ ipcMain.on('open-code-editor', (_, codeText) => {
       hasShadow: true,
       show: true,
       parent: mainWindow,
-      webPreferences: { nodeIntegration: true, contextIsolation: false, sandbox: false }
+      webPreferences: { nodeIntegration: true, contextIsolation: false, sandbox: false, devTools: !app.isPackaged }
     })
     try { childWindows.add(win); win.on('closed', () => { try { childWindows.delete(win) } catch {} }) } catch {}
     const display = screen.getPrimaryDisplay()

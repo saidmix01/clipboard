@@ -30,6 +30,7 @@
     ],
     "files": [
       "frontend/dist/**/*",
+      "frontend/media/**/*",
       "main.js",
       "db.js",
       "preload.js",
