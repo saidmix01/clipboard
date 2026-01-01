@@ -5,7 +5,9 @@ const {
   clipboard,
   ipcMain,
   screen,
-  nativeImage
+  nativeImage,
+  Tray,
+  Menu
 } = require('electron')
 const { autoUpdater } = require('electron-updater')
 const log = require('electron-log')
@@ -15,11 +17,266 @@ const fs = require('fs')
 const os = require('os')
 const db = require('./db')
 const legacyHistoryPath = path.join(os.homedir(), '.clipboard-history.json')
-const { exec, execFile } = require('child_process')
+const { exec, execFile, spawnSync } = require('child_process')
+const crypto = require('crypto')
 
 let mainWindow
+let quickWindow
 let history = []
 const childWindows = new Set()
+let tray
+let isQuitting = false
+
+if (process.platform === 'linux') {
+  try { app.setName('copyfy') } catch {}
+  try { app.commandLine.appendSwitch('ozone-platform', 'x11') } catch {}
+}
+
+const gotTheLock = app.requestSingleInstanceLock()
+
+if (!gotTheLock) {
+  app.quit()
+} else {
+  app.on('second-instance', (event, commandLine, workingDirectory) => {
+    // Si alguien intenta correr una segunda instancia, enfocamos nuestra ventana
+    if (mainWindow) {
+      if (mainWindow.isMinimized()) mainWindow.restore()
+      if (!mainWindow.isVisible()) mainWindow.show()
+      mainWindow.focus()
+    }
+  })
+}
+
+function uriToPath (uri) {
+  let u = String(uri || '').trim()
+  if (!u) return ''
+  if (u.startsWith('file://')) {
+    if (process.platform === 'win32') {
+      u = decodeURI(u.replace(/^file:\/\/\//, ''))
+      return u.replace(/\//g, '\\')
+    } else {
+      return decodeURI(u.replace(/^file:\/\//, ''))
+    }
+  }
+  return u
+}
+
+function parseCFHDrop (buf) {
+  try {
+    if (!Buffer.isBuffer(buf) || buf.length < 6) return []
+    const pFiles = buf.readUInt32LE(0)
+    const fWide = !!buf.readUInt16LE(4)
+    const start = Math.min(Math.max(pFiles, 0), buf.length)
+    const slice = buf.subarray(start)
+    if (fWide) {
+      const raw = slice.toString('utf16le')
+      return raw.split('\0').map(s => String(s || '').trim()).filter(Boolean)
+    } else {
+      const raw = slice.toString('ascii')
+      return raw.split('\0').map(s => String(s || '').trim()).filter(Boolean)
+    }
+  } catch {
+    return []
+  }
+}
+
+function readClipboardFileUris () {
+  try {
+    const formats = (clipboard.availableFormats() || []).map(f => String(f || '').toLowerCase())
+    const out = []
+    if (formats.includes('text/uri-list')) {
+      const buf = clipboard.readBuffer('text/uri-list')
+      const txt = Buffer.isBuffer(buf) ? buf.toString('utf-8') : ''
+      for (const line of String(txt || '').split(/\r?\n/)) {
+        const s = String(line || '').trim()
+        if (s) out.push(s)
+      }
+    }
+    if (formats.includes('public.file-url')) {
+      const buf = clipboard.readBuffer('public.file-url')
+      const txt = Buffer.isBuffer(buf) ? buf.toString('utf-8') : ''
+      for (const line of String(txt || '').split(/\r?\n/)) {
+        const s = String(line || '').trim()
+        if (s) out.push(s)
+      }
+    }
+    if (formats.includes('nsfilenamespboardtype')) {
+      const buf = clipboard.readBuffer('NSFilenamesPboardType')
+      const txt = Buffer.isBuffer(buf) ? buf.toString('utf-8') : ''
+      for (const line of String(txt || '').split(/\r?\n/)) {
+        const s = String(line || '').trim()
+        if (s) out.push(s)
+      }
+    }
+    {
+      const bufW = clipboard.readBuffer('FileNameW')
+      if (Buffer.isBuffer(bufW) && bufW.length > 0) {
+        const raw = bufW.toString('utf16le')
+        const parts = String(raw || '').split('\0').map(s => String(s || '').trim()).filter(Boolean)
+        for (const p of parts) out.push(p)
+      }
+      const bufA = clipboard.readBuffer('FileName')
+      if (Buffer.isBuffer(bufA) && bufA.length > 0) {
+        const raw = bufA.toString('ascii')
+        const parts = String(raw || '').split('\0').map(s => String(s || '').trim()).filter(Boolean)
+        for (const p of parts) out.push(p)
+      }
+      const bufDrop = clipboard.readBuffer('CF_HDROP')
+      if (Buffer.isBuffer(bufDrop) && bufDrop.length > 0) {
+        const parts = parseCFHDrop(bufDrop)
+        for (const p of parts) out.push(p)
+      }
+    }
+    if (formats.includes('x-special/gnome-copied-files')) {
+      const buf = clipboard.readBuffer('x-special/gnome-copied-files')
+      const txt = Buffer.isBuffer(buf) ? buf.toString('utf-8') : ''
+      const lines = String(txt || '').split(/\r?\n/)
+      const rest = lines.filter((_, i) => i > 0)
+      for (const line of rest) {
+        const s = String(line || '').trim()
+        if (s) out.push(s)
+      }
+    }
+    return out
+  } catch {
+    return []
+  }
+}
+
+function getImagePathFromClipboard () {
+  try {
+    const uris = readClipboardFileUris()
+    const paths = uris.map(uriToPath).filter(Boolean)
+    const exts = new Set(['.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp', '.tif', '.tiff', '.ico'])
+    for (const p of paths) {
+      const ext = path.extname(p).toLowerCase()
+      if (exts.has(ext) && fs.existsSync(p)) return p
+    }
+    return null
+  } catch {
+    return null
+  }
+}
+
+function getImageHistoryDir () {
+  const dir = path.join(app.getPath('userData'), 'clipboard-images')
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true })
+  return dir
+}
+
+function readClipboardImageSmart () {
+  try {
+    let img = clipboard.readImage()
+    if (img && !img.isEmpty()) return img
+    const formats = clipboard.availableFormats() || []
+    const tryFormats = ['image/png', 'PNG', 'image/jpeg', 'JFIF', 'image/webp', 'WEBP', 'image/bmp', 'BMP', 'image/tiff', 'TIFF', 'image/gif', 'GIF']
+    for (const f of formats) {
+      if (tryFormats.includes(f)) {
+        const buf = clipboard.readBuffer(f)
+        if (Buffer.isBuffer(buf) && buf.length > 0) {
+          try {
+            const ni = nativeImage.createFromBuffer(buf)
+            if (ni && !ni.isEmpty()) return ni
+          } catch {}
+        }
+      }
+    }
+    for (const f of formats) {
+      const buf = clipboard.readBuffer(f)
+      if (!Buffer.isBuffer(buf) || buf.length === 0) continue
+      let mime = ''
+      const s = String(f || '')
+      if (s.startsWith('image/')) mime = s.toLowerCase()
+      else if (s === 'PNG') mime = 'image/png'
+      else if (s === 'JFIF') mime = 'image/jpeg'
+      else if (s === 'WEBP') mime = 'image/webp'
+      else if (s === 'BMP') mime = 'image/bmp'
+      else if (s === 'TIFF') mime = 'image/tiff'
+      else if (s === 'GIF') mime = 'image/gif'
+      if (!mime) continue
+      try {
+        const dataUrl = `data:${mime};base64,${buf.toString('base64')}`
+        const ni = nativeImage.createFromDataURL(dataUrl)
+        if (ni && !ni.isEmpty()) return ni
+      } catch {}
+    }
+    const html = clipboard.readHTML()
+    if (typeof html === 'string' && html) {
+      const m = html.match(/data:image[^"' ]+/i)
+      if (m && m[0]) {
+        try {
+          const ni = nativeImage.createFromDataURL(m[0])
+          if (ni && !ni.isEmpty()) return ni
+        } catch {}
+      }
+    }
+    const p = getImagePathFromClipboard()
+    if (p) {
+      const ni = nativeImage.createFromPath(p)
+      if (ni && !ni.isEmpty()) return ni
+    }
+    if (process.platform === 'linux') {
+      const sel = clipboard.readImage('selection')
+      if (sel && !sel.isEmpty()) return sel
+    }
+    return nativeImage.createEmpty()
+  } catch {
+    return nativeImage.createEmpty()
+  }
+}
+
+function saveClipboardImagePNG (image) {
+  if (!image || image.isEmpty()) return null
+  const png = image.toPNG()
+  if (!png || png.length === 0) return null
+  const hash = crypto.createHash('sha256').update(png).digest('hex')
+  const dir = getImageHistoryDir()
+  const fileName = `${Date.now()}-${hash.slice(0, 8)}.png`
+  const filePath = path.join(dir, fileName)
+  fs.writeFileSync(filePath, png)
+  const manifestPath = path.join(dir, 'images.json')
+  let manifest = []
+  try {
+    if (fs.existsSync(manifestPath)) {
+      const raw = fs.readFileSync(manifestPath, 'utf-8')
+      manifest = JSON.parse(raw)
+    }
+  } catch {}
+  manifest.push({ file: fileName, hash, createdAt: new Date().toISOString() })
+  try { fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2), 'utf-8') } catch {}
+  return filePath
+}
+
+function startClipboardImagePolling (intervalMs = 1000) {
+  let lastHash = ''
+  let lastFormatsSig = ''
+  setInterval(() => {
+    try {
+      let img = readClipboardImageSmart()
+      if (img && img.isEmpty()) {
+        if (process.platform === 'linux') {
+          const selImg = clipboard.readImage('selection')
+          if (!selImg.isEmpty()) img = selImg
+        }
+        try {
+          const fmts = (clipboard.availableFormats() || []).join('|')
+          if (fmts && fmts !== lastFormatsSig) {
+            lastFormatsSig = fmts
+            try { log.info('Clipboard formats', { formats: fmts }) } catch {}
+          }
+        } catch {}
+      }
+      if (img && !img.isEmpty()) {
+        const png = img.toPNG()
+        const hash = crypto.createHash('sha256').update(png).digest('hex')
+        if (hash !== lastHash) {
+          const saved = saveClipboardImagePNG(img)
+          lastHash = hash
+        }
+      }
+    } catch {}
+  }, Math.max(250, Number(intervalMs) || 1000))
+}
 
 function normalizeHistory (raw) {
   if (!Array.isArray(raw)) return []
@@ -77,15 +334,81 @@ function performPaste (mainWindow) {
       )
     }, 300)
   } else if (platform === 'linux') {
-    // Linux: requiere que xdotool esté instalado
-    setTimeout(() => {
-      exec('xdotool key ctrl+v', err => {
-        if (err) {
-          log.error('Error ejecutando xdotool', err)
-        } else {
-          log.info('Pegado automático en Linux')
+    setTimeout(async () => {
+      const isWayland = !!(process.env.XDG_SESSION_TYPE === 'wayland' || process.env.WAYLAND_DISPLAY)
+      const has = name => {
+        try {
+          const r = spawnSync(process.platform === 'win32' ? 'where' : 'which', [name], { stdio: 'ignore' })
+          return r && r.status === 0
+        } catch {
+          return false
         }
-      })
+      }
+      const tasks = []
+      const text = clipboard.readText()
+      if (isWayland && has('wtype')) {
+        tasks.push(() => new Promise(resolve => {
+          exec('wtype -M ctrl -k v -m ctrl', err => {
+            if (err) return resolve({ ok: false, err })
+            resolve({ ok: true })
+          })
+        }))
+      }
+      if (has('xdotool')) {
+        tasks.push(() => new Promise(resolve => {
+          exec('xdotool key ctrl+v', err => {
+            if (err) return resolve({ ok: false, err })
+            resolve({ ok: true })
+          })
+        }))
+      }
+      if (isWayland && has('ydotool') && typeof text === 'string' && text.trim() !== '') {
+        tasks.push(() => new Promise(resolve => {
+          const tmp = path.join(os.tmpdir(), `copyfy_text_${Date.now()}.txt`)
+          try {
+            fs.writeFileSync(tmp, text, 'utf-8')
+          } catch (e) {
+            return resolve({ ok: false, err: e })
+          }
+          exec(`ydotool type --file "${tmp}"`, err => {
+            try { fs.rmSync(tmp, { force: true }) } catch {}
+            if (err) return resolve({ ok: false, err })
+            resolve({ ok: true })
+          })
+        }))
+      }
+      if (has('xdotool') && typeof text === 'string' && text.trim() !== '') {
+        tasks.push(() => new Promise(resolve => {
+          const tmp = path.join(os.tmpdir(), `copyfy_text_${Date.now()}.txt`)
+          try {
+            fs.writeFileSync(tmp, text, 'utf-8')
+          } catch (e) {
+            return resolve({ ok: false, err: e })
+          }
+          exec(`xdotool type --clearmodifiers --delay 1 --file "${tmp}"`, err => {
+            try { fs.rmSync(tmp, { force: true }) } catch {}
+            if (err) return resolve({ ok: false, err })
+            resolve({ ok: true })
+          })
+        }))
+      }
+      let done = false
+      for (const t of tasks) {
+        const res = await t()
+        if (res && res.ok) {
+          log.info('Pegado/typing automático en Linux')
+          done = true
+          break
+        }
+      }
+      if (!done) {
+        log.error('No se pudo pegar en Linux. Instala xdotool (X11) o wtype/ydotool (Wayland).')
+        try {
+          if (mainWindow?.webContents) {
+            mainWindow.webContents.send('paste-status', { ok: false, message: 'No se pudo pegar en Linux. Instala xdotool (X11) o wtype/ydotool (Wayland).' })
+          }
+        } catch {}
+      }
     }, 300)
   } else {
     log.warn('Plataforma no compatible')
@@ -133,15 +456,40 @@ function performPasteImage (mainWindow) {
       )
     }, 300)
   } else if (platform === 'linux') {
-    // Linux: usa xdotool para Ctrl+V
     setTimeout(() => {
-      exec('xdotool key ctrl+v', err => {
-        if (err) {
-          log.error('Error pegando imagen en Linux con xdotool', err)
-        } else {
-          log.info('Imagen pegada en Linux')
+      const isWayland = !!(process.env.XDG_SESSION_TYPE === 'wayland' || process.env.WAYLAND_DISPLAY)
+      const has = name => {
+        try {
+          const r = spawnSync(process.platform === 'win32' ? 'where' : 'which', [name], { stdio: 'ignore' })
+          return r && r.status === 0
+        } catch {
+          return false
         }
-      })
+      }
+      const cmds = []
+      if (isWayland && has('wtype')) cmds.push('wtype -M ctrl -k v -m ctrl')
+      if (has('xdotool')) cmds.push('xdotool key ctrl+v')
+      const run = () => {
+        const cmd = cmds.shift()
+        if (!cmd) {
+          log.error('Error pegando imagen en Linux. Instala xdotool (X11) o wtype (Wayland).')
+          try {
+            if (mainWindow?.webContents) {
+              mainWindow.webContents.send('paste-status', { ok: false, message: 'No se pudo pegar imagen en Linux. Instala xdotool (X11) o wtype (Wayland).' })
+            }
+          } catch {}
+          return
+        }
+        exec(cmd, err => {
+          if (err) {
+            if (cmds.length) return run()
+            log.error('Error pegando imagen en Linux', err)
+          } else {
+            log.info('Imagen pegada en Linux')
+          }
+        })
+      }
+      run()
     }, 300)
   } else {
     log.warn('Plataforma no compatible para pegar imagen')
@@ -167,14 +515,15 @@ function createWindow () {
     backgroundColor: '#00FFFFFF',
     alwaysOnTop: true,
     resizable: false, // ✅ importante: no redimensionable
-    icon: path.join(__dirname, 'public', 'icon.ico'), // Usa .ico en Windows
+    icon: path.join(__dirname, 'frontend', 'media', '64x64.png'),
     show: false,
     hasShadow: true, // ✅ sombra opcional
     title: '',
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
-      nodeIntegration: false // ✅ este debe ser false si usas contextBridge
+      nodeIntegration: false,
+      devTools: !app.isPackaged
     }
   })
 
@@ -219,19 +568,72 @@ function createWindow () {
         height: windowHeight
       })
     }, stepTime)
+    setTimeout(() => {
+      try { mainWindow.focus() } catch {}
+      try { mainWindow.webContents.focus() } catch {}
+      try { mainWindow.webContents.send('focus-search') } catch {}
+    }, 150)
   })
 
   // Evitar cierre completo
   mainWindow.on('close', event => {
+    if (!isQuitting) {
+      event.preventDefault()
+      mainWindow.hide()
+      try { childWindows.forEach(w => { try { w.close() } catch {} }) } catch {}
+    }
+  })
+
+  mainWindow.on('minimize', event => {
     event.preventDefault()
     mainWindow.hide()
-    try { childWindows.forEach(w => { try { w.close() } catch {} }) } catch {}
+  })
+  mainWindow.on('show', () => {
+    setTimeout(() => {
+      try { mainWindow.focus() } catch {}
+      try { mainWindow.webContents.focus() } catch {}
+      try { mainWindow.webContents.send('focus-search') } catch {}
+    }, 120)
   })
 }
 
 app.whenReady().then(async () => {
+  try { require('./autolaunch').configureAutoLaunch() } catch (e) { log.error('Autolaunch setup failed', e) }
   await db.init(app)
   createWindow()
+  const iconPath = path.join(
+    __dirname,
+    'frontend',
+    'media',
+    '64x64.png'
+  )
+  const image = nativeImage.createFromPath(iconPath)
+  tray = new Tray(image)
+  tray.setToolTip('Copyfy++')
+  const menu = Menu.buildFromTemplate([
+    { label: 'Abrir', click: () => { if (mainWindow) { mainWindow.show(); mainWindow.focus() } } },
+    { label: 'Pegar texto', click: () => { performPaste(mainWindow) } },
+    { label: 'Pegar imagen', click: () => { performPasteImage(mainWindow) } },
+    { type: 'separator' },
+    { label: 'Salir', click: () => { isQuitting = true; app.quit() } }
+  ])
+  tray.setContextMenu(menu)
+  tray.on('click', () => {
+    if (!mainWindow) return
+    if (mainWindow.isVisible()) {
+      mainWindow.hide()
+    } else {
+      mainWindow.show()
+      setTimeout(() => {
+        try { mainWindow.focus() } catch {}
+        try { mainWindow.webContents.focus() } catch {}
+        try { mainWindow.webContents.send('focus-search') } catch {}
+      }, 120)
+    }
+  })
+  if (process.platform === 'darwin' && app.dock && app.dock.hide) {
+    app.dock.hide()
+  }
   autoUpdater.forceDevUpdateConfig = true
   try {
     const cfg = readDeviceConfigObj()
@@ -256,6 +658,7 @@ app.whenReady().then(async () => {
 
   const pollClipboard = () => {
     let lastImageDataUrl = ''
+    let lastText = ''
 
     // Normalizar historial ya cargado y enviar al renderer inmediatamente
     try {
@@ -269,7 +672,68 @@ app.whenReady().then(async () => {
     }
 
     setInterval(() => {
-      const image = clipboard.readImage()
+      try {
+        const currentImage = clipboard.readImage()
+        if (currentImage.isEmpty()) {
+          const imgPath = getImagePathFromClipboard()
+          if (imgPath) {
+            const ni = nativeImage.createFromPath(imgPath)
+            if (!ni.isEmpty()) {
+              clipboard.writeImage(ni)
+              try { saveClipboardImagePNG(ni) } catch {}
+              const dataUrl = ni.toDataURL()
+              if (
+                typeof dataUrl === 'string' &&
+                dataUrl.startsWith('data:image') &&
+                dataUrl.trim().length > 30 &&
+                dataUrl !== lastImageDataUrl
+              ) {
+                lastImageDataUrl = dataUrl
+                if (authToken) {
+          db.insert(getCurrentDeviceName(), dataUrl)
+          history = db.getAll(getCurrentDeviceName())
+          saveClipboardRecord('image', dataUrl, { format: 'dataURL' })
+            .then(rid => { if(rid) db.updateRemoteIdByValue(getCurrentDeviceName(), dataUrl, rid) })
+            .catch(err => log.error('Immediate save error (image path)', err))
+        } else {
+                  db.insertGuest(getCurrentDeviceName(), dataUrl)
+                  db.trimGuestToLimit(getCurrentDeviceName(), 50)
+                  history = db.getAllGuest(getCurrentDeviceName())
+                }
+                if (mainWindow?.webContents) {
+                  mainWindow.webContents.send('clipboard-update', history)
+                }
+              }
+            }
+          }
+        }
+      } catch {}
+      const image = readClipboardImageSmart()
+      if (image.isEmpty() && process.platform === 'linux') {
+        const selImg = clipboard.readImage('selection')
+        if (!selImg.isEmpty()) {
+          const dataUrl = selImg.toDataURL()
+          if (typeof dataUrl === 'string' && dataUrl.startsWith('data:image') && dataUrl.trim().length > 30) {
+            try { saveClipboardImagePNG(selImg) } catch {}
+            lastImageDataUrl = dataUrl
+            if (authToken) {
+              db.insert(getCurrentDeviceName(), dataUrl)
+              history = db.getAll(getCurrentDeviceName())
+              saveClipboardRecord('image', dataUrl, { format: 'dataURL' })
+                .then(rid => { if(rid) db.updateRemoteIdByValue(getCurrentDeviceName(), dataUrl, rid) })
+                .catch(err => log.error('Immediate save error (linux sel)', err))
+            } else {
+              db.insertGuest(getCurrentDeviceName(), dataUrl)
+              db.trimGuestToLimit(getCurrentDeviceName(), 50)
+              history = db.getAllGuest(getCurrentDeviceName())
+            }
+            if (mainWindow?.webContents) {
+              mainWindow.webContents.send('clipboard-update', history)
+            }
+            return
+          }
+        }
+      }
       const text = clipboard.readText()
 
       // --- Si hay nueva imagen ---
@@ -282,18 +746,20 @@ app.whenReady().then(async () => {
           !dataUrl.startsWith('data:image') ||
           dataUrl === 'data:image/png;base64,' || // imagen vacía común
           dataUrl.trim().length < 30 || // corta, posiblemente vacía
-          dataUrl === lastImageDataUrl || // repetida
-          history.some(
-            item => typeof item === 'object' && item.value === dataUrl
-          )
+          dataUrl === lastImageDataUrl // repetida
         ) {
           return
         }
 
         lastImageDataUrl = dataUrl
+        try {
+          const savedPath = saveClipboardImagePNG(image)
+          if (savedPath) { try { log.info('Imagen guardada', { savedPath }) } catch {} }
+        } catch {}
         if (authToken) {
           db.insert(getCurrentDeviceName(), dataUrl)
           history = db.getAll(getCurrentDeviceName())
+          saveClipboardRecord('image', dataUrl, { format: 'dataURL' }).catch(err => log.error('Immediate save error (image)', err))
         } else {
           db.insertGuest(getCurrentDeviceName(), dataUrl)
           db.trimGuestToLimit(getCurrentDeviceName(), 50)
@@ -307,11 +773,13 @@ app.whenReady().then(async () => {
       if (
         typeof text === 'string' &&
         text.trim() !== '' &&
-        !history.some(item => item.value === text)
+        text !== lastText
       ) {
+        lastText = text
         if (authToken) {
           db.insert(getCurrentDeviceName(), text)
           history = db.getAll(getCurrentDeviceName())
+          saveClipboardRecord('text', text).catch(err => log.error('Immediate save error (text)', err))
         } else {
           db.insertGuest(getCurrentDeviceName(), text)
           db.trimGuestToLimit(getCurrentDeviceName(), 50)
@@ -323,21 +791,72 @@ app.whenReady().then(async () => {
   }
 
   pollClipboard()
+  startClipboardImagePolling(1000)
+  if (app.isPackaged) {
+    try { mainWindow.webContents.send('update-status', 'Comprobando actualizaciones al iniciar...') } catch {}
+    setTimeout(() => {
+      try {
+        Promise.resolve(autoUpdater.checkForUpdates()).catch(err => {
+          try { log.error('checkForUpdates startup error', err?.message || err) } catch {}
+        })
+      } catch (e) {
+        try { log.error('autoUpdater startup error', e?.message || e) } catch {}
+      }
+    }, 3000)
+  } else {
+    try { mainWindow.webContents.send('update-status', 'Entorno de desarrollo: se omite la comprobación automática.') } catch {}
+  }
 
-  globalShortcut.register('Alt+X', () => {
+  const toggleShow = () => {
+    log.info('Shortcut toggleShow triggered')
+    if (!mainWindow) {
+      createWindow()
+    }
+    
+    // Si la ventana está visible y NO está minimizada, la ocultamos
+    if (mainWindow.isVisible() && !mainWindow.isMinimized()) {
+      mainWindow.hide()
+      return
+    }
+
+    // Si está oculta o minimizada, la mostramos
     const display = screen.getPrimaryDisplay()
     const screenWidth = display.workArea.width
     const screenHeight = display.workArea.height
-
     const windowWidth = 400
     const windowHeight = screenHeight
     const x = screenWidth - windowWidth
     const y = 0
-
     mainWindow.setBounds({ x, y, width: windowWidth, height: windowHeight })
+    
+    if (mainWindow.isMinimized()) mainWindow.restore()
     mainWindow.show()
-    mainWindow.focus()
-  })
+    
+    setTimeout(() => {
+      try { mainWindow.focus() } catch {}
+      try { mainWindow.webContents.focus() } catch {}
+      try { mainWindow.webContents.send('focus-search') } catch {}
+    }, 120)
+  }
+
+  // Limpiar atajos previos para evitar conflictos
+  try { globalShortcut.unregisterAll() } catch {}
+
+  const ret = globalShortcut.register('Alt+X', toggleShow)
+  if (!ret) {
+    try { log.warn('Fallo al registrar shortcut Alt+X') } catch {}
+  }
+
+  if (process.platform === 'darwin') {
+    globalShortcut.register('Command+Option+X', toggleShow)
+  } else if (process.platform === 'linux') {
+    // Alternativa para Linux donde Alt suele estar reservado
+    globalShortcut.register('Control+Alt+X', toggleShow)
+  }
+
+  // Quick switcher desactivado
+
+  // Quick switcher desactivado
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
@@ -345,21 +864,59 @@ app.whenReady().then(async () => {
 })
 
 app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') app.quit()
 })
 
 app.on('before-quit', () => {
+  isQuitting = true
   try { childWindows.forEach(w => { try { w.destroy() } catch {} }) } catch {}
 })
 
-app.setLoginItemSettings({
-  openAtLogin: true,
-  path: process.execPath
+app.on('will-quit', () => {
+  try { globalShortcut.unregisterAll() } catch {}
 })
+
+// Quick switcher desactivado
+
+ipcMain.on('set-search-query', (_, q) => {
+  try {
+    const s = typeof q === 'string' ? q : ''
+    if (mainWindow?.webContents) {
+      mainWindow.webContents.send('set-search-query', s)
+      try {
+        const qTrim = String(s || '').trim()
+        let items = []
+        if (qTrim.length === 0) {
+          if (!authToken) {
+            items = db.getRecentGuest(getCurrentDeviceName(), 'all', 50)
+          } else {
+            items = db.getRecent(getCurrentDeviceName(), 'all', 50)
+          }
+        } else {
+          if (!authToken) {
+            items = db.searchGuest(getCurrentDeviceName(), qTrim, 'all')
+          } else {
+            items = db.search(getCurrentDeviceName(), qTrim, 'all')
+          }
+        }
+        mainWindow.webContents.send('apply-search', { query: s, items })
+      } catch (e) {
+        try { log.error('apply-search error', e?.message || e) } catch {}
+      }
+    }
+  } catch (e) {
+    try { log.error('set-search-query main error', e?.message || e) } catch {}
+  }
+})
+
+
 
 // Evento para forzar la actualización desde el frontend
 ipcMain.on('force-update', () => {
   log.info('🧪 Botón forzó búsqueda de actualización...')
+  if (!app.isPackaged) {
+    try { mainWindow.webContents.send('update-status', 'Solo disponible en producción.') } catch {}
+    return
+  }
   Promise.resolve(autoUpdater.checkForUpdates()).catch(err => {
     try { log.error('checkForUpdates error', err?.message || err) } catch {}
   })
@@ -432,6 +989,43 @@ ipcMain.handle('clear-history', () => {
   }
 })
 
+// Borrar item especifico
+ipcMain.handle('delete-history-item', async (_, id) => {
+  try {
+    const item = db.getById(id)
+    log.info('Solicitud de borrado:', { id, found: !!item, hasAuth: !!authToken })
+    
+    if (authToken && item) {
+       try {
+          const axiosInstance = getAxiosInstance()
+          const clientId = activeDeviceName || os.hostname()
+          const payload = { clientId, value: item.value }
+          
+          log.info('Enviando POST al backend (by-value):', { url: '/clipboard/by-value', payload })
+          await axiosInstance.post('/clipboard/by-value', payload, {
+            headers: { 'Content-Type': 'application/json' }
+          })
+          
+          log.info('Borrado del backend exitoso')
+        } catch (e) {
+         log.error('Error borrando del backend', e?.message || e)
+       }
+    } else {
+      if (!authToken) log.info('No se borra del backend: No hay token')
+      else if (!item) log.info('No se borra del backend: Item no encontrado localmente')
+    }
+    
+    db.deleteById(id)
+    history = authToken ? db.getAll(getCurrentDeviceName()) : db.getAllGuest(getCurrentDeviceName())
+    mainWindow.webContents.send('clipboard-update', history)
+    log.info('Item borrado localmente:', id)
+    return { success: true }
+  } catch (err) {
+    log.error('Error al borrar item', err)
+    return { success: false, error: err.message }
+  }
+})
+
 //copiar imagen
 ipcMain.on('copy-image', (_, dataUrl) => {
   try {
@@ -462,7 +1056,8 @@ ipcMain.on('open-image-viewer', (_, dataUrl) => {
       webPreferences: {
         nodeIntegration: true,
         contextIsolation: false,
-        sandbox: false
+        sandbox: false,
+        devTools: !app.isPackaged
       }
     })
     try { childWindows.add(win); win.on('closed', () => { try { childWindows.delete(win) } catch {} }) } catch {}
@@ -501,7 +1096,7 @@ ipcMain.on('open-code-editor', (_, codeText) => {
       hasShadow: true,
       show: true,
       parent: mainWindow,
-      webPreferences: { nodeIntegration: true, contextIsolation: false, sandbox: false }
+      webPreferences: { nodeIntegration: true, contextIsolation: false, sandbox: false, devTools: !app.isPackaged }
     })
     try { childWindows.add(win); win.on('closed', () => { try { childWindows.delete(win) } catch {} }) } catch {}
     const display = screen.getPrimaryDisplay()
@@ -598,8 +1193,8 @@ ipcMain.handle('pasteImage', () => {
 ipcMain.handle('get-app-version', () => {
   return app.getVersion()
 })
-// let BACKEND_URL = 'https://copyfy.webcolsoluciones.com.co'
-let BACKEND_URL = 'http://localhost:3000'
+let BACKEND_URL = 'https://copyfy.webcolsoluciones.com.co'
+//let BACKEND_URL = 'http://localhost:3000'
 try { BACKEND_URL = require('./config').BACKEND_URL || BACKEND_URL } catch {}
 let authToken = null
 let deviceId = null
@@ -941,9 +1536,16 @@ async function saveClipboardRecord (type, value, meta = {}, overrides = {}) {
       ? { type, value, meta, clientId: desiredClientId, deviceId: desiredDeviceId }
       : { type, value, meta, clientId: desiredClientId }
     log.info('clipboard save request', { type, deviceId: desiredDeviceId })
-    await axiosInstance.post('/clipboard', payload)
+    const res = await axiosInstance.post('/clipboard', payload)
+    const data = res?.data
+    const item = (data && typeof data === 'object') ? (data.data ?? data) : null
+    return item?.id
   } catch (error) {
-    log.error('clipboard save error', error?.message || error)
+    if (error.response && error.response.status === 413) {
+      log.warn('clipboard save skipped: payload too large (413)', { type, size: value?.length })
+    } else {
+      log.error('clipboard save error', error?.message || error)
+    }
   }
 }
 
@@ -1222,4 +1824,79 @@ process.on('unhandledRejection', (reason) => {
 })
 process.on('uncaughtException', (error) => {
   try { log.error('uncaughtException', error?.message || error) } catch {}
+})
+
+function detectPkgManager () {
+  const which = name => {
+    try {
+      const r = spawnSync(process.platform === 'win32' ? 'where' : 'which', [name], { stdio: 'ignore' })
+      return r && r.status === 0
+    } catch {
+      return false
+    }
+  }
+  if (which('apt-get')) return 'apt'
+  if (which('dnf')) return 'dnf'
+  if (which('pacman')) return 'pacman'
+  if (which('zypper')) return 'zypper'
+  return null
+}
+
+function getRootRunner () {
+  const which = name => {
+    try {
+      const r = spawnSync(process.platform === 'win32' ? 'where' : 'which', [name], { stdio: 'ignore' })
+      return r && r.status === 0
+    } catch {
+      return false
+    }
+  }
+  if (which('pkexec')) return 'pkexec'
+  if (which('sudo')) return 'sudo'
+  return null
+}
+
+async function installLinuxPasteSupport () {
+  try {
+    if (process.platform !== 'linux') return { ok: false, message: 'Solo Linux' }
+    const isWayland = !!(process.env.XDG_SESSION_TYPE === 'wayland' || process.env.WAYLAND_DISPLAY)
+    const pkg = detectPkgManager()
+    const runner = getRootRunner()
+    if (!pkg) return { ok: false, message: 'No se detectó gestor de paquetes' }
+    if (!runner) return { ok: false, message: 'No se detectó pkexec/sudo' }
+    const buildCmd = names => {
+      if (pkg === 'apt') return `apt-get update && apt-get install -y ${names.join(' ')}`
+      if (pkg === 'dnf') return `dnf install -y ${names.join(' ')}`
+      if (pkg === 'pacman') return `pacman -Sy --noconfirm ${names.join(' ')}`
+      if (pkg === 'zypper') return `zypper --non-interactive install ${names.join(' ')}`
+      return ''
+    }
+    const names = isWayland ? ['wtype', 'ydotool'] : ['xdotool']
+    const cmd = buildCmd(names.filter(Boolean))
+    if (!cmd) return { ok: false, message: 'No se pudo construir comando de instalación' }
+    const full = runner === 'pkexec' ? `pkexec bash -lc "${cmd}"` : `sudo bash -lc "${cmd}"`
+    return await new Promise(resolve => {
+      exec(full, err => {
+        if (err) {
+          log.error('installLinuxPasteSupport error', err)
+          resolve({ ok: false, message: 'Instalación fallida' })
+        } else {
+          resolve({ ok: true, message: 'Instalación completada' })
+        }
+      })
+    })
+  } catch (e) {
+    log.error('installLinuxPasteSupport error', e?.message || e)
+    return { ok: false, message: 'Error instalando' }
+  }
+}
+
+ipcMain.handle('install-linux-paste-support', async () => {
+  const res = await installLinuxPasteSupport()
+  try {
+    if (mainWindow?.webContents) {
+      mainWindow.webContents.send('paste-status', res)
+    }
+  } catch {}
+  return res
 })

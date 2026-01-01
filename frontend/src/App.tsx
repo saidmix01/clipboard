@@ -14,6 +14,8 @@ import HistoryList from './components/HistoryList'
 import SearchQuickSwitcher from './components/SearchQuickSwitcher'
 import SettingsMenu from './components/SettingsMenu'
 import OnboardingTour from './components/OnboardingTour'
+import ContextMenu from './components/ContextMenu'
+import DeleteModal from './components/DeleteModal'
 import type { HistoryItem, FilterType } from './types'
 
 
@@ -22,6 +24,8 @@ import type { HistoryItem, FilterType } from './types'
 function App () {
   const [, setHistory] = useState<HistoryItem[]>([])
   const [search, setSearch] = useState<string>('')
+  const searchInputRef = useRef<HTMLInputElement>(null)
+  const [searchLocked, setSearchLocked] = useState<boolean>(false)
   const containerRef = useRef<HTMLDivElement>(null)
   const [showLogin, setShowLogin] = useState(false)
   const [showRegister, setShowRegister] = useState(false)
@@ -193,22 +197,19 @@ function App () {
     if ((window as any).electronAPI?.onClipboardUpdate) {
       ;(window as any).electronAPI.onClipboardUpdate((data: HistoryItem[]) => {
         setHistory(data)
-        const q = search.trim()
-        setListLoading(true)
-        if (q.length === 0) {
-          const payload = { filter, limit: 50 }
-          Promise.resolve((window as any).electronAPI?.listRecent?.(payload))
-            .then((res: HistoryItem[]) => { if (Array.isArray(res)) setDisplayed(res) })
-            .finally(() => setListLoading(false))
+        setFilter('all')
+        if (!searchLocked) {
+          setSearch('')
+          if (Array.isArray(data)) {
+            setDisplayed(data.slice(0, 50))
+          }
         } else {
-          const payload = { query: q, filter }
-          Promise.resolve((window as any).electronAPI?.searchHistory?.(payload))
-            .then((res: HistoryItem[]) => { if (Array.isArray(res)) setDisplayed(res) })
-            .finally(() => setListLoading(false))
+          // Si estamos filtrando, no sobreescribimos la lista mostrada
         }
+        setListLoading(false)
       })
     }
-  }, [])
+  }, [searchLocked])
 
   useEffect(() => {
     if ((window as any).electronAPI?.getClipboardHistory) {
@@ -286,6 +287,17 @@ function App () {
       return () => { try { off?.() } catch {} }
     }
   }, [])
+  useEffect(() => {
+    if ((window as any).electronAPI?.onUpdateStatus) {
+      ;(window as any).electronAPI.onUpdateStatus((message: string) => {
+        try {
+          if (typeof message === 'string' && message.trim()) {
+            toast(message)
+          }
+        } catch {}
+      })
+    }
+  }, [])
 
   useEffect(() => {
     async function checkFirstRun () {
@@ -302,7 +314,25 @@ function App () {
   const [selectedIndex, setSelectedIndex] = useState<number>(-1)
   const [settingsOpen, setSettingsOpen] = useState<boolean>(false)
   const [showDeviceSwitch, setShowDeviceSwitch] = useState<boolean>(false)
-  const [quickOpen, setQuickOpen] = useState<boolean>(false)
+  const isQuick = (() => {
+    try { return new URLSearchParams(window.location.search).get('quick') === '1' } catch { return false }
+  })()
+  const [quickOpen, setQuickOpen] = useState<boolean>(isQuick)
+  const [contextMenu, setContextMenu] = useState<{ x: number, y: number, item: HistoryItem } | null>(null)
+  const [itemToDelete, setItemToDelete] = useState<HistoryItem | null>(null)
+
+  if (isQuick) {
+    return (
+      <>
+        <SearchQuickSwitcher
+          open={quickOpen}
+          query={search}
+          onQueryChange={setSearch}
+          onClose={() => { try { window.close() } catch {}; setQuickOpen(false) }}
+        />
+      </>
+    )
+  }
 
   // Scroll automático cuando cambia selectedIndex
   useEffect(() => {
@@ -343,18 +373,60 @@ function App () {
   }, [displayed, selectedIndex])
 
   useEffect(() => {
+    if (isQuick) return
     const handler = (e: KeyboardEvent) => {
       const isK = e.key.toLowerCase() === 'k'
       const meta = e.ctrlKey || e.metaKey
       if (isK && meta) {
         e.preventDefault()
-        setQuickOpen(true)
+        try { (window as any).electronAPI?.openQuickSwitcher?.() } catch {}
       }
     }
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
-  }, [])
+  }, [isQuick])
 
+  useEffect(() => {
+    if ((window as any).electronAPI?.onFocusSearch) {
+      ;(window as any).electronAPI.onFocusSearch(() => {
+        try {
+          const el = searchInputRef.current
+          el?.focus()
+          ;(el as any)?.select?.()
+          setTimeout(() => {
+            try {
+              el?.focus()
+              ;(el as any)?.select?.()
+            } catch {}
+          }, 80)
+          setTimeout(() => {
+            try {
+              el?.focus()
+              ;(el as any)?.select?.()
+            } catch {}
+          }, 200)
+        } catch {}
+      })
+    }
+  }, [])
+  useEffect(() => {
+    if ((window as any).electronAPI?.onApplySearch) {
+      ;(window as any).electronAPI.onApplySearch((payload: any) => {
+        try {
+          const q = (payload && typeof payload === 'object') ? String(payload.query || '') : ''
+          const items = (payload && typeof payload === 'object' && Array.isArray(payload.items)) ? payload.items : []
+          if (q) {
+            setSearchLocked(true)
+            setSearch(q)
+          }
+          if (Array.isArray(items)) {
+            setDisplayed(items)
+            setListLoading(false)
+          }
+        } catch {}
+      })
+    }
+  }, [])
   useEffect(() => {
     const q = search.trim()
     if (!token && filter === 'favorite') { setDisplayed([]); return }
@@ -374,8 +446,8 @@ function App () {
 
   return (
     <>
+      <Toaster position='top-center' />
       <motion.div initial={{ opacity: 0, y: 30 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.5, ease: 'easeOut' }}>
-        <Toaster position='top-center' />
         <AppShell darkMode={darkMode}>
           <TopBar />
           <SettingsMenu
@@ -389,20 +461,10 @@ function App () {
             onSyncNow={async () => {
               try {
                 setSettingsOpen(false)
-                setGlobalLoading(true)
-                toast('Sincronizando…')
                 const dev = await (window as any).electronAPI?.getActiveDevice?.()
-                const hist = await (window as any).electronAPI?.loadDeviceHistory?.(dev || '')
-                if (Array.isArray(hist)) {
-                  setHistory(hist)
-                  toast.success('Sincronización completada')
-                } else {
-                  toast.error('No se pudo obtener el historial')
-                }
+                await (window as any).electronAPI?.switchActiveDevice?.(dev || '')
               } catch {
-                toast.error('Error al sincronizar')
-              } finally {
-                setGlobalLoading(false)
+                toast.error('Error al iniciar sincronización')
               }
             }}
           />
@@ -412,6 +474,9 @@ function App () {
               placeholder='Buscar en el historial…'
               value={search}
               onChange={e => setSearch(e.target.value)}
+              ref={searchInputRef}
+              autoFocus
+              data-app-search
               className="w-full px-3 py-2 rounded-md border border-[color:var(--color-border)] bg-[color:var(--color-surface)] text-[color:var(--color-text)] outline-none focus:bg-[color:var(--color-surface)]"
             />
           </div>
@@ -472,6 +537,10 @@ function App () {
             highlightMatch={highlightMatch}
             canFavorite={!!token}
             canOpenModal={!!token}
+            onContextMenu={(e, item) => {
+              e.preventDefault()
+              setContextMenu({ x: e.clientX, y: e.clientY, item })
+            }}
           />
           {listLoading && (
             <div className="px-3 py-1 text-[color:var(--color-muted)] text-xs">Cargando…</div>
@@ -518,9 +587,48 @@ function App () {
             </div>
           )}
 
-          <SearchQuickSwitcher open={quickOpen} query={search} onQueryChange={setSearch} onClose={() => setQuickOpen(false)} />
+          {isQuick && (
+            <SearchQuickSwitcher
+              open={quickOpen}
+              query={search}
+              onQueryChange={setSearch}
+              onClose={() => { try { window.close() } catch {}; setQuickOpen(false) }}
+            />
+          )}
         </AppShell>
       </motion.div>
+
+      {contextMenu && (
+        <ContextMenu
+          x={contextMenu.x}
+          y={contextMenu.y}
+          onDelete={() => {
+            setItemToDelete(contextMenu.item)
+            setContextMenu(null)
+          }}
+          onClose={() => setContextMenu(null)}
+        />
+      )}
+
+      <DeleteModal
+        isOpen={!!itemToDelete}
+        onConfirm={async () => {
+          if (itemToDelete && itemToDelete.id) {
+            try {
+              const res = await (window as any).electronAPI.deleteHistoryItem(itemToDelete.id)
+              if (res?.success) {
+                toast.success('Elemento eliminado')
+              } else {
+                toast.error('Error al eliminar')
+              }
+            } catch {
+              toast.error('Error al eliminar')
+            }
+          }
+          setItemToDelete(null)
+        }}
+        onCancel={() => setItemToDelete(null)}
+      />
     </>
   )
 }

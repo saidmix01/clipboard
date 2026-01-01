@@ -1,6 +1,6 @@
 {
   "name": "copyfy",
-  "version": "1.2.0",
+  "version": "1.2.2",
   "main": "main.js",
   "scripts": {
     "dev": "concurrently \"npm run dev --prefix frontend\" \"wait-on http://localhost:5173 && electron .\"",
@@ -9,9 +9,17 @@
     "dist": "electron-builder"
   },
   "build": {
-    "appId": "com.app.copyfy",
+    "appId": "SAIDMIX.CopyFy",
     "productName": "CopyFy++",
     "icon": "build/icon",
+    "artifactName": "${productName}-${version}-${os}-${arch}.${ext}",
+    "appx": {
+      "identityName": "SAIDMIX.CopyFy",
+      "publisher": "CN=7F54C210-7D42-4E3E-AEB0-BA23C7B9DAAC",
+      "displayName": "CopyFy++",
+      "backgroundColor": "#464646"
+    },
+    "buildVersion": "1.2.2.0",
     "publish": [
       {
         "provider": "github",
@@ -22,11 +30,13 @@
     ],
     "files": [
       "frontend/dist/**/*",
+      "frontend/media/**/*",
       "main.js",
       "db.js",
       "preload.js",
       "config.js",
       "viewer/**/*",
+      "public/**/*",
       "helpers/**/*",
       "package.json",
       "node_modules/sql.js/dist/sql-wasm.wasm"
@@ -37,11 +47,20 @@
       "node_modules/sql.js/dist/sql-wasm.wasm"
     ],
     "directories": {
-      "buildResources": "assets"
+      "buildResources": "build"
     },
     "win": {
+      "icon": "build/icon.ico",
       "target": [
         "nsis"
+      ]
+    },
+    "mac": {
+      "icon": "build/icon.icns",
+      "category": "public.app-category.utilities",
+      "target": [
+        "dmg",
+        "zip"
       ]
     },
     "linux": {
@@ -49,16 +68,31 @@
         "AppImage",
         "deb"
       ],
-      "category": "Utility"
+      "category": "Utility",
+      "icon": "build/icon.png",
+      "executableName": "copyfy",
+      "synopsis": "CopyFy++ Clipboard manager",
+      "desktop": {
+        "entry": {
+          "Categories": "Utility;",
+          "Name": "CopyFy++",
+          "TryExec": "copyfy",
+          "Terminal": "false",
+          "StartupWMClass": "copyfy"
+        }
+      }
     }
   },
   "keywords": [],
-  "author": "",
+  "author": {
+    "name": "Said Andres Avendaño",
+    "email": "saidandresmix01@gmail.com"
+  },
   "license": "ISC",
   "description": "Clipboard manager con sincronización y atajos, empaquetado para Electron",
   "devDependencies": {
     "concurrently": "^9.2.0",
-    "electron": "^36.5.0",
+    "electron": "^28.3.3",
     "electron-builder": "^26.0.12",
     "node-gyp": "^11.2.0",
     "wait-on": "^8.0.3"

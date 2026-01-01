@@ -5,6 +5,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.on('clipboard-update', (_, data) => callback(data)),
   
   hideWindow: () => ipcRenderer.invoke('hide-window'),
+  onFocusSearch: cb => ipcRenderer.on('focus-search', cb),
+
+  searchHistory: payload => ipcRenderer.invoke('search-history', payload),
+  listRecent: payload => ipcRenderer.invoke('list-recent', payload),
+  onApplySearch: cb => ipcRenderer.on('apply-search', (_, payload) => cb(payload)),
 
   copyText: text => {
     ipcRenderer.send('copy-to-clipboard', text) // ✅ lo enviamos al main

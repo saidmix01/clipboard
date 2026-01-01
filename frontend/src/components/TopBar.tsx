@@ -1,12 +1,13 @@
  
 
 import { XMarkIcon } from '@heroicons/react/24/outline'
+import logo from '../../media/64x64.png'
 
 type Props = {
   title?: string
 }
 
-export default function TopBar({ title = '📋 Copyfy++' }: Props) {
+export default function TopBar({ title = 'Copyfy++' }: Props) {
   return (
     <div className="relative z-[2000] w-full">
       <div className="flex items-center justify-between px-3 py-2 select-none drag_region">
@@ -25,7 +26,10 @@ export default function TopBar({ title = '📋 Copyfy++' }: Props) {
             <XMarkIcon className="w-4 h-4" style={{ color: 'var(--color-text)' }} />
           </button>
         </div>
-        <h5 className="m-0 text-[15px] font-semibold text-[color:var(--color-text)]">{title}</h5>
+        <div className="flex items-center gap-2 no_drag">
+          <img src={logo} alt="CopyFy logo" className="w-4 h-4 rounded" />
+          <h5 className="m-0 text-[15px] font-semibold text-[color:var(--color-text)]">{title}</h5>
+        </div>
       </div>
     </div>
   )
