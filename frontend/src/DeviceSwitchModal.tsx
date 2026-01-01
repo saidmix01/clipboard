@@ -96,9 +96,14 @@ export default function DeviceSwitchModal({ isOpen, onClose, onApplied }: Props)
       setProgress(0)
       setStatus('')
       try { localStorage.setItem('clientId', selected) } catch {}
-      const hist = await (window as any).electronAPI?.switchActiveDevice?.(selected)
-      if (Array.isArray(hist)) onApplied(hist)
       onClose()
+      Promise.resolve((window as any).electronAPI?.switchActiveDevice?.(selected))
+        .then((hist: any) => {
+          if (Array.isArray(hist)) onApplied(hist)
+        })
+        .catch(() => {
+          setError('No se pudo cargar el historial del dispositivo')
+        })
     } catch {
       setError('No se pudo cargar el historial del dispositivo')
     } finally {

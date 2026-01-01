@@ -111,6 +111,19 @@ export default function LoginModal({
           )}
           <input type='email' placeholder='Correo' value={email} onChange={e => setEmail(e.target.value)} required className="w-full px-3 py-2 rounded-md border border-[color:var(--color-border)] bg-transparent text-[color:var(--color-text)] outline-none focus:ring-2 focus:ring-[color:var(--color-primary)]" />
           <input type='password' placeholder='Contraseña' value={password} onChange={e => setPassword(e.target.value)} required className="w-full px-3 py-2 rounded-md border border-[color:var(--color-border)] bg-transparent text-[color:var(--color-text)] outline-none focus:ring-2 focus:ring-[color:var(--color-primary)]" />
+          {mode === 'login' && (
+            <div className="w-full text-right">
+              <a
+                href="https://copyfy.lat/"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-sm text-[color:var(--color-primary)] hover:underline"
+                onClick={(e) => { e.preventDefault(); try { (window as any).electronAPI?.openExternalUrl?.('https://copyfy.lat/') } catch {} }}
+              >
+                Recuperar contraseña
+              </a>
+            </div>
+          )}
           <button type='submit' disabled={loading} className="w-full px-3 py-2 rounded-md text-white" style={{ backgroundColor: 'var(--color-primary)', opacity: loading ? 0.7 : 1 }}>{loading ? (mode === 'login' ? 'Ingresando...' : 'Registrando...') : (mode === 'login' ? 'Ingresar' : 'Registrarse')}</button>
           {error && <p className="text-sm" style={{ color: 'var(--color-accent)' }}>{error}</p>}
         </form>

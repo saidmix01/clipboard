@@ -13,6 +13,7 @@ import HistoryList from './components/HistoryList'
 // filtros movidos a la barra inferior
 import SearchQuickSwitcher from './components/SearchQuickSwitcher'
 import SettingsMenu from './components/SettingsMenu'
+import AboutModal from './components/AboutModal'
 import OnboardingTour from './components/OnboardingTour'
 import ContextMenu from './components/ContextMenu'
 import DeleteModal from './components/DeleteModal'
@@ -313,6 +314,7 @@ function App () {
 
   const [selectedIndex, setSelectedIndex] = useState<number>(-1)
   const [settingsOpen, setSettingsOpen] = useState<boolean>(false)
+  const [aboutOpen, setAboutOpen] = useState<boolean>(false)
   const [showDeviceSwitch, setShowDeviceSwitch] = useState<boolean>(false)
   const isQuick = (() => {
     try { return new URLSearchParams(window.location.search).get('quick') === '1' } catch { return false }
@@ -320,6 +322,7 @@ function App () {
   const [quickOpen, setQuickOpen] = useState<boolean>(isQuick)
   const [contextMenu, setContextMenu] = useState<{ x: number, y: number, item: HistoryItem } | null>(null)
   const [itemToDelete, setItemToDelete] = useState<HistoryItem | null>(null)
+  const [deletingLoading, setDeletingLoading] = useState<boolean>(false)
 
   if (isQuick) {
     return (
@@ -467,6 +470,7 @@ function App () {
                 toast.error('Error al iniciar sincronización')
               }
             }}
+            onOpenAbout={() => { setSettingsOpen(false); setAboutOpen(true) }}
           />
           <div className="px-3 pt-1">
             <input
@@ -612,9 +616,11 @@ function App () {
 
       <DeleteModal
         isOpen={!!itemToDelete}
+        isLoading={deletingLoading}
         onConfirm={async () => {
           if (itemToDelete && itemToDelete.id) {
             try {
+              setDeletingLoading(true)
               const res = await (window as any).electronAPI.deleteHistoryItem(itemToDelete.id)
               if (res?.success) {
                 toast.success('Elemento eliminado')
@@ -626,8 +632,14 @@ function App () {
             }
           }
           setItemToDelete(null)
+          setDeletingLoading(false)
         }}
         onCancel={() => setItemToDelete(null)}
+      />
+      <AboutModal
+        isOpen={aboutOpen}
+        onClose={() => setAboutOpen(false)}
+        version={appVersion}
       />
     </>
   )

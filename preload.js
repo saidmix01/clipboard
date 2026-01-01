@@ -50,4 +50,5 @@ contextBridge.exposeInMainWorld('electronAPI', {
   ,listRecent: (payload) => ipcRenderer.invoke('list-recent', payload)
   ,installLinuxPasteSupport: () => ipcRenderer.invoke('install-linux-paste-support')
   ,deleteHistoryItem: (id) => ipcRenderer.invoke('delete-history-item', id)
+  ,openExternalUrl: (url) => ipcRenderer.send('open-external-url', url)
 })
