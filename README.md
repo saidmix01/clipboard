@@ -46,3 +46,10 @@ git clone https://github.com/tuusuario/copyfy.git
 cd copyfy
 npm install
 npm run dev
+
+
+## License
+GPL-3.0
+
+This project is open source and licensed under the GNU General Public License v3.0.
+
