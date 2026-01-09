@@ -48,10 +48,10 @@ export default function Card({ item, selected, onCopy, onToggleFavorite, highlig
 
   return (
     <motion.div
-      layout
-      initial={{ opacity: 0, y: 12 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.18, ease: [0.22, 0.9, 0.38, 1] }}
+      layout={!isImage}
+      initial={isImage ? false : { opacity: 0, y: 12 }}
+      animate={isImage ? undefined : { opacity: 1, y: 0 }}
+      transition={isImage ? undefined : { duration: 0.18, ease: [0.22, 0.9, 0.38, 1] }}
       className={`relative mb-2 p-2 rounded-[12px] border border-[color:var(--color-border)] ${selected ? 'ring-2 ring-[color:var(--color-primary)]' : ''}`}
       style={{ cursor: 'pointer', backgroundColor: 'var(--color-surface)', maxHeight: expanded ? undefined : '140px', overflow: 'hidden' }}
       onClick={onCopy}
@@ -70,7 +70,12 @@ export default function Card({ item, selected, onCopy, onToggleFavorite, highlig
 
       <div>
         {isImage ? (
-          <img src={item.value} alt="imagen" className="max-w-full rounded-[10px]" style={{ maxHeight: expanded ? undefined : 120, objectFit: 'cover' }} />
+          <img
+            src={item.value}
+            alt="imagen"
+            className="max-w-full rounded-[10px]"
+            style={{ maxHeight: expanded ? undefined : 120, objectFit: 'cover' }}
+          />
         ) : isCode ? (
           <div style={{ maxHeight: expanded ? undefined : 120, overflow: 'hidden' }}>
             <CodeBlock code={item.value} />

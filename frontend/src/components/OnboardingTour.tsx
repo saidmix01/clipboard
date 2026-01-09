@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { motion } from 'framer-motion'
 import Portal from './Portal'
 
@@ -10,6 +10,9 @@ type Props = {
 
 export default function OnboardingTour({ open, onClose, onComplete }: Props) {
   const [step, setStep] = useState<number>(0)
+  useEffect(() => {
+    if (open) setStep(0)
+  }, [open])
   if (!open) return null
 
   const steps = [

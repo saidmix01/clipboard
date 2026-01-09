@@ -24,8 +24,16 @@ contextBridge.exposeInMainWorld('electronAPI', {
   pasteImage: () => ipcRenderer.invoke('pasteImage'),
   //updates
   forceUpdate: () => ipcRenderer.send('force-update'),
-  onUpdateStatus: callback => ipcRenderer.on('update-status', (_, message) => callback(message)),
-  onPasteStatus: callback => ipcRenderer.on('paste-status', (_, data) => callback(data)),
+  onUpdateStatus: callback => {
+    const listener = (_, message) => callback(message)
+    ipcRenderer.on('update-status', listener)
+    return () => ipcRenderer.removeListener('update-status', listener)
+  },
+  onPasteStatus: callback => {
+    const listener = (_, data) => callback(data)
+    ipcRenderer.on('paste-status', listener)
+    return () => ipcRenderer.removeListener('paste-status', listener)
+  },
   // Version app
   getAppVersion: () => ipcRenderer.invoke('get-app-version'),
   setAuthToken: (token) => ipcRenderer.send('set-auth-token', token),
@@ -44,6 +52,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.on('sync-progress', listener)
     return () => ipcRenderer.removeListener('sync-progress', listener)
   }
+  ,onOpenTutorial: (callback) => {
+    const listener = () => callback()
+    ipcRenderer.on('open-tutorial', listener)
+    return () => ipcRenderer.removeListener('open-tutorial', listener)
+  }
   ,getPreferences: () => ipcRenderer.invoke('get-preferences')
   ,setPreferences: (patch) => ipcRenderer.invoke('set-preferences', patch)
   ,searchHistory: (payload) => ipcRenderer.invoke('search-history', payload)
@@ -51,4 +64,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
   ,installLinuxPasteSupport: () => ipcRenderer.invoke('install-linux-paste-support')
   ,deleteHistoryItem: (id) => ipcRenderer.invoke('delete-history-item', id)
   ,openExternalUrl: (url) => ipcRenderer.send('open-external-url', url)
+  ,onFocusSearch: (callback) => {
+    const listener = () => callback()
+    ipcRenderer.on('focus-search', listener)
+    return () => ipcRenderer.removeListener('focus-search', listener)
+  }
+  ,onApplySearch: (callback) => {
+    const listener = (_, payload) => callback(payload)
+    ipcRenderer.on('apply-search', listener)
+    return () => ipcRenderer.removeListener('apply-search', listener)
+  }
 })

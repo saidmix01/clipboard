@@ -196,7 +196,7 @@ function App () {
 
   useEffect(() => {
     if ((window as any).electronAPI?.onClipboardUpdate) {
-      ;(window as any).electronAPI.onClipboardUpdate((data: HistoryItem[]) => {
+      const off = (window as any).electronAPI.onClipboardUpdate((data: HistoryItem[]) => {
         setHistory(data)
         setFilter('all')
         if (!searchLocked) {
@@ -204,11 +204,10 @@ function App () {
           if (Array.isArray(data)) {
             setDisplayed(data.slice(0, 50))
           }
-        } else {
-          // Si estamos filtrando, no sobreescribimos la lista mostrada
         }
         setListLoading(false)
       })
+      return () => { try { off?.() } catch {} }
     }
   }, [searchLocked])
 
@@ -259,6 +258,25 @@ function App () {
     root.setAttribute('data-theme', darkMode ? 'dark' : 'light')
   }, [darkMode])
 
+  useEffect(() => {
+    try {
+      ;(window as any).electronAPI?.getPreferences?.().then((prefs: any) => {
+        if (prefs?.colorPrimary) {
+          document.documentElement.style.setProperty('--color-primary', prefs.colorPrimary)
+        }
+        if (prefs?.colorSecondary) {
+          document.documentElement.style.setProperty('--color-secondary', prefs.colorSecondary)
+        }
+        if (prefs?.colorBg) {
+          document.documentElement.style.setProperty('--color-bg', prefs.colorBg)
+        }
+        if (prefs?.colorSurface) {
+          document.documentElement.style.setProperty('--color-surface', prefs.colorSurface)
+        }
+      })
+    } catch {}
+  }, [])
+
   const [appVersion, setAppVersion] = useState<string>('')
   const [showTour, setShowTour] = useState<boolean>(false)
 
@@ -290,13 +308,23 @@ function App () {
   }, [])
   useEffect(() => {
     if ((window as any).electronAPI?.onUpdateStatus) {
-      ;(window as any).electronAPI.onUpdateStatus((message: string) => {
+      const off = (window as any).electronAPI.onUpdateStatus((message: string) => {
         try {
           if (typeof message === 'string' && message.trim()) {
             toast(message)
           }
         } catch {}
       })
+      return () => { try { off?.() } catch {} }
+    }
+  }, [])
+
+  useEffect(() => {
+    if ((window as any).electronAPI?.onOpenTutorial) {
+      const off = (window as any).electronAPI.onOpenTutorial(() => {
+        try { setShowTour(true) } catch {}
+      })
+      return () => { try { off?.() } catch {} }
     }
   }, [])
 
@@ -414,7 +442,7 @@ function App () {
   }, [])
   useEffect(() => {
     if ((window as any).electronAPI?.onApplySearch) {
-      ;(window as any).electronAPI.onApplySearch((payload: any) => {
+      const off = (window as any).electronAPI.onApplySearch((payload: any) => {
         try {
           const q = (payload && typeof payload === 'object') ? String(payload.query || '') : ''
           const items = (payload && typeof payload === 'object' && Array.isArray(payload.items)) ? payload.items : []
@@ -428,6 +456,7 @@ function App () {
           }
         } catch {}
       })
+      return () => { try { off?.() } catch {} }
     }
   }, [])
   useEffect(() => {
@@ -440,7 +469,7 @@ function App () {
         .then((res: HistoryItem[]) => { if (Array.isArray(res)) setDisplayed(res) })
         .finally(() => setListLoading(false))
     } else {
-      const payload = { query: q, filter }
+      const payload = { query: q, filter: 'text' }
       Promise.resolve((window as any).electronAPI?.searchHistory?.(payload))
         .then((res: HistoryItem[]) => { if (Array.isArray(res)) setDisplayed(res) })
         .finally(() => setListLoading(false))

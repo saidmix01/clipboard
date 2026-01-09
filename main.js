@@ -248,35 +248,48 @@ function saveClipboardImagePNG (image) {
   return filePath
 }
 
-function startClipboardImagePolling (intervalMs = 1000) {
-  let lastHash = ''
-  let lastFormatsSig = ''
-  setInterval(() => {
+function getImagePathFromDataURL (dataUrl) {
+  try {
+    if (typeof dataUrl !== 'string' || !dataUrl.startsWith('data:image')) return null
+    const ni = nativeImage.createFromDataURL(dataUrl)
+    if (!ni || ni.isEmpty()) return null
+    const png = ni.toPNG()
+    if (!png || png.length === 0) return null
+    const hash = crypto.createHash('sha256').update(png).digest('hex')
+    const dir = getImageHistoryDir()
+    const manifestPath = path.join(dir, 'images.json')
     try {
-      let img = readClipboardImageSmart()
-      if (img && img.isEmpty()) {
-        if (process.platform === 'linux') {
-          const selImg = clipboard.readImage('selection')
-          if (!selImg.isEmpty()) img = selImg
-        }
-        try {
-          const fmts = (clipboard.availableFormats() || []).join('|')
-          if (fmts && fmts !== lastFormatsSig) {
-            lastFormatsSig = fmts
-            try { log.info('Clipboard formats', { formats: fmts }) } catch {}
-          }
-        } catch {}
-      }
-      if (img && !img.isEmpty()) {
-        const png = img.toPNG()
-        const hash = crypto.createHash('sha256').update(png).digest('hex')
-        if (hash !== lastHash) {
-          const saved = saveClipboardImagePNG(img)
-          lastHash = hash
+      if (fs.existsSync(manifestPath)) {
+        const raw = fs.readFileSync(manifestPath, 'utf-8')
+        const manifest = JSON.parse(raw)
+        const found = Array.isArray(manifest) ? manifest.find(x => x && x.hash === hash) : null
+        if (found && found.file) {
+          const p = path.join(dir, found.file)
+          if (fs.existsSync(p)) return p
         }
       }
     } catch {}
-  }, Math.max(250, Number(intervalMs) || 1000))
+    const saved = saveClipboardImagePNG(ni)
+    return saved || null
+  } catch {
+    return null
+  }
+}
+
+function augmentHistoryWithImagePaths (list) {
+  try {
+    const arr = Array.isArray(list) ? list : []
+    return arr.map(it => {
+      const v = it && typeof it.value === 'string' ? it.value : ''
+      if (v.startsWith('data:image')) {
+        const p = getImagePathFromDataURL(v)
+        if (p) return { ...it, imagePath: p }
+      }
+      return it
+    })
+  } catch {
+    return Array.isArray(list) ? list : []
+  }
 }
 
 function normalizeHistory (raw) {
@@ -542,38 +555,33 @@ function createWindow () {
     } catch {
       history = []
     }
-    mainWindow.webContents.send('clipboard-update', history)
+    mainWindow.webContents.send('clipboard-update', augmentHistoryWithImagePaths(history))
   })
 
-  // Mostrar con animación
+  // Mostrar sin animación manual para evitar bloqueos
   mainWindow.once('ready-to-show', () => {
     mainWindow.setTitle('')
-    mainWindow.show()
-
-    const duration = 300 // ms
-    const steps = 30
-    const stepTime = duration / steps
-    const deltaX = (startX - finalX) / steps
-
-    let currentX = startX
-    const interval = setInterval(() => {
-      currentX -= deltaX
-      if (currentX <= finalX) {
-        currentX = finalX
-        clearInterval(interval)
-      }
-      mainWindow.setBounds({
-        x: Math.round(currentX),
-        y: 0,
-        width: windowWidth,
-        height: windowHeight
-      })
-    }, stepTime)
-    setTimeout(() => {
-      try { mainWindow.focus() } catch {}
-      try { mainWindow.webContents.focus() } catch {}
-      try { mainWindow.webContents.send('focus-search') } catch {}
-    }, 150)
+    mainWindow.setBounds({
+      x: finalX,
+      y: 0,
+      width: windowWidth,
+      height: windowHeight
+    })
+    
+    // Comprobar si debe iniciar minimizada
+    const cfg = readDeviceConfigObj()
+    const prefs = cfg.preferences || {}
+    if (!prefs.startMinimized) {
+      mainWindow.show()
+      setTimeout(() => {
+        try { mainWindow.focus() } catch {}
+        try { mainWindow.webContents.focus() } catch {}
+        try { mainWindow.webContents.send('focus-search') } catch {}
+      }, 150)
+    } else {
+      // Si inicia minimizada, aseguramos que esté oculta pero lista
+      mainWindow.hide() 
+    }
   })
 
   // Evitar cierre completo
@@ -613,8 +621,13 @@ app.whenReady().then(async () => {
   tray.setToolTip('Copyfy++')
   const menu = Menu.buildFromTemplate([
     { label: 'Abrir', click: () => { if (mainWindow) { mainWindow.show(); mainWindow.focus() } } },
-    { label: 'Pegar texto', click: () => { performPaste(mainWindow) } },
-    { label: 'Pegar imagen', click: () => { performPasteImage(mainWindow) } },
+    { label: 'Ver tutorial', click: () => { 
+      if (mainWindow?.webContents) { 
+        mainWindow.show(); 
+        mainWindow.focus(); 
+        try { mainWindow.webContents.send('open-tutorial') } catch {} 
+      } 
+    } },
     { type: 'separator' },
     { label: 'Salir', click: () => { isQuitting = true; app.quit() } }
   ])
@@ -677,7 +690,7 @@ app.whenReady().then(async () => {
     }
 
     if (mainWindow?.webContents) {
-      mainWindow.webContents.send('clipboard-update', history)
+      mainWindow.webContents.send('clipboard-update', augmentHistoryWithImagePaths(history))
     }
 
     setInterval(() => {
@@ -711,7 +724,7 @@ app.whenReady().then(async () => {
                   history = db.getAllGuest(getCurrentDeviceName())
                 }
                 if (mainWindow?.webContents) {
-                  mainWindow.webContents.send('clipboard-update', history)
+                  mainWindow.webContents.send('clipboard-update', augmentHistoryWithImagePaths(history))
                 }
               }
             }
@@ -739,7 +752,7 @@ app.whenReady().then(async () => {
               history = db.getAllGuest(getCurrentDeviceName())
             }
             if (mainWindow?.webContents) {
-              mainWindow.webContents.send('clipboard-update', history)
+              mainWindow.webContents.send('clipboard-update', augmentHistoryWithImagePaths(history))
             }
             return
           }
@@ -777,7 +790,7 @@ app.whenReady().then(async () => {
           enforceGuestLimit(1000)
           history = db.getAllGuest(getCurrentDeviceName())
         }
-        mainWindow.webContents.send('clipboard-update', history)
+        mainWindow.webContents.send('clipboard-update', augmentHistoryWithImagePaths(history))
         return
       }
 
@@ -798,13 +811,13 @@ app.whenReady().then(async () => {
           enforceGuestLimit(1000)
           history = db.getAllGuest(getCurrentDeviceName())
         }
-        mainWindow.webContents.send('clipboard-update', history)
+        mainWindow.webContents.send('clipboard-update', augmentHistoryWithImagePaths(history))
       }
     }, 1000)
   }
 
   pollClipboard()
-  startClipboardImagePolling(1000)
+  // startClipboardImagePolling(1000) // Removed as undefined
   if (app.isPackaged) {
     try { mainWindow.webContents.send('update-status', 'Comprobando actualizaciones al iniciar...') } catch {}
     setTimeout(() => {
@@ -852,20 +865,36 @@ app.whenReady().then(async () => {
     }, 120)
   }
 
-  // Limpiar atajos previos para evitar conflictos
-  try { globalShortcut.unregisterAll() } catch {}
+  const updateGlobalShortcuts = () => {
+    try { globalShortcut.unregisterAll() } catch {}
+    
+    const cfg = readDeviceConfigObj()
+    const prefs = cfg.preferences || {}
+    let modifier = prefs.shortcutModifier
+    let key = prefs.shortcutKey
 
-  const ret = globalShortcut.register('Alt+X', toggleShow)
-  if (!ret) {
-    try { log.warn('Fallo al registrar shortcut Alt+X') } catch {}
+    // Default defaults
+    if (!modifier) modifier = process.platform === 'darwin' ? 'Command+Option' : 'Alt'
+    if (!key) key = 'X'
+
+    const accelerator = `${modifier}+${key}`
+    try {
+      const ret = globalShortcut.register(accelerator, toggleShow)
+      if (ret) {
+        log.info(`Shortcut registrado: ${accelerator}`)
+      } else {
+        log.warn(`Fallo al registrar shortcut: ${accelerator}`)
+        // Fallback safe defaults if custom fails
+        if (process.platform === 'darwin') globalShortcut.register('Command+Option+X', toggleShow)
+        else globalShortcut.register('Alt+X', toggleShow)
+      }
+    } catch (e) {
+      log.error('Error registrando shortcut', e)
+    }
   }
 
-  if (process.platform === 'darwin') {
-    globalShortcut.register('Command+Option+X', toggleShow)
-  } else if (process.platform === 'linux') {
-    // Alternativa para Linux donde Alt suele estar reservado
-    globalShortcut.register('Control+Alt+X', toggleShow)
-  }
+  updateGlobalShortcuts()
+  app.on('update-shortcuts', updateGlobalShortcuts)
 
   // Quick switcher desactivado
 
@@ -978,7 +1007,8 @@ autoUpdater.on('update-downloaded', () => {
 ipcMain.handle('get-clipboard-history', async () => {
   try {}
   catch {}
-  return authToken ? db.getAll(getCurrentDeviceName()) : db.getAllGuest(getCurrentDeviceName())
+  const res = authToken ? db.getAll(getCurrentDeviceName()) : db.getAllGuest(getCurrentDeviceName())
+  return augmentHistoryWithImagePaths(res)
 })
 
 ipcMain.handle('hide-window', () => {
@@ -1024,7 +1054,7 @@ ipcMain.handle('clear-history', async () => {
     history = []
     if (authToken) db.clear(getCurrentDeviceName())
     else db.clearGuest(getCurrentDeviceName())
-    mainWindow.webContents.send('clipboard-update', history)
+    mainWindow.webContents.send('clipboard-update', augmentHistoryWithImagePaths(history))
     log.info('Historial borrado')
   } catch (err) {
     log.error('Error al borrar historial', err)
@@ -1059,7 +1089,7 @@ ipcMain.handle('delete-history-item', async (_, id) => {
     
     db.deleteById(id)
     history = authToken ? db.getAll(getCurrentDeviceName()) : db.getAllGuest(getCurrentDeviceName())
-    mainWindow.webContents.send('clipboard-update', history)
+    mainWindow.webContents.send('clipboard-update', augmentHistoryWithImagePaths(history))
     log.info('Item borrado localmente:', id)
     return { success: true }
   } catch (err) {
@@ -1219,7 +1249,7 @@ ipcMain.on('toggle-favorite', async (event, payload) => {
 
     // Enviar al frontend
     if (mainWindow?.webContents) {
-      mainWindow.webContents.send('clipboard-update', history)
+      mainWindow.webContents.send('clipboard-update', augmentHistoryWithImagePaths(history))
     }
  
     let remoteId = null
@@ -1476,7 +1506,7 @@ ipcMain.handle('switch-active-device', async (_, deviceName) => {
     const devHist = readDeviceHistory()
     history = devHist
     if (mainWindow?.webContents) {
-      mainWindow.webContents.send('clipboard-update', history)
+      mainWindow.webContents.send('clipboard-update', augmentHistoryWithImagePaths(history))
     }
     try { authToken ? await enforceHistoryLimit(1000) : enforceGuestLimit(1000) } catch {}
     if (mainWindow?.webContents) {
@@ -1520,7 +1550,7 @@ ipcMain.handle('list-devices', async () => {
       const devHist = authToken ? readDeviceHistoryByName(target) : db.getAllGuest(target)
       history = devHist
       if (mainWindow?.webContents) {
-        mainWindow.webContents.send('clipboard-update', history)
+        mainWindow.webContents.send('clipboard-update', augmentHistoryWithImagePaths(history))
       }
       return history
     } catch {
@@ -1607,9 +1637,9 @@ async function fetchBackendClipboard () {
     history = mapped
     writeDeviceHistory(history)
     history = db.getAll(getCurrentDeviceName())
-    if (mainWindow?.webContents) {
-      mainWindow.webContents.send('clipboard-update', history)
-    }
+        if (mainWindow?.webContents) {
+          mainWindow.webContents.send('clipboard-update', augmentHistoryWithImagePaths(history))
+        }
   } catch (error) {
     log.error('fetchBackendClipboard error', error?.message || error)
   }
@@ -1829,7 +1859,7 @@ async function syncClipboardHistory () {
     const res = await axiosInstance.get('/clipboard', { params: { clientId } })
     const data = res?.data
     const items = (data && typeof data === 'object' ? (data.data?.items ?? data.items ?? []) : [])
-    
+
     const backendItems = Array.isArray(items)
       ? items.map(it => ({
           id: it && (it.id || (it.item && it.item.id)) || null,
@@ -1843,9 +1873,12 @@ async function syncClipboardHistory () {
       db.importItems(getCurrentDeviceName(), backendItems)
     }
 
+    const remoteValues = backendItems.map(it => it.value)
+    db.deleteNotInRemote(getCurrentDeviceName(), remoteValues)
+
     history = db.getAll(getCurrentDeviceName())
     if (mainWindow?.webContents) {
-      mainWindow.webContents.send('clipboard-update', history)
+      mainWindow.webContents.send('clipboard-update', augmentHistoryWithImagePaths(history))
       mainWindow.webContents.send('sync-progress', { percentage: 100, message: 'Completado' })
     }
 
@@ -1984,7 +2017,7 @@ ipcMain.handle('clear-user-data', async () => {
     activeDeviceName = null
     history = []
     if (mainWindow?.webContents) {
-      mainWindow.webContents.send('clipboard-update', history)
+      mainWindow.webContents.send('clipboard-update', augmentHistoryWithImagePaths(history))
     }
   } catch (error) {
     log.error('clear-user-data error', error?.message || error)
@@ -2006,6 +2039,16 @@ ipcMain.handle('set-preferences', async (_, patch) => {
     const prefs = (patch && typeof patch === 'object') ? patch : {}
     obj.preferences = { ...(obj.preferences || {}), ...prefs }
     writeDeviceConfigObj(obj)
+    
+    // Si cambiaron los atajos, recargar
+    if (prefs.shortcutModifier || prefs.shortcutKey) {
+      // Necesitamos acceder a updateGlobalShortcuts pero está en otro scope
+      // Como solución rápida, enviamos un evento al propio proceso o usamos una variable global si fuera posible
+      // Pero como updateGlobalShortcuts está dentro de app.whenReady, no es accesible aquí.
+      // REFACTOR: Movemos updateGlobalShortcuts a un scope superior o emitimos un evento.
+      app.emit('update-shortcuts') 
+    }
+    
     return obj.preferences
   } catch {
     return {}
@@ -2017,9 +2060,9 @@ ipcMain.handle('search-history', async (_, payload) => {
     const f = (payload && typeof payload === 'object') ? String(payload.filter || 'all') : 'all'
     if (!authToken) {
       if (f === 'favorite') return []
-      return db.searchGuest(getCurrentDeviceName(), q, f)
+      return augmentHistoryWithImagePaths(db.searchGuest(getCurrentDeviceName(), q, f))
     }
-    return db.search(getCurrentDeviceName(), q, f)
+    return augmentHistoryWithImagePaths(db.search(getCurrentDeviceName(), q, f))
   } catch {
     return []
   }
@@ -2030,9 +2073,9 @@ ipcMain.handle('list-recent', async (_, payload) => {
     const limit = (payload && typeof payload === 'object') ? Number(payload.limit || 50) : 50
     if (!authToken) {
       if (f === 'favorite') return []
-      return db.getRecentGuest(getCurrentDeviceName(), f, limit)
+      return augmentHistoryWithImagePaths(db.getRecentGuest(getCurrentDeviceName(), f, limit))
     }
-    return db.getRecent(getCurrentDeviceName(), f, limit)
+    return augmentHistoryWithImagePaths(db.getRecent(getCurrentDeviceName(), f, limit))
   } catch {
     return []
   }

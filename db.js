@@ -435,7 +435,11 @@ function searchGuest(device, query, filter) {
   const where = ['device=?']
   const params = [device]
   const q = String(query || '').trim()
-  if (q.length > 0) { where.push('value LIKE ?'); params.push('%' + q + '%') }
+  if (q.length > 0) {
+    where.push('value LIKE ?')
+    params.push('%' + q + '%')
+    where.push("value NOT LIKE 'data:image%'")
+  }
   const f = String(filter || 'all')
   if (f === 'image') where.push("value LIKE 'data:image%'")
   else if (f === 'text') where.push("value NOT LIKE 'data:image%'")
@@ -474,7 +478,11 @@ function search(device, query, filter) {
   const where = ['device=?']
   const params = [device]
   const q = String(query || '').trim()
-  if (q.length > 0) { where.push('value LIKE ?'); params.push('%' + q + '%') }
+  if (q.length > 0) {
+    where.push('value LIKE ?')
+    params.push('%' + q + '%')
+    where.push("value NOT LIKE 'data:image%'")
+  }
   const f = String(filter || 'all')
   if (f === 'image') where.push("value LIKE 'data:image%'")
   else if (f === 'text') where.push("value NOT LIKE 'data:image%'")
@@ -626,4 +634,23 @@ function countGuestActive(device) {
   }
 }
 
-module.exports = { init, getAll, insert, setFavorite, clear, importItems, search, getRecent, getByValues, getNotIn, trimToLimit, insertGuest, getAllGuest, clearGuest, trimGuestToLimit, searchGuest, getRecentGuest, deleteById, getById, updateRemoteIdByValue, getDirtyItems, markSynced, updateFromConflict, updateRemoteId, countActive, countGuestActive }
+function deleteNotInRemote(device, remoteValues) {
+  const values = Array.isArray(remoteValues) ? remoteValues.filter(v => typeof v === 'string') : []
+  if (values.length === 0) {
+    const stmt = db.prepare('DELETE FROM history WHERE device=? AND is_deleted=0 AND remote_id IS NOT NULL')
+    stmt.bind([device])
+    stmt.step()
+    stmt.free()
+    persist()
+    return
+  }
+  const placeholders = values.map(() => '?').join(',')
+  const sql = `DELETE FROM history WHERE device=? AND is_deleted=0 AND remote_id IS NOT NULL AND value NOT IN (${placeholders})`
+  const stmt = db.prepare(sql)
+  stmt.bind([device, ...values])
+  stmt.step()
+  stmt.free()
+  persist()
+}
+
+module.exports = { init, getAll, insert, setFavorite, clear, importItems, search, getRecent, getByValues, getNotIn, trimToLimit, insertGuest, getAllGuest, clearGuest, trimGuestToLimit, searchGuest, getRecentGuest, deleteById, getById, updateRemoteIdByValue, getDirtyItems, markSynced, updateFromConflict, updateRemoteId, countActive, countGuestActive, deleteNotInRemote }
