@@ -273,6 +273,12 @@ function App () {
         if (prefs?.colorSurface) {
           document.documentElement.style.setProperty('--color-surface', prefs.colorSurface)
         }
+        if (prefs?.colorText) {
+          document.documentElement.style.setProperty('--color-text', prefs.colorText)
+        }
+        if (prefs?.fontSize) {
+          document.documentElement.style.setProperty('--font-size-card', `${prefs.fontSize}px`)
+        }
       })
     } catch {}
   }, [])

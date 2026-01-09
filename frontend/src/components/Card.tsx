@@ -81,7 +81,7 @@ export default function Card({ item, selected, onCopy, onToggleFavorite, highlig
             <CodeBlock code={item.value} />
           </div>
         ) : (
-          <div className="text-sm text-[color:var(--color-text)] break-words" style={{ maxHeight: expanded ? undefined : 120, overflow: 'hidden' }}>
+          <div className="text-[color:var(--color-text)] break-words" style={{ fontSize: 'var(--font-size-card)', maxHeight: expanded ? undefined : 120, overflow: 'hidden' }}>
             {highlightMatch(item.value, search)}
           </div>
         )}
