@@ -175,11 +175,7 @@ export default function SettingsMenu({ open, darkMode, onClose, onChangeDevice, 
   }
 
   const menuBtnClass = `flex items-center gap-2 px-3 py-2 rounded-md text-left transition-colors duration-200 hover:text-white`
-  const getHoverStyle = (active: boolean = false) => ({
-    backgroundColor: active ? 'var(--color-primary)' : undefined,
-    color: active ? '#ffffff' : undefined,
-    '--hover-bg': 'var(--color-primary)'
-  } as React.CSSProperties)
+  
 
   const MouseOver = (e: React.MouseEvent) => {
     e.currentTarget.style.backgroundColor = 'var(--color-primary)'
