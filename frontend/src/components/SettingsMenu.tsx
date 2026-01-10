@@ -177,11 +177,11 @@ export default function SettingsMenu({ open, darkMode, onClose, onChangeDevice, 
   const menuBtnClass = `flex items-center gap-2 px-3 py-2 rounded-md text-left transition-colors duration-200 hover:text-white`
   
 
-  const MouseOver = (e: React.MouseEvent) => {
+  const MouseOver = (e: React.MouseEvent<HTMLButtonElement>) => {
     e.currentTarget.style.backgroundColor = 'var(--color-primary)'
     e.currentTarget.style.color = '#ffffff'
   }
-  const MouseOut = (e: React.MouseEvent) => {
+  const MouseOut = (e: React.MouseEvent<HTMLButtonElement>) => {
     e.currentTarget.style.backgroundColor = 'transparent'
     e.currentTarget.style.color = 'var(--color-text)'
   }
