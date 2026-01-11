@@ -55,22 +55,24 @@ function App () {
   const [globalLoading, setGlobalLoading] = useState(false)
   const [userAvatar, setUserAvatar] = useState<string | null>(null)
 
-  const logout = () => {
+  const logout = async () => {
     setToken(null)
-    localStorage.removeItem('x-token')
-    localStorage.removeItem('session')
-    try { localStorage.removeItem('clientId') } catch {}
-    try { (window as any).electronAPI?.clearSessionFile?.() } catch {}
-    ;(window as any).electronAPI?.setAuthToken?.('')
-    try { (window as any).electronAPI?.clearUserData?.() } catch {}
+    try {
+      await (window as any).electronAPI?.removeConfig?.('x-token')
+      await (window as any).electronAPI?.removeConfig?.('session')
+      await (window as any).electronAPI?.removeConfig?.('clientId')
+      await (window as any).electronAPI?.clearSessionFile?.()
+      ;(window as any).electronAPI?.setAuthToken?.('')
+      await (window as any).electronAPI?.clearUserData?.()
+    } catch {}
     toast.success('Sesión cerrada')
   }
 
   async function refreshAuthToken () {
     try {
-      const raw = localStorage.getItem('session')
-      if (!raw) return false
-      const sess = JSON.parse(raw)
+      const sessionStr = await (window as any).electronAPI?.getConfig?.('session')
+      if (!sessionStr) return false
+      const sess = JSON.parse(sessionStr)
       const rt = sess?.refreshToken
       if (!rt) return false
       const res = await fetch(`${API_BASE}/auth/refresh`, {
@@ -84,11 +86,10 @@ function App () {
       const newToken = payload?.token
       const newRefresh = payload?.refreshToken
       if ((okFlag ?? res.ok) && newToken) {
-        handleLoginSuccess(newToken)
+        await handleLoginSuccess(newToken)
         const newSession = { ...sess, token: newToken, refreshToken: newRefresh || rt }
-        localStorage.setItem('session', JSON.stringify(newSession))
-        // Respaldo en archivo para AppImage
-        try { (window as any).electronAPI?.saveSession?.(newSession) } catch {}
+        await (window as any).electronAPI?.setConfig?.('session', JSON.stringify(newSession))
+        await (window as any).electronAPI?.saveSession?.(newSession)
         return true
       }
       return false
@@ -97,9 +98,9 @@ function App () {
     }
   }
 
-  const handleLoginSuccess = (newToken: string) => {
+  const handleLoginSuccess = async (newToken: string) => {
     setToken(newToken)
-    localStorage.setItem('x-token', newToken)
+    await (window as any).electronAPI?.setConfig?.('x-token', newToken)
 
     if ((window as any).electronAPI?.setAuthToken) {
       ;(window as any).electronAPI?.setAuthToken(newToken)
@@ -250,28 +251,28 @@ function App () {
   useEffect(() => {
     async function restoreSession () {
       try {
-        // Primero intentar desde localStorage
-        let raw = localStorage.getItem('session')
+        // Cargar desde DB local
+        let sessionStr = await (window as any).electronAPI?.getConfig?.('session')
         let sess = null
         
-        if (raw) {
+        if (sessionStr) {
           try {
-            sess = JSON.parse(raw)
+            sess = JSON.parse(sessionStr)
           } catch (e) {
-            // Si falla parsear localStorage, intentar desde archivo
+            // Si falla parsear, intentar desde archivo (migración)
           }
         }
         
-        // Si no hay sesión en localStorage, intentar desde archivo (respaldo para AppImage)
+        // Si no hay sesión en DB, intentar desde archivo (migración)
         if (!sess) {
           try {
             sess = await (window as any).electronAPI?.readSession?.()
             if (sess) {
-              // Restaurar en localStorage también
-              localStorage.setItem('session', JSON.stringify(sess))
+              // Migrar a DB
+              await (window as any).electronAPI?.setConfig?.('session', JSON.stringify(sess))
             }
           } catch (e) {
-            // Silenciar errores de lectura de archivo
+            // Silenciar errores
           }
         }
         
@@ -285,14 +286,14 @@ function App () {
             }
             // Si el refresh falla, intentar usar el token existente como fallback
             if (sess?.token) {
-              handleLoginSuccess(sess.token)
+              await handleLoginSuccess(sess.token)
               ;(window as any).electronAPI?.setAuthToken(sess.token)
               return
             }
           }
           // Si no hay refreshToken pero hay token, usarlo directamente
           if (sess?.token) {
-            handleLoginSuccess(sess.token)
+            await handleLoginSuccess(sess.token)
             ;(window as any).electronAPI?.setAuthToken(sess.token)
             return
           }
@@ -300,12 +301,14 @@ function App () {
       } catch (e) {
         // Si falla parsear session, intentar con x-token como fallback
       }
-      // Fallback: usar x-token directamente
-      const token = localStorage.getItem('x-token')
-      if (token) {
-        handleLoginSuccess(token)
-        ;(window as any).electronAPI?.setAuthToken(token)
-      }
+      // Fallback: usar x-token directamente desde DB
+      try {
+        const token = await (window as any).electronAPI?.getConfig?.('x-token')
+        if (token) {
+          await handleLoginSuccess(token)
+          ;(window as any).electronAPI?.setAuthToken(token)
+        }
+      } catch {}
     }
     restoreSession()
   }, [])
@@ -420,19 +423,39 @@ function App () {
     }
   }, [])
 
-  const [darkMode, setDarkMode] = useState<boolean>(() => {
-    const stored = localStorage.getItem('darkMode')
-    return stored === 'true'
-  })
+  const [darkMode, setDarkMode] = useState<boolean>(false)
+  const [darkModeLoaded, setDarkModeLoaded] = useState<boolean>(false)
 
   useEffect(() => {
-    localStorage.setItem('darkMode', darkMode.toString())
-  }, [darkMode])
+    async function loadDarkMode() {
+      try {
+        const stored = await (window as any).electronAPI?.getConfig?.('darkMode')
+        if (stored !== null && stored !== undefined) {
+          setDarkMode(stored === 'true')
+        }
+        setDarkModeLoaded(true)
+      } catch {
+        setDarkModeLoaded(true)
+      }
+    }
+    loadDarkMode()
+  }, [])
 
   useEffect(() => {
+    if (!darkModeLoaded) return
+    async function saveDarkMode() {
+      try {
+        await (window as any).electronAPI?.setConfig?.('darkMode', darkMode.toString())
+      } catch {}
+    }
+    saveDarkMode()
+  }, [darkMode, darkModeLoaded])
+
+  useEffect(() => {
+    if (!darkModeLoaded) return
     const root = document.documentElement
     root.setAttribute('data-theme', darkMode ? 'dark' : 'light')
-  }, [darkMode])
+  }, [darkMode, darkModeLoaded])
 
   useEffect(() => {
     try {

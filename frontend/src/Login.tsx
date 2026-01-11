@@ -88,9 +88,8 @@ export default function LoginModal({
             name: (userResp?.name ?? (mode === 'register' ? nameTrim : undefined)),
             user: userResp
           }
-          localStorage.setItem('session', JSON.stringify(session))
-          // Respaldo en archivo para AppImage (especialmente Linux)
-          try { (window as any).electronAPI?.saveSession?.(session) } catch {}
+          await (window as any).electronAPI?.setConfig?.('session', JSON.stringify(session))
+          await (window as any).electronAPI?.saveSession?.(session)
         } catch {}
         onLoginSuccess(tokenResp)
         onClose()

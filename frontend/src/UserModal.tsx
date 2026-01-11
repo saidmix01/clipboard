@@ -32,7 +32,8 @@ export default function UserModal({ isOpen, onClose }: UserModalProps) {
     try {
       setLoading(true)
       setError(null)
-      const token = localStorage.getItem('x-token') || (session as any)?.token
+      const tokenStr = await (window as any).electronAPI?.getConfig?.('x-token')
+      const token = tokenStr || (session as any)?.token
       if (!token) return
 
       const body: any = {}
@@ -85,21 +86,26 @@ export default function UserModal({ isOpen, onClose }: UserModalProps) {
 
   useEffect(() => {
     if (!isOpen) return
-    try {
-      const raw = localStorage.getItem('session')
-      if (raw) {
-        const s = JSON.parse(raw)
-        setSession(s)
-      } else {
-        setSession(null)
-      }
-    } catch {
-      setSession(null)
-    }
     ;(async () => {
       try {
+        const sessionStr = await (window as any).electronAPI?.getConfig?.('session')
+        if (sessionStr) {
+          try {
+            const s = JSON.parse(sessionStr)
+            setSession(s)
+          } catch {
+            setSession(null)
+          }
+        } else {
+          setSession(null)
+        }
+      } catch {
+        setSession(null)
+      }
+      try {
         setError(null)
-        const token = localStorage.getItem('x-token') || (session as any)?.token
+        const tokenStr = await (window as any).electronAPI?.getConfig?.('x-token')
+        const token = tokenStr || (session as any)?.token
         if (!token) return
         const res = await fetch(`${API_BASE}/users/me`, {
           headers: { Authorization: `Bearer ${token}` }

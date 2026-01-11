@@ -26,7 +26,7 @@ export default function DeviceSwitchModal({ isOpen, onClose, onApplied }: Props)
         const list = await (window as any).electronAPI?.listDevices?.()
         let names: string[] = Array.isArray(list) ? list : []
         try {
-          const token = localStorage.getItem('x-token')
+          const token = await (window as any).electronAPI?.getConfig?.('x-token')
           if (token) {
             const res = await fetch(`${API_BASE}/devices`, { headers: { Authorization: `Bearer ${token}` } })
             const data = await res.json()
@@ -39,10 +39,11 @@ export default function DeviceSwitchModal({ isOpen, onClose, onApplied }: Props)
                   return String(o.clientId || o.name || '')
                 }).filter(Boolean)
               : []
+            const clientId = await (window as any).electronAPI?.getConfig?.('clientId')
             names = Array.from(new Set([...
               names,
               ...apiNames,
-              ...(localStorage.getItem('clientId') ? [String(localStorage.getItem('clientId'))] : [])
+              ...(clientId ? [String(clientId)] : [])
             ])).filter(Boolean)
           }
         } catch {}
@@ -56,7 +57,7 @@ export default function DeviceSwitchModal({ isOpen, onClose, onApplied }: Props)
         } catch {}
         if (!initial) {
           try {
-            const saved = localStorage.getItem('clientId') || ''
+            const saved = await (window as any).electronAPI?.getConfig?.('clientId') || ''
             if (saved && Array.isArray(list) && list.includes(saved)) initial = saved
           } catch {}
         }
@@ -95,7 +96,7 @@ export default function DeviceSwitchModal({ isOpen, onClose, onApplied }: Props)
       setLoading(true)
       setProgress(0)
       setStatus('')
-      try { localStorage.setItem('clientId', selected) } catch {}
+      try { await (window as any).electronAPI?.setConfig?.('clientId', selected) } catch {}
       onClose()
       Promise.resolve((window as any).electronAPI?.switchActiveDevice?.(selected))
         .then((hist: any) => {

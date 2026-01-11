@@ -916,10 +916,16 @@ function createWindow () {
     })
     
     // Comprobar si debe iniciar minimizada
-    const cfg = readDeviceConfigObj()
-    const prefs = cfg.preferences || {}
-    if (!prefs.startMinimized) {
+    try {
+      const prefsStr = db.getConfig('preferences')
+      const prefs = prefsStr ? JSON.parse(prefsStr) : {}
+      if (!prefs.startMinimized) {
+        mainWindow.show()
+      }
+    } catch {
       mainWindow.show()
+    }
+    if (mainWindow && !mainWindow.isVisible()) {
       setTimeout(() => {
         try { mainWindow.focus() } catch {}
         try { mainWindow.webContents.focus() } catch {}
@@ -1029,20 +1035,17 @@ app.whenReady().then(async () => {
   }
   autoUpdater.forceDevUpdateConfig = true
   try {
-    const cfg = readDeviceConfigObj()
-    if (Array.isArray(cfg.history)) {
-      db.importItems(getCurrentDeviceName(), normalizeHistory(cfg.history))
-      history = db.getAll(getCurrentDeviceName())
-      log.info('Historial (device) cargado', { count: history.length })
-    } else if (fs.existsSync(legacyHistoryPath)) {
+    // Historial ahora está solo en DB, verificar si hay archivo legacy para migrar
+    if (fs.existsSync(legacyHistoryPath)) {
       const data = fs.readFileSync(legacyHistoryPath, 'utf-8')
       const parsed = JSON.parse(data)
       const items = normalizeHistory(parsed)
       db.importItems(getCurrentDeviceName(), items)
-      cfg.history = []
-      writeDeviceConfigObj(cfg)
       history = db.getAll(getCurrentDeviceName())
       log.info('Historial migrado desde legacy')
+    } else {
+      history = db.getAll(getCurrentDeviceName())
+      log.info('Historial cargado desde DB', { count: history.length })
     }
   } catch (err) {
     log.error('Error al leer historial (device)', err)
@@ -1320,29 +1323,33 @@ app.whenReady().then(async () => {
 
   const updateGlobalShortcuts = () => {
     try { globalShortcut.unregisterAll() } catch {}
-    
-    const cfg = readDeviceConfigObj()
-    const prefs = cfg.preferences || {}
-    let modifier = prefs.shortcutModifier
-    let key = prefs.shortcutKey
 
-    // Default defaults
-    if (!modifier) modifier = process.platform === 'darwin' ? 'Command+Option' : 'Alt'
-    if (!key) key = 'X'
-
-    const accelerator = `${modifier}+${key}`
     try {
-      const ret = globalShortcut.register(accelerator, toggleShow)
-      if (ret) {
-        log.info(`Shortcut registrado: ${accelerator}`)
-      } else {
-        log.warn(`Fallo al registrar shortcut: ${accelerator}`)
-        // Fallback safe defaults if custom fails
-        if (process.platform === 'darwin') globalShortcut.register('Command+Option+X', toggleShow)
-        else globalShortcut.register('Alt+X', toggleShow)
+      const prefsStr = db.getConfig('preferences')
+      const prefs = prefsStr ? JSON.parse(prefsStr) : {}
+      let modifier = prefs.shortcutModifier
+      let key = prefs.shortcutKey
+
+      // Default defaults
+      if (!modifier) modifier = process.platform === 'darwin' ? 'Command+Option' : 'Alt'
+      if (!key) key = 'X'
+
+      const accelerator = `${modifier}+${key}`
+      try {
+        const ret = globalShortcut.register(accelerator, toggleShow)
+        if (ret) {
+          log.info(`Shortcut registrado: ${accelerator}`)
+        } else {
+          log.warn(`Fallo al registrar shortcut: ${accelerator}`)
+          // Fallback safe defaults if custom fails
+          if (process.platform === 'darwin') globalShortcut.register('Command+Option+X', toggleShow)
+          else globalShortcut.register('Alt+X', toggleShow)
+        }
+      } catch (e) {
+        log.error('Error registrando shortcut', e)
       }
     } catch (e) {
-      log.error('Error registrando shortcut', e)
+      log.error('Error reading preferences for shortcuts', e)
     }
   }
 
@@ -1810,35 +1817,16 @@ function getCurrentDeviceName () {
   return sanitizeDeviceName(activeDeviceName || os.hostname())
 }
 
-function getCurrentDeviceConfigPath () {
-  const baseDir = path.join(app.getPath('userData'), 'devices')
-  const selected = activeDeviceName ? sanitizeDeviceName(activeDeviceName) : sanitizeDeviceName(os.hostname())
-  const deviceDir = path.join(baseDir, selected)
-  if (!fs.existsSync(deviceDir)) fs.mkdirSync(deviceDir, { recursive: true })
-  return path.join(deviceDir, 'config.json')
-}
-
 function readDeviceConfigObj () {
-  const cfgPath = getCurrentDeviceConfigPath()
   try {
-    if (fs.existsSync(cfgPath)) {
-      const raw = fs.readFileSync(cfgPath, 'utf-8')
-      const obj = JSON.parse(raw)
-      if (!obj.deviceName) obj.deviceName = os.hostname()
-      if (!obj.preferences) obj.preferences = {}
-      if (!obj.version) obj.version = 1
-      if (!Array.isArray(obj.history)) obj.history = []
-      return obj
-    } else {
-      const obj = {
-        deviceName: os.hostname(),
-        createdAt: new Date().toISOString(),
-        preferences: {},
-        version: 1,
-        history: []
-      }
-      fs.writeFileSync(cfgPath, JSON.stringify(obj, null, 2), 'utf-8')
-      return obj
+    const prefsStr = db.getConfig('preferences')
+    const preferences = prefsStr ? JSON.parse(prefsStr) : {}
+    return {
+      deviceName: os.hostname(),
+      createdAt: new Date().toISOString(),
+      preferences: preferences,
+      version: 1,
+      history: []
     }
   } catch {
     return {
@@ -1852,8 +1840,13 @@ function readDeviceConfigObj () {
 }
 
 function writeDeviceConfigObj (obj) {
-  const cfgPath = getCurrentDeviceConfigPath()
-  fs.writeFileSync(cfgPath, JSON.stringify(obj, null, 2), 'utf-8')
+  try {
+    if (obj.preferences) {
+      db.setConfig('preferences', JSON.stringify(obj.preferences))
+    }
+  } catch (e) {
+    log.error('Error writing preferences to DB:', e)
+  }
 }
 
 function readDeviceHistory () {
@@ -1872,21 +1865,20 @@ function writeDeviceHistory (hist) {
   }
 }
 
-function getDeviceConfigPathByName (rawName) {
-  const baseDir = path.join(app.getPath('userData'), 'devices')
-  const dirName = sanitizeDeviceName(rawName)
-  const deviceDir = path.join(baseDir, dirName)
-  return path.join(deviceDir, 'config.json')
-}
-
 function listLocalDevices () {
   try {
-    const baseDir = path.join(app.getPath('userData'), 'devices')
-    if (!fs.existsSync(baseDir)) return []
-    const dirs = fs.readdirSync(baseDir, { withFileTypes: true })
-    return dirs.filter(d => d.isDirectory()).map(d => d.name)
+    // Obtener dispositivos desde la DB (historial por dispositivo)
+    const devicesStr = db.getConfig('devices')
+    if (devicesStr) {
+      try {
+        const devices = JSON.parse(devicesStr)
+        if (Array.isArray(devices)) return devices
+      } catch {}
+    }
+    // Si no hay en DB, retornar solo el dispositivo actual
+    return [getCurrentDeviceName()]
   } catch {
-    return []
+    return [getCurrentDeviceName()]
   }
 }
 
@@ -1959,26 +1951,10 @@ function sanitizeDeviceName (name) {
 async function ensureLocalDevices () {
   try {
     const names = await getDevicesFromBackend()
-    const baseDir = path.join(app.getPath('userData'), 'devices')
-    if (!fs.existsSync(baseDir)) fs.mkdirSync(baseDir, { recursive: true })
-
-    for (const raw of names) {
-      const dirName = sanitizeDeviceName(raw)
-      const deviceDir = path.join(baseDir, dirName)
-      const cfgPath = path.join(deviceDir, 'config.json')
-      if (!fs.existsSync(deviceDir)) fs.mkdirSync(deviceDir, { recursive: true })
-      if (!fs.existsSync(cfgPath)) {
-        const cfg = {
-          deviceName: raw,
-          createdAt: new Date().toISOString(),
-          preferences: {},
-          version: 1
-        }
-        fs.writeFileSync(cfgPath, JSON.stringify(cfg, null, 2), 'utf-8')
-        log.info('Dispositivo local creado', { dir: deviceDir })
-      }
+    // Guardar lista de dispositivos en DB
+    if (names.length > 0) {
+      db.setConfig('devices', JSON.stringify(names))
     }
-
     log.info('ensureLocalDevices completo', { count: names.length })
   } catch (error) {
     log.error('ensureLocalDevices error', error?.message || error)
@@ -1986,127 +1962,10 @@ async function ensureLocalDevices () {
 }
 
 /**
- * Funciones de persistencia de sesión usando app.getPath('userData')
- * 
- * En Linux con AppImage, app.getPath('userData') devuelve: ~/.config/copyfy/
- * Esta ruta es persistente y funciona correctamente en AppImage porque:
- * - No depende de la ubicación del ejecutable AppImage
- * - Usa el directorio estándar XDG_CONFIG_HOME en Linux
- * - Electron garantiza que el directorio existe
- * - Los datos persisten entre reinicios del sistema
- * 
- * NOTA: NO usar rutas relativas, __dirname, o rutas junto al AppImage.
- * Solo usar app.getPath('userData') para datos persistentes.
+ * Intenta refrescar el token usando el refreshToken de la sesión
+ * @param {Object} session - Objeto de sesión con refreshToken
+ * @returns {Promise<string|null>} - Nuevo token si el refresh fue exitoso, null si falló
  */
-
-function getSessionFilePath () {
-  // app.getPath('userData') devuelve:
-  // - Linux: ~/.config/<nombre-app>/ (donde <nombre-app> es el nombre de la app, en este caso 'copyfy')
-  // - Windows: %APPDATA%\<nombre-app>\
-  // - macOS: ~/Library/Application Support/<nombre-app>/
-  // Electron garantiza que este directorio existe
-  const userDataDir = app.getPath('userData')
-  return path.join(userDataDir, 'session.json')
-}
-
-function saveSessionToFile (sessionData) {
-  try {
-    const sessionPath = getSessionFilePath()
-    const userDataDir = path.dirname(sessionPath)
-    
-    // Asegurar que el directorio userData existe (aunque Electron ya lo garantiza, es defensivo)
-    if (!fs.existsSync(userDataDir)) {
-      fs.mkdirSync(userDataDir, { recursive: true })
-    }
-    
-    // Escribir el archivo de sesión
-    const sessionJson = JSON.stringify(sessionData, null, 2)
-    fs.writeFileSync(sessionPath, sessionJson, 'utf-8')
-    
-    log.info('Sesión guardada en archivo', { 
-      path: sessionPath,
-      userDataDir: userDataDir 
-    })
-    return true
-  } catch (error) {
-    log.error('Error guardando sesión en archivo', {
-      error: error?.message || error,
-      stack: error?.stack
-    })
-    return false
-  }
-}
-
-function readSessionFromFile () {
-  try {
-    const sessionPath = getSessionFilePath()
-    
-    if (!fs.existsSync(sessionPath)) {
-      log.debug('Archivo de sesión no existe', { path: sessionPath })
-      return null
-    }
-    
-    const raw = fs.readFileSync(sessionPath, 'utf-8')
-    if (!raw || !raw.trim()) {
-      log.warn('Archivo de sesión vacío', { path: sessionPath })
-      return null
-    }
-    
-    const session = JSON.parse(raw)
-    
-    // Validar que la sesión tiene la estructura esperada
-    if (!session || typeof session !== 'object') {
-      log.warn('Sesión inválida: no es un objeto', { path: sessionPath })
-      return null
-    }
-    
-    log.info('Sesión leída desde archivo', { 
-      path: sessionPath,
-      hasToken: !!session.token,
-      hasRefreshToken: !!session.refreshToken
-    })
-    
-    return session
-  } catch (error) {
-    if (error.code === 'ENOENT') {
-      // Archivo no existe, esto es normal si el usuario no ha iniciado sesión
-      return null
-    }
-    log.error('Error leyendo sesión desde archivo', {
-      error: error?.message || error,
-      code: error?.code,
-      stack: error?.stack
-    })
-    return null
-  }
-}
-
-function clearSessionFile () {
-  try {
-    const sessionPath = getSessionFilePath()
-    
-    if (fs.existsSync(sessionPath)) {
-      fs.unlinkSync(sessionPath)
-      log.info('Archivo de sesión eliminado', { path: sessionPath })
-    } else {
-      log.debug('Archivo de sesión no existe, no hay nada que eliminar', { path: sessionPath })
-    }
-    
-    return true
-  } catch (error) {
-    if (error.code === 'ENOENT') {
-      // Archivo no existe, esto es aceptable
-      return true
-    }
-    log.error('Error eliminando archivo de sesión', {
-      error: error?.message || error,
-      code: error?.code,
-      stack: error?.stack
-    })
-    return false
-  }
-}
-
 /**
  * Intenta refrescar el token usando el refreshToken de la sesión
  * @param {Object} session - Objeto de sesión con refreshToken
@@ -2143,9 +2002,9 @@ async function refreshTokenFromSession (session) {
         refreshToken: newRefreshToken
       }
       
-      // Guardar la sesión actualizada
-      saveSessionToFile(updatedSession)
-      
+      // Guardar la sesión actualizada en DB
+      db.setConfig('session', JSON.stringify(updatedSession))
+
       log.info('Token refrescado exitosamente', { hasNewRefreshToken: !!newRefreshToken })
       return newToken
     } else {
@@ -2186,17 +2045,83 @@ ipcMain.on('set-auth-token', (event, token) => {
   Promise.resolve(enforceHistoryLimit(1000)).catch(() => {})
 })
 
-// Handlers IPC para sesión (respaldo para AppImage)
+// Handlers IPC para configuración (DB local)
+ipcMain.handle('get-config', (event, key) => {
+  try {
+    return db.getConfig(key)
+  } catch (e) {
+    log.error('get-config error:', e)
+    return null
+  }
+})
+
+ipcMain.handle('set-config', (event, key, value) => {
+  try {
+    return db.setConfig(key, value)
+  } catch (e) {
+    log.error('set-config error:', e)
+    return false
+  }
+})
+
+ipcMain.handle('remove-config', (event, key) => {
+  try {
+    return db.removeConfig(key)
+  } catch (e) {
+    log.error('remove-config error:', e)
+    return false
+  }
+})
+
+ipcMain.handle('get-all-config', () => {
+  try {
+    return db.getAllConfig()
+  } catch (e) {
+    log.error('get-all-config error:', e)
+    return {}
+  }
+})
+
+// Handlers IPC para sesión (usando DB local)
 ipcMain.handle('save-session', (event, sessionData) => {
-  return saveSessionToFile(sessionData)
+  try {
+    if (sessionData && typeof sessionData === 'object') {
+      db.setConfig('session', JSON.stringify(sessionData))
+      return true
+    }
+    return false
+  } catch (e) {
+    log.error('save-session error:', e)
+    return false
+  }
 })
 
 ipcMain.handle('read-session', () => {
-  return readSessionFromFile()
+  try {
+    const sessionStr = db.getConfig('session')
+    if (sessionStr) {
+      try {
+        return JSON.parse(sessionStr)
+      } catch (e) {
+        log.error('Error parsing session from DB:', e)
+      }
+    }
+    return null
+  } catch (e) {
+    log.error('read-session error:', e)
+    return null
+  }
 })
 
 ipcMain.handle('clear-session-file', () => {
-  return clearSessionFile()
+  try {
+    db.removeConfig('session')
+    db.removeConfig('x-token')
+    return true
+  } catch (e) {
+    log.error('clear-session-file error:', e)
+    return false
+  }
 })
 
 async function resolveDeviceIdentifiers (rawName) {
@@ -3101,13 +3026,14 @@ ipcMain.handle('auth-login', async (_, body) => {
 
 ipcMain.handle('clear-user-data', async () => {
   try {
-    const baseDir = path.join(app.getPath('userData'), 'devices')
-    if (fs.existsSync(baseDir)) {
-      try { fs.rmSync(baseDir, { recursive: true, force: true }) } catch {}
-    }
     try { fs.rmSync(legacyHistoryPath, { force: true }) } catch {}
-    // Limpiar archivo de sesión
-    try { clearSessionFile() } catch {}
+    // Limpiar configuración de la DB
+    try {
+      db.removeConfig('session')
+      db.removeConfig('x-token')
+      db.removeConfig('preferences')
+      db.removeConfig('devices')
+    } catch {}
     try {
       // Limpiar archivos legacy en diferentes ubicaciones posibles (multiplataforma)
       const legacyPaths = [
@@ -3169,7 +3095,7 @@ ipcMain.handle('set-preferences', async (_, patch) => {
       app.emit('update-shortcuts') 
     }
     
-    return obj.preferences
+    return newPrefs
   } catch {
     return {}
   }
