@@ -62,10 +62,14 @@ if (!gotTheLock) {
 } else {
   app.on('second-instance', (event, commandLine, workingDirectory) => {
     // Si alguien intenta correr una segunda instancia, enfocamos nuestra ventana
-    if (mainWindow) {
+    if (mainWindow && !mainWindow.isDestroyed()) {
       if (mainWindow.isMinimized()) mainWindow.restore()
       if (!mainWindow.isVisible()) mainWindow.show()
       mainWindow.focus()
+      // En Linux, mover al frente puede requerir métodos adicionales
+      if (process.platform === 'linux') {
+        mainWindow.moveTop()
+      }
     }
   })
 }
