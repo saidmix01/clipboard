@@ -1353,31 +1353,22 @@ app.whenReady().then(async () => {
 
   // Quick switcher desactivado
 
-  // Cargar sesión desde archivo al inicio (antes de sincronizar)
-  try {
-    const savedSession = readSessionFromFile()
-    if (savedSession && savedSession.token) {
-      authToken = savedSession.token
-      log.info('Sesión restaurada al inicio desde archivo', { 
-        hasToken: !!savedSession.token,
-        hasRefreshToken: !!savedSession.refreshToken 
-      })
-      // Inicializar funciones que requieren autenticación
-      resetClipboardFilesState()
-      ensureLocalDevices()
-      Promise.resolve(enforceHistoryLimit(1000)).catch(() => {})
-    }
-  } catch (error) {
-    log.error('Error cargando sesión al inicio', error?.message || error)
-  }
+  // NO cargar sesión en el proceso principal al inicio
+  // El frontend (React) se encargará de cargar la sesión y refrescar el token
+  // Una vez que el frontend establezca el token vía 'set-auth-token', 
+  // entonces se ejecutarán las funciones que requieren autenticación (incluyendo syncClipboardHistory)
+  log.info('Iniciando aplicación - esperando que el frontend cargue y refresque la sesión')
 
-  // Iniciar sincronización periódica solo después de que todo esté listo
+  // Iniciar sincronización periódica (se ejecutará solo si hay authToken)
   setInterval(() => {
-    syncClipboardHistory()
+    if (authToken) {
+      syncClipboardHistory()
+    }
   }, 15 * 60 * 1000)
 
-  // Primera sincronización
-  syncClipboardHistory()
+  // NO ejecutar syncClipboardHistory() inmediatamente aquí
+  // Esperar a que el frontend establezca el token vía 'set-auth-token'
+  // El handler 'set-auth-token' ya llama a syncClipboardHistory() cuando se establece el token
 })
 
 app.on('window-all-closed', () => {
@@ -2113,6 +2104,75 @@ function clearSessionFile () {
       stack: error?.stack
     })
     return false
+  }
+}
+
+/**
+ * Intenta refrescar el token usando el refreshToken de la sesión
+ * @param {Object} session - Objeto de sesión con refreshToken
+ * @returns {Promise<string|null>} - Nuevo token si el refresh fue exitoso, null si falló
+ */
+async function refreshTokenFromSession (session) {
+  try {
+    if (!session || !session.refreshToken) {
+      log.debug('No hay refreshToken en la sesión')
+      return null
+    }
+
+    const url = `${BACKEND_URL}/auth/refresh`
+    log.info('Intentando refrescar token', { url, hasRefreshToken: !!session.refreshToken })
+    
+    const res = await axios.post(url, {
+      refreshToken: session.refreshToken
+    }, {
+      headers: { 'Content-Type': 'application/json' }
+    })
+
+    const data = res?.data
+    // El formato puede ser: { data: { token, refreshToken } } o { token, refreshToken }
+    const payload = (data && typeof data === 'object' ? (data.data ?? data) : {})
+    const okFlag = (data && typeof data === 'object') ? (data.success ?? data.status ?? res.status === 200) : res.status === 200
+    const newToken = payload?.token
+    const newRefreshToken = payload?.refreshToken || session.refreshToken
+
+    if (okFlag && newToken) {
+      // Actualizar la sesión con el nuevo token
+      const updatedSession = {
+        ...session,
+        token: newToken,
+        refreshToken: newRefreshToken
+      }
+      
+      // Guardar la sesión actualizada
+      saveSessionToFile(updatedSession)
+      
+      log.info('Token refrescado exitosamente', { hasNewRefreshToken: !!newRefreshToken })
+      return newToken
+    } else {
+      log.warn('Refresh token falló: respuesta inválida', { 
+        status: res.status, 
+        hasToken: !!newToken,
+        okFlag: okFlag,
+        responseData: data 
+      })
+      return null
+    }
+  } catch (error) {
+    const status = error?.response?.status
+    const statusText = error?.response?.statusText
+    log.warn('Error al refrescar token', {
+      error: error?.message || error,
+      status: status,
+      statusText: statusText,
+      responseData: error?.response?.data
+    })
+    
+    // Si el error es 401, el refreshToken está expirado
+    if (status === 401 || status === 403) {
+      log.warn('RefreshToken expirado o inválido - el usuario debe iniciar sesión de nuevo')
+    }
+    
+    return null
   }
 }
 
