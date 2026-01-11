@@ -980,14 +980,11 @@ function createWindow () {
     mainWindow.loadURL('http://localhost:5173')
   }
 
-  // Enviar historial al frontend
+  // Enviar historial al frontend (ya cargado al inicio)
   mainWindow.webContents.on('did-finish-load', () => {
-    try {
-      history = authToken ? db.getAll(getCurrentDeviceName()) : db.getAllGuest(getCurrentDeviceName())
-    } catch {
-      history = []
+    if (mainWindow?.webContents) {
+      mainWindow.webContents.send('clipboard-update', augmentHistoryWithImagePaths(history))
     }
-    mainWindow.webContents.send('clipboard-update', augmentHistoryWithImagePaths(history))
   })
 
   // Mostrar sin animación manual para evitar bloqueos
@@ -1119,40 +1116,48 @@ app.whenReady().then(async () => {
     app.dock.hide()
   }
   autoUpdater.forceDevUpdateConfig = true
+  
+  // Cargar historial una sola vez al inicio (optimización)
   try {
-    // Historial ahora está solo en DB, verificar si hay archivo legacy para migrar
-    if (fs.existsSync(legacyHistoryPath)) {
-      const data = fs.readFileSync(legacyHistoryPath, 'utf-8')
-      const parsed = JSON.parse(data)
-      const items = normalizeHistory(parsed)
-      db.importItems(getCurrentDeviceName(), items)
-      history = db.getAll(getCurrentDeviceName())
-      log.info('Historial migrado desde legacy')
-    } else {
-      history = db.getAll(getCurrentDeviceName())
-      log.info('Historial cargado desde DB', { count: history.length })
-    }
+    history = authToken ? db.getAll(getCurrentDeviceName()) : db.getAllGuest(getCurrentDeviceName())
+    log.info('Historial cargado desde DB', { count: history.length })
   } catch (err) {
     log.error('Error al leer historial (device)', err)
+    history = []
   }
-  try { 
-    if (authToken) { 
-      Promise.resolve(enforceHistoryLimit(1000)).catch(() => {})
-      history = db.getAll(getCurrentDeviceName())
-    } else { 
-      enforceGuestLimit(1000)
-      history = db.getAllGuest(getCurrentDeviceName()) 
-    } 
-  } catch {}
+  
+  // Migración legacy asíncrona (no bloquea el inicio)
+  if (fs.existsSync(legacyHistoryPath)) {
+    Promise.resolve().then(async () => {
+      try {
+        const data = fs.readFileSync(legacyHistoryPath, 'utf-8')
+        const parsed = JSON.parse(data)
+        const items = normalizeHistory(parsed)
+        db.importItems(getCurrentDeviceName(), items)
+        history = authToken ? db.getAll(getCurrentDeviceName()) : db.getAllGuest(getCurrentDeviceName())
+        log.info('Historial migrado desde legacy')
+        if (mainWindow?.webContents) {
+          mainWindow.webContents.send('clipboard-update', augmentHistoryWithImagePaths(history))
+        }
+      } catch (e) {
+        log.error('Error en migración legacy', e)
+      }
+    }).catch(() => {})
+  }
+  
+  // Diferir enforceHistoryLimit/enforceGuestLimit (no crítico para el inicio)
+  Promise.resolve().then(async () => {
+    try {
+      if (authToken) {
+        await Promise.resolve(enforceHistoryLimit(1000)).catch(() => {})
+      } else {
+        enforceGuestLimit(1000)
+      }
+    } catch {}
+  }).catch(() => {})
 
   const pollClipboard = () => {
-    // Normalizar historial ya cargado y enviar al renderer inmediatamente
-    try {
-      history = authToken ? db.getAll(getCurrentDeviceName()) : db.getAllGuest(getCurrentDeviceName())
-    } catch {
-      history = []
-    }
-
+    // Enviar historial ya cargado al renderer (ya fue cargado al inicio)
     if (mainWindow?.webContents) {
       mainWindow.webContents.send('clipboard-update', augmentHistoryWithImagePaths(history))
     }
@@ -3241,13 +3246,9 @@ ipcMain.handle('list-files', async (_, params) => {
     const page = params?.page ? Math.max(1, parseInt(params.page)) : 1
     const limit = params?.limit ? Math.min(200, Math.max(1, parseInt(params.limit))) : 50
     
-    // clientId es opcional - solo incluirlo si está en params o si hay activeDeviceName
+    // Siempre incluir clientId - usar el de params si existe, sino activeDeviceName, sino hostname
     const p = { page, limit }
-    if (params?.clientId) {
-      p.clientId = params.clientId
-    } else if (activeDeviceName) {
-      p.clientId = activeDeviceName
-    }
+    p.clientId = params?.clientId || activeDeviceName || os.hostname()
     
     log.info('list-files FULL URL:', `${axiosInstance.defaults.baseURL}/api/files`, 'PARAMS:', p)
     const res = await axiosInstance.get('/api/files', { params: p })
