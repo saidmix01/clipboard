@@ -458,28 +458,32 @@ function App () {
   }, [darkMode, darkModeLoaded])
 
   useEffect(() => {
-    try {
-      ;(window as any).electronAPI?.getPreferences?.().then((prefs: any) => {
-        if (prefs?.colorPrimary) {
-          document.documentElement.style.setProperty('--color-primary', prefs.colorPrimary)
+    async function loadPreferences() {
+      try {
+        const prefs = await (window as any).electronAPI?.getPreferences?.()
+        if (prefs) {
+          if (prefs.colorPrimary) {
+            document.documentElement.style.setProperty('--color-primary', prefs.colorPrimary)
+          }
+          if (prefs.colorSecondary) {
+            document.documentElement.style.setProperty('--color-secondary', prefs.colorSecondary)
+          }
+          if (prefs.colorBg) {
+            document.documentElement.style.setProperty('--color-bg', prefs.colorBg)
+          }
+          if (prefs.colorSurface) {
+            document.documentElement.style.setProperty('--color-surface', prefs.colorSurface)
+          }
+          if (prefs.colorText) {
+            document.documentElement.style.setProperty('--color-text', prefs.colorText)
+          }
+          if (prefs.fontSize) {
+            document.documentElement.style.setProperty('--font-size-card', `${prefs.fontSize}px`)
+          }
         }
-        if (prefs?.colorSecondary) {
-          document.documentElement.style.setProperty('--color-secondary', prefs.colorSecondary)
-        }
-        if (prefs?.colorBg) {
-          document.documentElement.style.setProperty('--color-bg', prefs.colorBg)
-        }
-        if (prefs?.colorSurface) {
-          document.documentElement.style.setProperty('--color-surface', prefs.colorSurface)
-        }
-        if (prefs?.colorText) {
-          document.documentElement.style.setProperty('--color-text', prefs.colorText)
-        }
-        if (prefs?.fontSize) {
-          document.documentElement.style.setProperty('--font-size-card', `${prefs.fontSize}px`)
-        }
-      })
-    } catch {}
+      } catch {}
+    }
+    loadPreferences()
   }, [])
 
   const [appVersion, setAppVersion] = useState<string>('')

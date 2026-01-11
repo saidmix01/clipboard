@@ -3072,31 +3072,40 @@ ipcMain.handle('clear-user-data', async () => {
 
 ipcMain.handle('get-preferences', async () => {
   try {
-    const obj = readDeviceConfigObj()
-    return obj.preferences || {}
-  } catch {
+    const prefsStr = db.getConfig('preferences')
+    return prefsStr ? JSON.parse(prefsStr) : {}
+  } catch (e) {
+    log.error('get-preferences error:', e)
     return {}
   }
 })
 
 ipcMain.handle('set-preferences', async (_, patch) => {
   try {
-    const obj = readDeviceConfigObj()
+    const prefsStr = db.getConfig('preferences')
+    const currentPrefs = prefsStr ? JSON.parse(prefsStr) : {}
     const prefs = (patch && typeof patch === 'object') ? patch : {}
-    obj.preferences = { ...(obj.preferences || {}), ...prefs }
-    writeDeviceConfigObj(obj)
+    
+    // Si alguna preferencia es undefined, eliminarla del objeto
+    const newPrefs = { ...currentPrefs }
+    for (const key in prefs) {
+      if (prefs[key] === undefined || prefs[key] === null) {
+        delete newPrefs[key]
+      } else {
+        newPrefs[key] = prefs[key]
+      }
+    }
+    
+    db.setConfig('preferences', JSON.stringify(newPrefs))
     
     // Si cambiaron los atajos, recargar
     if (prefs.shortcutModifier || prefs.shortcutKey) {
-      // Necesitamos acceder a updateGlobalShortcuts pero está en otro scope
-      // Como solución rápida, enviamos un evento al propio proceso o usamos una variable global si fuera posible
-      // Pero como updateGlobalShortcuts está dentro de app.whenReady, no es accesible aquí.
-      // REFACTOR: Movemos updateGlobalShortcuts a un scope superior o emitimos un evento.
-      app.emit('update-shortcuts') 
+      app.emit('update-shortcuts')
     }
     
     return newPrefs
-  } catch {
+  } catch (e) {
+    log.error('set-preferences error:', e)
     return {}
   }
 })
@@ -3177,6 +3186,10 @@ ipcMain.handle('delete-file', async (_, fileId) => {
 })
 
 ipcMain.handle('download-file', async (_, fileId, fileName) => {
+  let writer = null
+  let progressStream = null
+  let responseStream = null
+  
   try {
     // Validar autenticación - solo usuarios logueados pueden descargar archivos
     if (!authToken) {
@@ -3185,13 +3198,106 @@ ipcMain.handle('download-file', async (_, fileId, fileName) => {
     }
 
     const axiosInstance = getAxiosInstance()
-    const { canceled, filePath } = await dialog.showSaveDialog(mainWindow, { 
-       title: 'Guardar archivo',
-       defaultPath: fileName || 'downloaded-file' 
-    })
-    if (canceled || !filePath) return { success: false, canceled: true }
+    
+    // Obtener directorio de descargas por defecto
+    let defaultDir
+    try {
+      if (process.platform === 'win32') {
+        defaultDir = path.join(os.homedir(), 'Downloads')
+      } else if (process.platform === 'darwin') {
+        defaultDir = path.join(os.homedir(), 'Downloads')
+      } else {
+        // Linux
+        defaultDir = path.join(os.homedir(), 'Downloads')
+        // Si no existe Downloads, usar home
+        if (!fs.existsSync(defaultDir)) {
+          defaultDir = os.homedir()
+        }
+      }
+    } catch {
+      defaultDir = os.homedir()
+    }
+    
+    // Construir ruta por defecto completa
+    const defaultFileName = fileName || 'downloaded-file'
+    const defaultPath = path.join(defaultDir, defaultFileName)
+    
+    // Preparar opciones del diálogo
+    const dialogOptions = {
+      title: 'Guardar archivo',
+      defaultPath: defaultPath,
+      buttonLabel: 'Guardar'
+    }
+    
+    // Agregar filtros si hay extensión
+    if (fileName && path.extname(fileName)) {
+      const ext = path.extname(fileName).slice(1)
+      if (ext) {
+        dialogOptions.filters = [
+          { name: 'Archivos', extensions: [ext] },
+          { name: 'Todos los archivos', extensions: ['*'] }
+        ]
+      }
+    }
+    
+    log.info('Mostrando diálogo de guardado', { defaultPath, fileName, platform: process.platform })
+    
+    // Mostrar el diálogo - en Linux puede necesitar manejo especial
+    let dialogResult
+    try {
+      // Intentar mostrar el diálogo con la ventana principal si está disponible
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        // Asegurar que la ventana esté visible y enfocada
+        if (!mainWindow.isVisible()) {
+          mainWindow.show()
+        }
+        mainWindow.focus()
+        // Pequeño delay para asegurar que la ventana esté lista
+        await new Promise(resolve => setTimeout(resolve, 100))
+        dialogResult = await dialog.showSaveDialog(mainWindow, dialogOptions)
+      } else {
+        // Si no hay ventana, mostrar diálogo sin ventana padre (funciona mejor en Linux/AppImage)
+        log.info('Mostrando diálogo sin ventana padre')
+        dialogResult = await dialog.showSaveDialog(dialogOptions)
+      }
+    } catch (dialogError) {
+      log.error('Error en showSaveDialog:', dialogError)
+      // Intentar una vez más sin ventana padre si falló con ventana
+      try {
+        log.info('Reintentando diálogo sin ventana padre')
+        dialogResult = await dialog.showSaveDialog(dialogOptions)
+      } catch (retryError) {
+        log.error('Error en segundo intento de diálogo:', retryError)
+        return { success: false, error: `Error al abrir diálogo de guardado: ${retryError.message || dialogError.message}`, canceled: true }
+      }
+    }
+    
+    if (!dialogResult) {
+      log.warn('Dialog result es null/undefined')
+      return { success: false, canceled: true }
+    }
+    
+    const { canceled, filePath } = dialogResult
+    if (canceled || !filePath || !filePath.trim()) {
+      log.info('Usuario canceló la descarga o no seleccionó ruta')
+      return { success: false, canceled: true }
+    }
+    
+    log.info('Ruta seleccionada para descarga:', filePath)
+    
+    // Validar que el directorio existe y es escribible
+    const dir = path.dirname(filePath)
+    try {
+      if (!fs.existsSync(dir)) {
+        fs.mkdirSync(dir, { recursive: true })
+      }
+    } catch (dirError) {
+      log.error('Error creando directorio:', dirError)
+      return { success: false, error: `No se pudo crear el directorio: ${dirError.message}` }
+    }
     
     const res = await axiosInstance.get(`/api/files/${fileId}/download`, { responseType: 'stream' })
+    responseStream = res.data
     
     // Obtener el tamaño total del archivo desde los headers
     const totalSize = parseInt(res.headers['content-length'] || '0', 10)
@@ -3208,8 +3314,44 @@ ipcMain.handle('download-file', async (_, fileId, fileName) => {
     }
     
     // Crear un stream intermedio para monitorear el progreso
-    const progressStream = new PassThrough()
-    const writer = fs.createWriteStream(filePath)
+    progressStream = new PassThrough()
+    writer = fs.createWriteStream(filePath)
+    
+    // Manejo de errores en el stream de respuesta
+    responseStream.on('error', (err) => {
+      log.error('Error en stream de respuesta:', err)
+      if (writer && !writer.destroyed) {
+        writer.destroy()
+      }
+      if (progressStream && !progressStream.destroyed) {
+        progressStream.destroy()
+      }
+      if (mainWindow?.webContents && !mainWindow.webContents.isDestroyed()) {
+        mainWindow.webContents.send('download-progress', {
+          fileName: fileName || 'downloaded-file',
+          percentage: 0,
+          error: err.message || 'Error en la descarga'
+        })
+      }
+    })
+    
+    // Manejo de errores en el progressStream
+    progressStream.on('error', (err) => {
+      log.error('Error en progressStream:', err)
+      if (writer && !writer.destroyed) {
+        writer.destroy()
+      }
+      if (responseStream && !responseStream.destroyed) {
+        responseStream.destroy()
+      }
+      if (mainWindow?.webContents && !mainWindow.webContents.isDestroyed()) {
+        mainWindow.webContents.send('download-progress', {
+          fileName: fileName || 'downloaded-file',
+          percentage: 0,
+          error: err.message || 'Error en el progreso de descarga'
+        })
+      }
+    })
     
     // Monitorear el progreso de descarga en el stream intermedio
     progressStream.on('data', (chunk) => {
@@ -3226,10 +3368,27 @@ ipcMain.handle('download-file', async (_, fileId, fileName) => {
     })
     
     // Pipe el stream de respuesta a través del stream de progreso y luego al writer
-    res.data.pipe(progressStream).pipe(writer)
+    responseStream.pipe(progressStream).pipe(writer)
     
     return new Promise((resolve, reject) => {
+      // Timeout de seguridad (30 minutos máximo)
+      const timeout = setTimeout(() => {
+        log.error('Timeout en descarga de archivo')
+        if (writer && !writer.destroyed) writer.destroy()
+        if (progressStream && !progressStream.destroyed) progressStream.destroy()
+        if (responseStream && !responseStream.destroyed) responseStream.destroy()
+        if (mainWindow?.webContents && !mainWindow.webContents.isDestroyed()) {
+          mainWindow.webContents.send('download-progress', {
+            fileName: fileName || 'downloaded-file',
+            percentage: 0,
+            error: 'Timeout en la descarga'
+          })
+        }
+        reject({ success: false, error: 'Timeout en la descarga' })
+      }, 30 * 60 * 1000)
+      
       writer.on('finish', () => {
+        clearTimeout(timeout)
         // Enviar evento de finalización
         if (mainWindow?.webContents && !mainWindow.webContents.isDestroyed()) {
           mainWindow.webContents.send('download-progress', {
@@ -3241,28 +3400,49 @@ ipcMain.handle('download-file', async (_, fileId, fileName) => {
         }
         resolve({ success: true })
       })
+      
       writer.on('error', (e) => {
+        clearTimeout(timeout)
+        log.error('Error en writer:', e)
+        // Limpiar streams
+        if (progressStream && !progressStream.destroyed) progressStream.destroy()
+        if (responseStream && !responseStream.destroyed) responseStream.destroy()
         // Enviar evento de error
         if (mainWindow?.webContents && !mainWindow.webContents.isDestroyed()) {
           mainWindow.webContents.send('download-progress', {
             fileName: fileName || 'downloaded-file',
             percentage: 0,
-            error: e.message
+            error: e.message || 'Error al escribir archivo'
           })
         }
-        reject({ success: false, error: e.message })
+        reject({ success: false, error: e.message || 'Error al escribir archivo' })
+      })
+      
+      // Manejar cierre del stream de respuesta
+      responseStream.on('end', () => {
+        // El stream terminó, esperar a que el writer termine
       })
     })
   } catch (e) {
+    log.error('Error en download-file:', e)
+    // Limpiar recursos en caso de error
+    try {
+      if (writer && !writer.destroyed) writer.destroy()
+      if (progressStream && !progressStream.destroyed) progressStream.destroy()
+      if (responseStream && !responseStream.destroyed) responseStream.destroy()
+    } catch (cleanupError) {
+      log.error('Error limpiando recursos:', cleanupError)
+    }
+    
     // Enviar evento de error en caso de excepción
     if (mainWindow?.webContents && !mainWindow.webContents.isDestroyed()) {
       mainWindow.webContents.send('download-progress', {
         fileName: fileName || 'downloaded-file',
         percentage: 0,
-        error: e.message
+        error: e.message || 'Error desconocido'
       })
     }
-    return { success: false, error: e.message }
+    return { success: false, error: e.message || 'Error desconocido' }
   }
 })
 
