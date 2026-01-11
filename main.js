@@ -1976,6 +1976,53 @@ async function ensureLocalDevices () {
   }
 }
 
+// Funciones para respaldar sesión en archivo (para AppImage en Linux)
+function getSessionFilePath () {
+  return path.join(app.getPath('userData'), 'session.json')
+}
+
+function saveSessionToFile (sessionData) {
+  try {
+    const sessionPath = getSessionFilePath()
+    fs.writeFileSync(sessionPath, JSON.stringify(sessionData), 'utf-8')
+    log.info('Sesión guardada en archivo', { path: sessionPath })
+    return true
+  } catch (error) {
+    log.error('Error guardando sesión en archivo', error?.message || error)
+    return false
+  }
+}
+
+function readSessionFromFile () {
+  try {
+    const sessionPath = getSessionFilePath()
+    if (fs.existsSync(sessionPath)) {
+      const raw = fs.readFileSync(sessionPath, 'utf-8')
+      const session = JSON.parse(raw)
+      log.info('Sesión leída desde archivo', { path: sessionPath })
+      return session
+    }
+    return null
+  } catch (error) {
+    log.error('Error leyendo sesión desde archivo', error?.message || error)
+    return null
+  }
+}
+
+function clearSessionFile () {
+  try {
+    const sessionPath = getSessionFilePath()
+    if (fs.existsSync(sessionPath)) {
+      fs.unlinkSync(sessionPath)
+      log.info('Archivo de sesión eliminado', { path: sessionPath })
+    }
+    return true
+  } catch (error) {
+    log.error('Error eliminando archivo de sesión', error?.message || error)
+    return false
+  }
+}
+
 ipcMain.on('set-auth-token', (event, token) => {
   authToken = token
   // Reinicializar el estado de los archivos del portapapeles al iniciar sesión
@@ -1984,6 +2031,19 @@ ipcMain.on('set-auth-token', (event, token) => {
   syncClipboardHistory()
   ensureLocalDevices()
   Promise.resolve(enforceHistoryLimit(1000)).catch(() => {})
+})
+
+// Handlers IPC para sesión (respaldo para AppImage)
+ipcMain.handle('save-session', (event, sessionData) => {
+  return saveSessionToFile(sessionData)
+})
+
+ipcMain.handle('read-session', () => {
+  return readSessionFromFile()
+})
+
+ipcMain.handle('clear-session-file', () => {
+  return clearSessionFile()
 })
 
 async function resolveDeviceIdentifiers (rawName) {
@@ -2893,6 +2953,8 @@ ipcMain.handle('clear-user-data', async () => {
       try { fs.rmSync(baseDir, { recursive: true, force: true }) } catch {}
     }
     try { fs.rmSync(legacyHistoryPath, { force: true }) } catch {}
+    // Limpiar archivo de sesión
+    try { clearSessionFile() } catch {}
     try {
       // Limpiar archivos legacy en diferentes ubicaciones posibles (multiplataforma)
       const legacyPaths = [

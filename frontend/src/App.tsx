@@ -60,6 +60,7 @@ function App () {
     localStorage.removeItem('x-token')
     localStorage.removeItem('session')
     try { localStorage.removeItem('clientId') } catch {}
+    try { (window as any).electronAPI?.clearSessionFile?.() } catch {}
     ;(window as any).electronAPI?.setAuthToken?.('')
     try { (window as any).electronAPI?.clearUserData?.() } catch {}
     toast.success('Sesión cerrada')
@@ -86,6 +87,8 @@ function App () {
         handleLoginSuccess(newToken)
         const newSession = { ...sess, token: newToken, refreshToken: newRefresh || rt }
         localStorage.setItem('session', JSON.stringify(newSession))
+        // Respaldo en archivo para AppImage
+        try { (window as any).electronAPI?.saveSession?.(newSession) } catch {}
         return true
       }
       return false
@@ -247,9 +250,32 @@ function App () {
   useEffect(() => {
     async function restoreSession () {
       try {
-        const raw = localStorage.getItem('session')
+        // Primero intentar desde localStorage
+        let raw = localStorage.getItem('session')
+        let sess = null
+        
         if (raw) {
-          const sess = JSON.parse(raw)
+          try {
+            sess = JSON.parse(raw)
+          } catch (e) {
+            // Si falla parsear localStorage, intentar desde archivo
+          }
+        }
+        
+        // Si no hay sesión en localStorage, intentar desde archivo (respaldo para AppImage)
+        if (!sess) {
+          try {
+            sess = await (window as any).electronAPI?.readSession?.()
+            if (sess) {
+              // Restaurar en localStorage también
+              localStorage.setItem('session', JSON.stringify(sess))
+            }
+          } catch (e) {
+            // Silenciar errores de lectura de archivo
+          }
+        }
+        
+        if (sess) {
           // Si hay refreshToken, intentar refrescar primero
           if (sess?.refreshToken) {
             const refreshed = await refreshAuthToken()
