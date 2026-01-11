@@ -40,6 +40,10 @@ let isQuitting = false
 
 if (process.platform === 'linux') {
   try { app.setName('copyfy') } catch {}
+  // Forzar --no-sandbox para AppImage (necesario para evitar problemas de permisos)
+  if (process.env.APPIMAGE) {
+    try { app.commandLine.appendSwitch('no-sandbox') } catch {}
+  }
   // Detectar si Wayland está disponible, sino usar X11
   // En Electron, si no se especifica, intentará usar Wayland primero si está disponible
   // Solo forzar X11 si hay problemas específicos con Wayland
