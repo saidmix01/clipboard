@@ -3286,67 +3286,95 @@ ipcMain.handle('download-file', async (_, fileId, fileName) => {
 
     const axiosInstance = getAxiosInstance()
     
-    // Obtener directorio de descargas por defecto
-    let defaultDir
-    try {
-      if (process.platform === 'win32') {
-        defaultDir = path.join(os.homedir(), 'Downloads')
-      } else if (process.platform === 'darwin') {
-        defaultDir = path.join(os.homedir(), 'Downloads')
-      } else {
-        // Linux
+    let filePath
+    
+    // En Linux, descargar directamente sin abrir diálogo del sistema
+    if (process.platform === 'linux') {
+      // Obtener directorio de descargas
+      let defaultDir
+      try {
         defaultDir = path.join(os.homedir(), 'Downloads')
         // Si no existe Downloads, usar home
         if (!fs.existsSync(defaultDir)) {
           defaultDir = os.homedir()
         }
+      } catch {
+        defaultDir = os.homedir()
       }
-    } catch {
-      defaultDir = os.homedir()
-    }
-    
-    // Construir ruta por defecto completa
-    const defaultFileName = fileName || 'downloaded-file'
-    const defaultPath = path.join(defaultDir, defaultFileName)
-    
-    // Preparar opciones del diálogo
-    const dialogOptions = {
-      title: 'Guardar archivo',
-      defaultPath: defaultPath,
-      buttonLabel: 'Guardar'
-    }
-    
-    // Agregar filtros si hay extensión
-    if (fileName && path.extname(fileName)) {
-      const ext = path.extname(fileName).slice(1)
-      if (ext) {
-        dialogOptions.filters = [
-          { name: 'Archivos', extensions: [ext] },
-          { name: 'Todos los archivos', extensions: ['*'] }
-        ]
+      
+      // Construir ruta completa
+      const defaultFileName = fileName || 'downloaded-file'
+      let finalPath = path.join(defaultDir, defaultFileName)
+      
+      // Si el archivo ya existe, agregar un número para evitar sobrescribir
+      if (fs.existsSync(finalPath)) {
+        const ext = path.extname(defaultFileName)
+        const baseName = path.basename(defaultFileName, ext)
+        let counter = 1
+        do {
+          finalPath = path.join(defaultDir, `${baseName} (${counter})${ext}`)
+          counter++
+        } while (fs.existsSync(finalPath) && counter < 1000)
       }
-    }
-    
-    log.info('Mostrando diálogo de guardado', { defaultPath, fileName, platform: process.platform })
-    
-    // Mostrar el diálogo - en Linux puede necesitar manejo especial
-    let dialogResult
-    try {
-      // En Linux, usar un enfoque más robusto para evitar bloqueos
-      if (process.platform === 'linux') {
-        // En Linux, siempre usar sin ventana padre para evitar bloqueos
-        // y dar más tiempo para que el sistema esté listo
-        log.info('Linux detectado: usando diálogo sin ventana padre con delay extendido')
-        await new Promise(resolve => setTimeout(resolve, 300))
-        
-        // Usar Promise.race con timeout para evitar bloqueos indefinidos
-        const dialogPromise = dialog.showSaveDialog(dialogOptions)
-        const timeoutPromise = new Promise((_, reject) => {
-          setTimeout(() => reject(new Error('Timeout en diálogo de guardado')), 10000)
-        })
-        
-        dialogResult = await Promise.race([dialogPromise, timeoutPromise])
-      } else {
+      
+      filePath = finalPath
+      
+      // Mostrar notificación informando al usuario
+      try {
+        const displayName = path.basename(filePath)
+        new Notification({
+          title: 'Descarga iniciada',
+          body: `El archivo se guardará en: ${defaultDir}\n${displayName}`,
+          silent: false
+        }).show()
+      } catch (notifError) {
+        log.warn('No se pudo mostrar notificación:', notifError)
+      }
+      
+      log.info('Linux: Descargando directamente a', filePath)
+    } else {
+      // Para Windows y macOS, usar el diálogo del sistema
+      // Obtener directorio de descargas por defecto
+      let defaultDir
+      try {
+        if (process.platform === 'win32') {
+          defaultDir = path.join(os.homedir(), 'Downloads')
+        } else if (process.platform === 'darwin') {
+          defaultDir = path.join(os.homedir(), 'Downloads')
+        } else {
+          defaultDir = path.join(os.homedir(), 'Downloads')
+        }
+      } catch {
+        defaultDir = os.homedir()
+      }
+      
+      // Construir ruta por defecto completa
+      const defaultFileName = fileName || 'downloaded-file'
+      const defaultPath = path.join(defaultDir, defaultFileName)
+      
+      // Preparar opciones del diálogo
+      const dialogOptions = {
+        title: 'Guardar archivo',
+        defaultPath: defaultPath,
+        buttonLabel: 'Guardar'
+      }
+      
+      // Agregar filtros si hay extensión
+      if (fileName && path.extname(fileName)) {
+        const ext = path.extname(fileName).slice(1)
+        if (ext) {
+          dialogOptions.filters = [
+            { name: 'Archivos', extensions: [ext] },
+            { name: 'Todos los archivos', extensions: ['*'] }
+          ]
+        }
+      }
+      
+      log.info('Mostrando diálogo de guardado', { defaultPath, fileName, platform: process.platform })
+      
+      // Mostrar el diálogo
+      let dialogResult
+      try {
         // Para Windows y macOS, usar la ventana padre si está disponible
         if (mainWindow && !mainWindow.isDestroyed()) {
           // Asegurar que la ventana esté visible y enfocada
@@ -3362,35 +3390,32 @@ ipcMain.handle('download-file', async (_, fileId, fileName) => {
           log.info('Mostrando diálogo sin ventana padre')
           dialogResult = await dialog.showSaveDialog(dialogOptions)
         }
-      }
-    } catch (dialogError) {
-      log.error('Error en showSaveDialog:', dialogError)
-      // Intentar una vez más sin ventana padre si falló con ventana
-      try {
-        log.info('Reintentando diálogo sin ventana padre')
-        // En Linux, agregar delay adicional antes del reintento
-        if (process.platform === 'linux') {
-          await new Promise(resolve => setTimeout(resolve, 200))
+      } catch (dialogError) {
+        log.error('Error en showSaveDialog:', dialogError)
+        // Intentar una vez más sin ventana padre si falló con ventana
+        try {
+          log.info('Reintentando diálogo sin ventana padre')
+          dialogResult = await dialog.showSaveDialog(dialogOptions)
+        } catch (retryError) {
+          log.error('Error en segundo intento de diálogo:', retryError)
+          return { success: false, error: `Error al abrir diálogo de guardado: ${retryError.message || dialogError.message}`, canceled: true }
         }
-        dialogResult = await dialog.showSaveDialog(dialogOptions)
-      } catch (retryError) {
-        log.error('Error en segundo intento de diálogo:', retryError)
-        return { success: false, error: `Error al abrir diálogo de guardado: ${retryError.message || dialogError.message}`, canceled: true }
       }
+      
+      if (!dialogResult) {
+        log.warn('Dialog result es null/undefined')
+        return { success: false, canceled: true }
+      }
+      
+      const { canceled, filePath: selectedPath } = dialogResult
+      if (canceled || !selectedPath || !selectedPath.trim()) {
+        log.info('Usuario canceló la descarga o no seleccionó ruta')
+        return { success: false, canceled: true }
+      }
+      
+      filePath = selectedPath
+      log.info('Ruta seleccionada para descarga:', filePath)
     }
-    
-    if (!dialogResult) {
-      log.warn('Dialog result es null/undefined')
-      return { success: false, canceled: true }
-    }
-    
-    const { canceled, filePath } = dialogResult
-    if (canceled || !filePath || !filePath.trim()) {
-      log.info('Usuario canceló la descarga o no seleccionó ruta')
-      return { success: false, canceled: true }
-    }
-    
-    log.info('Ruta seleccionada para descarga:', filePath)
     
     // Validar que el directorio existe y es escribible
     const dir = path.dirname(filePath)
@@ -3512,6 +3537,21 @@ ipcMain.handle('download-file', async (_, fileId, fileName) => {
             total: totalSize || downloadedSize
           })
         }
+        
+        // En Linux, mostrar notificación de descarga completada
+        if (process.platform === 'linux') {
+          try {
+            const displayName = path.basename(filePath)
+            new Notification({
+              title: 'Descarga completada',
+              body: `${displayName}\nGuardado en: ${path.dirname(filePath)}`,
+              silent: false
+            }).show()
+          } catch (notifError) {
+            log.warn('No se pudo mostrar notificación de completado:', notifError)
+          }
+        }
+        
         resolve({ success: true })
       })
       
