@@ -1274,7 +1274,8 @@ app.whenReady().then(async () => {
 
   pollClipboard()
   // startClipboardImagePolling(1000) // Removed as undefined
-  if (app.isPackaged) {
+  // Solo buscar actualizaciones en Windows
+  if (app.isPackaged && process.platform === 'win32') {
     try { mainWindow.webContents.send('update-status', 'Comprobando actualizaciones al iniciar...') } catch {}
     setTimeout(() => {
       try {
@@ -1285,7 +1286,7 @@ app.whenReady().then(async () => {
         try { log.error('autoUpdater startup error', e?.message || e) } catch {}
       }
     }, 3000)
-  } else {
+  } else if (!app.isPackaged) {
     try { mainWindow.webContents.send('update-status', 'Entorno de desarrollo: se omite la comprobación automática.') } catch {}
   }
 
@@ -1466,6 +1467,11 @@ ipcMain.on('force-update', () => {
   log.info('🧪 Botón forzó búsqueda de actualización...')
   if (!app.isPackaged) {
     try { mainWindow.webContents.send('update-status', 'Solo disponible en producción.') } catch {}
+    return
+  }
+  // Solo buscar actualizaciones en Windows
+  if (process.platform !== 'win32') {
+    try { mainWindow.webContents.send('update-status', 'Las actualizaciones automáticas solo están disponibles en Windows.') } catch {}
     return
   }
   Promise.resolve(autoUpdater.checkForUpdates()).catch(err => {
