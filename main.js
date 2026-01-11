@@ -1353,6 +1353,24 @@ app.whenReady().then(async () => {
 
   // Quick switcher desactivado
 
+  // Cargar sesión desde archivo al inicio (antes de sincronizar)
+  try {
+    const savedSession = readSessionFromFile()
+    if (savedSession && savedSession.token) {
+      authToken = savedSession.token
+      log.info('Sesión restaurada al inicio desde archivo', { 
+        hasToken: !!savedSession.token,
+        hasRefreshToken: !!savedSession.refreshToken 
+      })
+      // Inicializar funciones que requieren autenticación
+      resetClipboardFilesState()
+      ensureLocalDevices()
+      Promise.resolve(enforceHistoryLimit(1000)).catch(() => {})
+    }
+  } catch (error) {
+    log.error('Error cargando sesión al inicio', error?.message || error)
+  }
+
   // Iniciar sincronización periódica solo después de que todo esté listo
   setInterval(() => {
     syncClipboardHistory()
