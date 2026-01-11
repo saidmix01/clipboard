@@ -5,4 +5,4 @@ export type HistoryItem = {
   imagePath?: string
 }
 
-export type FilterType = 'all' | 'text' | 'image' | 'favorite'
+export type FilterType = 'all' | 'text' | 'image' | 'favorite' | 'documents'

@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef } from 'react'
+import { useEffect, useState, useRef, useCallback } from 'react'
 import type { ReactNode } from 'react'
 import { Toaster, toast } from 'react-hot-toast'
 import { motion } from 'framer-motion'
@@ -10,6 +10,7 @@ import AppShell from './components/AppShell'
 import TopBar from './components/TopBar'
 import Dock from './components/Dock'
 import HistoryList from './components/HistoryList'
+import FileList from './components/FileList'
 // filtros movidos a la barra inferior
 import SearchQuickSwitcher from './components/SearchQuickSwitcher'
 import SettingsMenu from './components/SettingsMenu'
@@ -23,6 +24,11 @@ import type { HistoryItem, FilterType } from './types'
 // tipos movidos a ./types
 
 function App () {
+  const [filter, setFilter] = useState<FilterType>('all')
+  const [displayed, setDisplayed] = useState<HistoryItem[]>([])
+  const [listLoading, setListLoading] = useState<boolean>(false)
+  const [syncing, setSyncing] = useState<boolean>(false)
+  const [syncPct, setSyncPct] = useState<number>(0)
   const [, setHistory] = useState<HistoryItem[]>([])
   const [search, setSearch] = useState<string>('')
   const searchInputRef = useRef<HTMLInputElement>(null)
@@ -88,6 +94,118 @@ function App () {
   // Ref para el contenedor scrollable y para cada item
   const itemRefs = useRef<(HTMLDivElement | null)[]>([])
 
+  const [files, setFiles] = useState<any[]>([])
+  const [filesLoading, setFilesLoading] = useState(false)
+  const [storageInfo, setStorageInfo] = useState<{ usedBytes: number, availableBytes: number, quotaBytes: number } | null>(null)
+  const [filesPage, setFilesPage] = useState<number>(1)
+  const [filesLimit, setFilesLimit] = useState<number>(50)
+  const [filesTotal, setFilesTotal] = useState<number>(0)
+  
+  // Ref para mantener el valor actual de filesLimit en callbacks
+  const filesLimitRef = useRef(filesLimit)
+  filesLimitRef.current = filesLimit
+
+  const loadFiles = useCallback(async (page: number = 1, limit: number = 50) => {
+     if (!token) {
+        return
+     }
+     setFilesLoading(true)
+     try {
+        if (!(window as any).electronAPI?.listFiles) {
+           setFiles([])
+           return
+        }
+        
+        const res = await (window as any).electronAPI.listFiles({ 
+          page, 
+          limit 
+        })
+        
+        // Manejar la nueva estructura de respuesta con paginación
+        let items = []
+        let total = 0
+        let responsePage = page
+        let responseLimit = limit
+        
+        if (res?.success && res?.data) {
+          // Nueva estructura: { success: true, data: { items, page, limit, total, storage } }
+          if (Array.isArray(res.data.items)) {
+            items = res.data.items
+          }
+          total = typeof res.data.total === 'number' ? res.data.total : 0
+          responsePage = typeof res.data.page === 'number' ? res.data.page : page
+          responseLimit = typeof res.data.limit === 'number' ? res.data.limit : limit
+          
+          // Extraer info de storage
+          if (res.data.storage) {
+            setStorageInfo(res.data.storage)
+          }
+        } else {
+          // Soporte para estructura anterior (backward compatibility)
+          if (res?.data?.items && Array.isArray(res.data.items)) {
+            items = res.data.items
+          } else if (res?.items && Array.isArray(res.items)) {
+            items = res.items
+          } else if (Array.isArray(res?.data)) {
+            items = res.data
+          }
+          
+          if (res?.data?.storage) {
+            setStorageInfo(res.data.storage)
+          } else if (res?.storage) {
+            setStorageInfo(res.storage)
+          }
+        }
+        
+        setFiles(items)
+        setFilesTotal(total)
+        setFilesPage(responsePage)
+        setFilesLimit(responseLimit)
+     } catch (err) {
+        setFiles([])
+        setFilesTotal(0)
+     } finally {
+        setFilesLoading(false)
+     }
+  }, [token])
+
+  useEffect(() => {
+    if (filter === 'documents') {
+       setFilesPage(1) // Resetear a página 1 al cambiar a documentos
+       loadFiles(1, filesLimitRef.current)
+    }
+  }, [filter, token, loadFiles])
+  
+  useEffect(() => {
+    if ((window as any).electronAPI?.onFileUploaded) {
+      const off = (window as any).electronAPI.onFileUploaded(() => {
+         toast.success('Archivo subido')
+         if (filter === 'documents') {
+            // Recargar la primera página después de subir un archivo
+            setFilesPage(1)
+            loadFiles(1, filesLimitRef.current)
+         }
+      })
+      return () => { try { off?.() } catch {} }
+    }
+  }, [filter, loadFiles])
+
+  useEffect(() => {
+    if ((window as any).electronAPI?.onFileUploadError) {
+      const off = (window as any).electronAPI.onFileUploadError((err: any) => {
+         const msg = err?.error || 'Error al subir archivo'
+         // Mensaje para el usuario si no hay internet
+         if (String(msg).includes('Network') || String(msg).includes('EAI_AGAIN') || String(msg).includes('ENOTFOUND')) {
+            toast.error('No hay conexión a internet para subir el archivo')
+         } else {
+            toast.error(`Error al subir: ${msg}`)
+         }
+      })
+      return () => { try { off?.() } catch {} }
+    }
+  }, [])
+
+
   const highlightMatch = (
     text: string,
     query: string
@@ -107,12 +225,6 @@ function App () {
       )
     )
   }
-
-  const [filter, setFilter] = useState<FilterType>('all')
-  const [displayed, setDisplayed] = useState<HistoryItem[]>([])
-  const [listLoading, setListLoading] = useState<boolean>(false)
-  const [syncing, setSyncing] = useState<boolean>(false)
-  const [syncPct, setSyncPct] = useState<number>(0)
 
   useEffect(() => {
     try {
@@ -548,6 +660,50 @@ function App () {
 
           {/* filtros ahora en Dock */}
 
+          {filter === 'documents' ? (
+            !token ? (
+              <div className="flex-1 px-3 py-1 flex flex-col items-center justify-center text-[color:var(--color-muted)] text-xs gap-2 min-h-[200px]">
+                <div>Debes iniciar sesión para acceder a los documentos</div>
+                <button 
+                  onClick={() => setShowLogin(true)}
+                  className="px-4 py-2 rounded-md bg-[color:var(--color-primary)] text-white hover:opacity-80 transition text-sm"
+                >
+                  Iniciar sesión
+                </button>
+              </div>
+            ) : filesLoading ? (
+               <div className="flex-1 px-3 py-1 flex items-center justify-center text-[color:var(--color-muted)] text-xs">Cargando documentos...</div>
+             ) : (
+               <FileList
+                  items={files.filter(f => !search || f.originalName?.toLowerCase().includes(search.toLowerCase()))}
+                  storage={storageInfo}
+                  currentPage={filesPage}
+                  totalPages={filesTotal > 0 ? Math.max(1, Math.ceil(filesTotal / filesLimit)) : 1}
+                  totalItems={filesTotal}
+                  limit={filesLimit}
+                  onPageChange={(newPage) => {
+                     setFilesPage(newPage)
+                     loadFiles(newPage, filesLimit)
+                  }}
+                  onLimitChange={(newLimit) => {
+                     setFilesLimit(newLimit)
+                     setFilesPage(1)
+                     loadFiles(1, newLimit)
+                  }}
+                  onDelete={async (item) => {
+                     if (!window.confirm('¿Eliminar archivo?')) return
+                     await (window as any).electronAPI.deleteFile(item.id)
+                     loadFiles(filesPage, filesLimit)
+                     toast.success('Archivo eliminado')
+                  }}
+                  onDownload={async (item) => {
+                     const res = await (window as any).electronAPI.downloadFile(item.id, item.originalName)
+                     if (res.success) toast.success('Descarga completada')
+                     else if (!res.canceled) toast.error('Error al descargar')
+                  }}
+               />
+             )
+          ) : (
           <HistoryList
             items={displayed}
             search={search}
@@ -581,6 +737,7 @@ function App () {
               setContextMenu({ x: e.clientX, y: e.clientY, item })
             }}
           />
+          )}
           {listLoading && (
             <div className="px-3 py-1 text-[color:var(--color-muted)] text-xs">Cargando…</div>
           )}
@@ -604,8 +761,15 @@ function App () {
             ]}
             userAvatar={userAvatar}
             filter={filter}
-            onChangeFilter={(f) => { if (!token && f==='favorite') { toast.error('Debes iniciar sesión'); return } setFilter(f) }}
+            onChangeFilter={(f) => { 
+              if (!token && (f === 'favorite' || f === 'documents')) { 
+                toast.error('Debes iniciar sesión para acceder a esta sección'); 
+                return 
+              } 
+              setFilter(f) 
+            }}
             disabledFavorites={!token}
+            hasAuth={!!token}
           />
           <div className="px-3 pb-1 text-right text-[11px] text-[color:var(--color-muted)]" title='Versión de la app'>v{appVersion}</div>
 

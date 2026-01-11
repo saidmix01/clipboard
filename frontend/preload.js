@@ -23,6 +23,25 @@ contextBridge.exposeInMainWorld('electronAPI', {
   translateToEnglish: text => ipcRenderer.invoke('translate-to-english', text),
 
   // 👇 ESTA ES LA QUE FALTA
-  pasteText: () => ipcRenderer.send('paste-text')
+  pasteText: () => ipcRenderer.send('paste-text'),
 
+  // Files API
+  listFiles: (params) => ipcRenderer.invoke('list-files', params),
+  deleteFile: (fileId) => ipcRenderer.invoke('delete-file', fileId),
+  downloadFile: (fileId, fileName) => ipcRenderer.invoke('download-file', fileId, fileName),
+  onFileUploaded: (cb) => {
+    const listener = (_, data) => cb(data)
+    ipcRenderer.on('file-uploaded', listener)
+    return () => ipcRenderer.removeListener('file-uploaded', listener)
+  },
+  onFileUploadError: (cb) => {
+    const listener = (_, err) => cb(err)
+    ipcRenderer.on('file-upload-error', listener)
+    return () => ipcRenderer.removeListener('file-upload-error', listener)
+  },
+  onFileUploadStatus: (cb) => {
+    const listener = (_, status) => cb(status)
+    ipcRenderer.on('file-upload-status', listener)
+    return () => ipcRenderer.removeListener('file-upload-status', listener)
+  }
 })

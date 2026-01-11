@@ -8,11 +8,18 @@ const {
   nativeImage,
   Tray,
   Menu,
-  shell
+  shell,
+  Notification,
+  powerMonitor
 } = require('electron')
 const { autoUpdater } = require('electron-updater')
 const log = require('electron-log')
 const path = require('path')
+
+if (process.platform === 'win32') {
+  app.setAppUserModelId('Copyfy')
+}
+
 const axios = require('axios')
 const fs = require('fs')
 const os = require('os')
@@ -20,6 +27,8 @@ const db = require('./db')
 const legacyHistoryPath = path.join(os.homedir(), '.clipboard-history.json')
 const { exec, execFile, spawnSync } = require('child_process')
 const crypto = require('crypto')
+const FormData = require('form-data')
+const { dialog } = require('electron')
 
 let mainWindow
 let quickWindow
@@ -30,7 +39,15 @@ let isQuitting = false
 
 if (process.platform === 'linux') {
   try { app.setName('copyfy') } catch {}
-  try { app.commandLine.appendSwitch('ozone-platform', 'x11') } catch {}
+  // Detectar si Wayland está disponible, sino usar X11
+  // En Electron, si no se especifica, intentará usar Wayland primero si está disponible
+  // Solo forzar X11 si hay problemas específicos con Wayland
+  const isWayland = process.env.XDG_SESSION_TYPE === 'wayland' || process.env.WAYLAND_DISPLAY
+  if (!isWayland) {
+    // Si no es Wayland, usar X11 explícitamente
+    try { app.commandLine.appendSwitch('ozone-platform', 'x11') } catch {}
+  }
+  // Si es Wayland, dejar que Electron use el default (Wayland)
 }
 
 const gotTheLock = app.requestSingleInstanceLock()
@@ -49,34 +66,154 @@ if (!gotTheLock) {
 }
 
 function uriToPath (uri) {
-  let u = String(uri || '').trim()
-  if (!u) return ''
-  if (u.startsWith('file://')) {
-    if (process.platform === 'win32') {
-      u = decodeURI(u.replace(/^file:\/\/\//, ''))
-      return u.replace(/\//g, '\\')
-    } else {
-      return decodeURI(u.replace(/^file:\/\//, ''))
+  try {
+    let u = String(uri || '').trim()
+    if (!u) return ''
+    
+    // Manejar diferentes formatos de URI de archivos
+    if (u.startsWith('file://')) {
+      if (process.platform === 'win32') {
+        // Windows: file:///C:/path o file://C:/path
+        // Remover el prefijo file:// y manejar diferentes variantes
+        u = u.replace(/^file:\/\/(\/+)?/, '')
+        // Decodificar URI y normalizar
+        u = decodeURIComponent(u)
+        // path.normalize() ya maneja correctamente los separadores en Windows
+        return path.normalize(u)
+      } else {
+        // macOS/Linux: file:///path o file://localhost/path
+        u = u.replace(/^file:\/\/(localhost\/)?/, '')
+        u = decodeURIComponent(u)
+        // Normalizar ruta (path.normalize() usa el separador correcto para la plataforma)
+        return path.normalize(u)
+      }
     }
+    
+    // Si ya es una ruta, normalizarla usando path.normalize() que es multiplataforma
+    return path.normalize(u)
+  } catch (e) {
+    log.error('Error convirtiendo URI a path:', e?.message || e)
+    return String(uri || '').trim()
   }
-  return u
+}
+
+// Extensiones de archivos de texto y documentos permitidas
+const TEXT_FILE_EXTENSIONS = new Set([
+  // Archivos de texto plano y código fuente
+  'txt', 'md', 'js', 'ts', 'jsx', 'tsx', 'json', 'xml', 'html', 'htm', 'css', 'scss', 'sass', 'less',
+  'py', 'java', 'cpp', 'c', 'h', 'hpp', 'cs', 'php', 'rb', 'go', 'rs', 'swift', 'kt', 'scala',
+  'sh', 'bash', 'zsh', 'fish', 'bat', 'cmd', 'ps1', 'vbs',
+  'sql', 'csv', 'tsv', 'log', 'ini', 'cfg', 'conf', 'config', 'yaml', 'yml', 'toml',
+  'dockerfile', 'makefile', 'cmake', 'gradle', 'maven',
+  'r', 'm', 'pl', 'pm', 'lua', 'vim', 'diff', 'patch',
+  'tex', 'bib', 'rst', 'adoc', 'wiki', 'org',
+  // Documentos de Office y PDF
+  'pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'odt', 'ods', 'odp',
+  'rtf', 'pages', 'numbers', 'key', 'wps', 'wpd'
+])
+
+function isTextFile(filePath) {
+  try {
+    const ext = path.extname(filePath).toLowerCase().replace('.', '')
+    return TEXT_FILE_EXTENSIONS.has(ext)
+  } catch {
+    return false
+  }
 }
 
 function parseCFHDrop (buf) {
   try {
-    if (!Buffer.isBuffer(buf) || buf.length < 6) return []
-    const pFiles = buf.readUInt32LE(0)
-    const fWide = !!buf.readUInt16LE(4)
-    const start = Math.min(Math.max(pFiles, 0), buf.length)
-    const slice = buf.subarray(start)
+    if (!Buffer.isBuffer(buf) || buf.length < 20) return []
+    
+    // Estructura DROPFILES (20 bytes):
+    // Offset 0-3: pFiles (DWORD) - offset donde empiezan los paths (típicamente 20)
+    // Offset 4-7: pt.x (LONG) - coordenada X del mouse
+    // Offset 8-11: pt.y (LONG) - coordenada Y del mouse
+    // Offset 12-15: fNC (BOOL) - flag
+    // Offset 16-19: fWide (BOOL) - 0 = ANSI, 1 = Unicode
+    
+    const pFiles = buf.readUInt32LE(0) // Offset donde empiezan los paths
+    const fWide = buf.readUInt32LE(16) !== 0 // Flag unicode (offset 16-19)
+    
+    // El offset mínimo debería ser 20 (tamaño de DROPFILES structure)
+    const start = Math.max(pFiles, 20)
+    if (start >= buf.length) return []
+    
+    const files = []
+    let pos = start
+    
     if (fWide) {
-      const raw = slice.toString('utf16le')
-      return raw.split('\0').map(s => String(s || '').trim()).filter(Boolean)
+      // Unicode (UTF-16LE): cada path termina con doble null (\0\0 = 4 bytes)
+      // La lista completa termina con cuádruple null (8 bytes)
+      while (pos + 4 < buf.length) {
+        // Buscar el siguiente doble null (dos UInt16LE consecutivos que sean 0)
+        let pathStart = pos
+        let foundDoubleNull = false
+        
+        while (pos + 4 <= buf.length) {
+          const u16_1 = buf.readUInt16LE(pos)
+          const u16_2 = buf.readUInt16LE(pos + 2)
+          
+          if (u16_1 === 0 && u16_2 === 0) {
+            foundDoubleNull = true
+            break
+          }
+          pos += 2
+        }
+        
+        if (foundDoubleNull && pos > pathStart) {
+          // Extraer el path desde pathStart hasta pos
+          const pathBuf = buf.subarray(pathStart, pos)
+          const pathStr = pathBuf.toString('utf16le').replace(/\0+$/, '').trim()
+          if (pathStr && pathStr.length > 0) {
+            files.push(pathStr)
+          }
+          
+          // Saltar el doble null (4 bytes)
+          pos += 4
+          
+          // Verificar si hay otro doble null (fin de lista)
+          if (pos + 4 <= buf.length && buf.readUInt16LE(pos) === 0 && buf.readUInt16LE(pos + 2) === 0) {
+            break // Fin de lista
+          }
+        } else {
+          break // No encontramos más archivos
+        }
+      }
     } else {
-      const raw = slice.toString('ascii')
-      return raw.split('\0').map(s => String(s || '').trim()).filter(Boolean)
+      // ANSI: cada path termina con null (1 byte)
+      // La lista completa termina con doble null (2 bytes)
+      while (pos < buf.length) {
+        // Buscar el siguiente null terminator
+        let pathStart = pos
+        while (pos < buf.length && buf[pos] !== 0) {
+          pos++
+        }
+        
+        if (pos > pathStart) {
+          // Extraer el path
+          const pathBuf = buf.subarray(pathStart, pos)
+          const pathStr = pathBuf.toString('ascii').trim()
+          if (pathStr && pathStr.length > 0) {
+            files.push(pathStr)
+          }
+        }
+        
+        // Saltar el null
+        pos++
+        
+        // Si encontramos otro null inmediatamente, significa fin de lista
+        if (pos < buf.length && buf[pos] === 0) {
+          break
+        }
+      }
     }
-  } catch {
+    
+    // Eliminar duplicados y retornar
+    const uniqueFiles = [...new Set(files)].filter(Boolean)
+    return uniqueFiles
+  } catch (e) {
+    log.error('Error parseando CF_HDROP:', e?.message || e)
     return []
   }
 }
@@ -85,61 +222,176 @@ function readClipboardFileUris () {
   try {
     const formats = (clipboard.availableFormats() || []).map(f => String(f || '').toLowerCase())
     const out = []
+    const seen = new Set() // Para evitar duplicados
+    
+    // En Windows, CF_HDROP es el formato más confiable para múltiples archivos
+    if (process.platform === 'win32') {
+      const bufDrop = clipboard.readBuffer('CF_HDROP')
+      if (Buffer.isBuffer(bufDrop) && bufDrop.length > 0) {
+        const parts = parseCFHDrop(bufDrop)
+        for (const p of parts) {
+          if (p) {
+            // Usar path.resolve() para obtener ruta absoluta normalizada (compatible con todas las plataformas)
+            const resolved = path.resolve(p)
+            const normalized = resolved.toLowerCase()
+            if (!seen.has(normalized)) {
+              seen.add(normalized)
+              out.push(resolved)
+            }
+          }
+        }
+      }
+    }
+    
+    // También verificar otros formatos como respaldo
+    // text/uri-list: formato estándar usado en Linux y algunas aplicaciones
     if (formats.includes('text/uri-list')) {
       const buf = clipboard.readBuffer('text/uri-list')
       const txt = Buffer.isBuffer(buf) ? buf.toString('utf-8') : ''
       for (const line of String(txt || '').split(/\r?\n/)) {
         const s = String(line || '').trim()
-        if (s) out.push(s)
+        if (s && !s.startsWith('#')) { // Ignorar comentarios en URI list
+          const p = uriToPath(s)
+          if (p) {
+            const resolved = path.resolve(p)
+            const normalized = resolved.toLowerCase()
+            if (!seen.has(normalized)) {
+              seen.add(normalized)
+              out.push(resolved)
+            }
+          }
+        }
       }
     }
+    
+    // public.file-url: formato usado en algunas aplicaciones Linux/macOS
     if (formats.includes('public.file-url')) {
       const buf = clipboard.readBuffer('public.file-url')
       const txt = Buffer.isBuffer(buf) ? buf.toString('utf-8') : ''
       for (const line of String(txt || '').split(/\r?\n/)) {
         const s = String(line || '').trim()
-        if (s) out.push(s)
+        if (s) {
+          const p = uriToPath(s)
+          if (p) {
+            const resolved = path.resolve(p)
+            const normalized = resolved.toLowerCase()
+            if (!seen.has(normalized)) {
+              seen.add(normalized)
+              out.push(resolved)
+            }
+          }
+        }
       }
     }
-    if (formats.includes('nsfilenamespboardtype')) {
-      const buf = clipboard.readBuffer('NSFilenamesPboardType')
-      const txt = Buffer.isBuffer(buf) ? buf.toString('utf-8') : ''
-      for (const line of String(txt || '').split(/\r?\n/)) {
-        const s = String(line || '').trim()
-        if (s) out.push(s)
+    
+    // macOS: NSFilenamesPboardType es un array serializado de PropertyList (plist)
+    if (process.platform === 'darwin' && formats.includes('nsfilenamespboardtype')) {
+      try {
+        const buf = clipboard.readBuffer('NSFilenamesPboardType')
+        if (Buffer.isBuffer(buf) && buf.length > 0) {
+          // Intentar parsear como plist binario o XML
+          // En macOS moderno, Electron puede devolver esto como string JSON o array
+          // Primero intentar como string/array si es posible
+          try {
+            const text = buf.toString('utf8')
+            // Si parece JSON (array de strings)
+            if (text.startsWith('[') || text.startsWith('"')) {
+              const parsed = JSON.parse(text)
+              const files = Array.isArray(parsed) ? parsed : [parsed]
+              for (const file of files) {
+                const filePath = String(file || '').trim()
+                if (filePath) {
+                  // Convertir a ruta absoluta normalizada
+                  const resolved = path.resolve(filePath)
+                  const normalized = resolved.toLowerCase()
+                  if (!seen.has(normalized)) {
+                    seen.add(normalized)
+                    out.push(resolved)
+                  }
+                }
+              }
+            }
+          } catch {
+            // Si no es JSON, intentar leer como texto plano (archivos separados por null o newline)
+            const text = buf.toString('utf8')
+            const parts = text.split(/\0|\r?\n/).map(s => s.trim()).filter(Boolean)
+            for (const part of parts) {
+              if (part) {
+                // Convertir a ruta absoluta normalizada
+                const resolved = path.resolve(part)
+                const normalized = resolved.toLowerCase()
+                if (!seen.has(normalized)) {
+                  seen.add(normalized)
+                  out.push(resolved)
+                }
+              }
+            }
+          }
+        }
+      } catch (e) {
+        log.error('Error leyendo NSFilenamesPboardType:', e?.message || e)
       }
     }
-    {
+    
+    // FileNameW y FileName: formatos de Windows para un solo archivo (rara vez múltiples)
+    if (process.platform === 'win32') {
       const bufW = clipboard.readBuffer('FileNameW')
       if (Buffer.isBuffer(bufW) && bufW.length > 0) {
         const raw = bufW.toString('utf16le')
         const parts = String(raw || '').split('\0').map(s => String(s || '').trim()).filter(Boolean)
-        for (const p of parts) out.push(p)
+        for (const p of parts) {
+          if (p) {
+            const resolved = path.resolve(p)
+            const normalized = resolved.toLowerCase()
+            if (!seen.has(normalized)) {
+              seen.add(normalized)
+              out.push(resolved)
+            }
+          }
+        }
       }
       const bufA = clipboard.readBuffer('FileName')
       if (Buffer.isBuffer(bufA) && bufA.length > 0) {
         const raw = bufA.toString('ascii')
         const parts = String(raw || '').split('\0').map(s => String(s || '').trim()).filter(Boolean)
-        for (const p of parts) out.push(p)
-      }
-      const bufDrop = clipboard.readBuffer('CF_HDROP')
-      if (Buffer.isBuffer(bufDrop) && bufDrop.length > 0) {
-        const parts = parseCFHDrop(bufDrop)
-        for (const p of parts) out.push(p)
+        for (const p of parts) {
+          if (p) {
+            const resolved = path.resolve(p)
+            const normalized = resolved.toLowerCase()
+            if (!seen.has(normalized)) {
+              seen.add(normalized)
+              out.push(resolved)
+            }
+          }
+        }
       }
     }
+    
+    // x-special/gnome-copied-files: formato usado en GNOME/Linux
     if (formats.includes('x-special/gnome-copied-files')) {
       const buf = clipboard.readBuffer('x-special/gnome-copied-files')
       const txt = Buffer.isBuffer(buf) ? buf.toString('utf-8') : ''
       const lines = String(txt || '').split(/\r?\n/)
-      const rest = lines.filter((_, i) => i > 0)
+      const rest = lines.filter((_, i) => i > 0) // Saltar primera línea (acción: copy/cut)
       for (const line of rest) {
         const s = String(line || '').trim()
-        if (s) out.push(s)
+        if (s) {
+          const p = uriToPath(s)
+          if (p) {
+            const resolved = path.resolve(p)
+            const normalized = resolved.toLowerCase()
+            if (!seen.has(normalized)) {
+              seen.add(normalized)
+              out.push(resolved)
+            }
+          }
+        }
       }
     }
+    
     return out
-  } catch {
+  } catch (e) {
+    log.error('Error leyendo archivos del portapapeles:', e)
     return []
   }
 }
@@ -156,6 +408,58 @@ function getImagePathFromClipboard () {
     return null
   } catch {
     return null
+  }
+}
+
+// Función helper para obtener el estado actual de los archivos del portapapeles
+// Devuelve la clave (key) que representa los archivos de texto actuales, o '' si no hay archivos de texto
+function getCurrentClipboardFilesKey () {
+  try {
+    if (!authToken) return ''
+    
+    const rawUris = readClipboardFileUris()
+    const uniqueFileMap = new Map()
+
+    if (rawUris && rawUris.length > 0) {
+      for (const uri of rawUris) {
+        const p = uriToPath(uri)
+        if (p && fs.existsSync(p)) {
+          try {
+            const stat = fs.statSync(p)
+            if (stat.isFile() && isTextFile(p)) {
+              const key = (stat.ino && stat.dev) ? `${stat.dev}-${stat.ino}` : path.resolve(p).toLowerCase()
+              const existing = uniqueFileMap.get(key)
+              
+              if (!existing) {
+                uniqueFileMap.set(key, p)
+              } else {
+                const score = (pathStr) => {
+                  let s = 0
+                  if (/~\d+(\.|$)/i.test(pathStr)) s -= 10
+                  if (pathStr === pathStr.toUpperCase() && /[a-z]/.test(pathStr.toLowerCase())) s -= 2
+                  return s + (pathStr.length * 0.01)
+                }
+                if (score(p) > score(existing)) {
+                  uniqueFileMap.set(key, p)
+                }
+              }
+            }
+          } catch (e) {
+            // Silenciar errores menores
+          }
+        }
+      }
+    }
+
+    if (uniqueFileMap.size > 0) {
+      const sortedPaths = Array.from(uniqueFileMap.values()).sort()
+      const normalizedPaths = sortedPaths.map(p => path.resolve(p)).sort()
+      return normalizedPaths.join('|')
+    }
+    
+    return ''
+  } catch {
+    return ''
   }
 }
 
@@ -318,17 +622,28 @@ function performPaste (mainWindow) {
   log.info('Entorno', { env: isDev ? 'desarrollo' : 'producción' })
 
   if (platform === 'win32') {
-    const exePath = isDev
-      ? path.join(__dirname, 'helpers', 'paste.exe')
-      : path.join(
-          process.resourcesPath,
-          'app.asar.unpacked',
-          'helpers',
-          'paste.exe'
-        )
+    // Rutas de ejecutables compatibles con desarrollo y producción en Windows
+    let exePath
+    if (isDev) {
+      exePath = path.join(__dirname, 'helpers', 'paste.exe')
+    } else {
+      // En producción, intentar múltiples ubicaciones posibles
+      const possiblePaths = [
+        path.join(process.resourcesPath, 'app.asar.unpacked', 'helpers', 'paste.exe'),
+        path.join(process.resourcesPath, 'helpers', 'paste.exe'),
+        path.join(path.dirname(process.execPath), 'resources', 'app.asar.unpacked', 'helpers', 'paste.exe'),
+        path.join(path.dirname(process.execPath), 'helpers', 'paste.exe')
+      ]
+      
+      exePath = possiblePaths.find(p => fs.existsSync(p)) || possiblePaths[0]
+    }
+
+    if (!fs.existsSync(exePath)) {
+      log.error('paste.exe no encontrado en:', exePath)
+      return
+    }
 
     log.info('Ejecutando', { exePath })
-
     execFile(exePath, err => {
       if (err) {
         log.error('Error al ejecutar paste.exe', err)
@@ -378,13 +693,17 @@ function performPaste (mainWindow) {
       }
       if (isWayland && has('ydotool') && typeof text === 'string' && text.trim() !== '') {
         tasks.push(() => new Promise(resolve => {
-          const tmp = path.join(os.tmpdir(), `copyfy_text_${Date.now()}.txt`)
+          // os.tmpdir() es multiplataforma y devuelve la ruta correcta en todas las plataformas
+          const tmp = path.join(os.tmpdir(), `copyfy_text_${Date.now()}_${Math.random().toString(36).substr(2, 9)}.txt`)
           try {
             fs.writeFileSync(tmp, text, 'utf-8')
           } catch (e) {
             return resolve({ ok: false, err: e })
           }
-          exec(`ydotool type --file "${tmp}"`, err => {
+          // Escapar la ruta correctamente para evitar problemas con espacios o caracteres especiales
+          // En Linux, usar comillas simples y normalizar separadores de ruta
+          const normalizedTmp = tmp.replace(/\\/g, '/')
+          exec(`ydotool type --file '${normalizedTmp.replace(/'/g, "'\"'\"'")}'`, err => {
             try { fs.rmSync(tmp, { force: true }) } catch {}
             if (err) return resolve({ ok: false, err })
             resolve({ ok: true })
@@ -393,13 +712,17 @@ function performPaste (mainWindow) {
       }
       if (has('xdotool') && typeof text === 'string' && text.trim() !== '') {
         tasks.push(() => new Promise(resolve => {
-          const tmp = path.join(os.tmpdir(), `copyfy_text_${Date.now()}.txt`)
+          // os.tmpdir() es multiplataforma (funciona en Windows, Linux, macOS)
+          const tmp = path.join(os.tmpdir(), `copyfy_text_${Date.now()}_${Math.random().toString(36).substr(2, 9)}.txt`)
           try {
             fs.writeFileSync(tmp, text, 'utf-8')
           } catch (e) {
             return resolve({ ok: false, err: e })
           }
-          exec(`xdotool type --clearmodifiers --delay 1 --file "${tmp}"`, err => {
+          // Escapar la ruta correctamente para evitar problemas con espacios o caracteres especiales
+          // Normalizar separadores para Linux (usar /)
+          const normalizedTmp = tmp.replace(/\\/g, '/')
+          exec(`xdotool type --clearmodifiers --delay 1 --file '${normalizedTmp.replace(/'/g, "'\"'\"'")}'`, err => {
             try { fs.rmSync(tmp, { force: true }) } catch {}
             if (err) return resolve({ ok: false, err })
             resolve({ ok: true })
@@ -440,17 +763,28 @@ function performPasteImage (mainWindow) {
   log.info('Entorno', { env: isDev ? 'desarrollo' : 'producción' })
 
   if (platform === 'win32') {
-    const exePath = isDev
-      ? path.join(__dirname, 'helpers', 'paste-image.exe')
-      : path.join(
-          process.resourcesPath,
-          'app.asar.unpacked',
-          'helpers',
-          'paste-image.exe'
-        )
+    // Rutas de ejecutables compatibles con desarrollo y producción en Windows
+    let exePath
+    if (isDev) {
+      exePath = path.join(__dirname, 'helpers', 'paste-image.exe')
+    } else {
+      // En producción, intentar múltiples ubicaciones posibles
+      const possiblePaths = [
+        path.join(process.resourcesPath, 'app.asar.unpacked', 'helpers', 'paste-image.exe'),
+        path.join(process.resourcesPath, 'helpers', 'paste-image.exe'),
+        path.join(path.dirname(process.execPath), 'resources', 'app.asar.unpacked', 'helpers', 'paste-image.exe'),
+        path.join(path.dirname(process.execPath), 'helpers', 'paste-image.exe')
+      ]
+      
+      exePath = possiblePaths.find(p => fs.existsSync(p)) || possiblePaths[0]
+    }
+
+    if (!fs.existsSync(exePath)) {
+      log.error('paste-image.exe no encontrado en:', exePath)
+      return
+    }
 
     log.info('Ejecutando', { exePath })
-
     execFile(exePath, err => {
       if (err) {
         log.error('Error al ejecutar paste-image.exe', err)
@@ -529,22 +863,30 @@ function createWindow () {
     backgroundColor: '#00FFFFFF',
     alwaysOnTop: true,
     resizable: false, // ✅ importante: no redimensionable
-    icon: path.join(__dirname, 'frontend', 'media', '64x64.png'),
+    icon: app.isPackaged 
+      ? path.join(app.getAppPath(), 'frontend', 'media', '64x64.png')
+      : path.join(__dirname, 'frontend', 'media', '64x64.png'),
     show: false,
     hasShadow: true, // ✅ sombra opcional
     title: '',
     webPreferences: {
-      preload: path.join(__dirname, 'preload.js'),
+      // Ruta de preload compatible con desarrollo y producción en todas las plataformas
+      preload: app.isPackaged 
+        ? path.join(app.getAppPath(), 'preload.js')
+        : path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
       devTools: !app.isPackaged
     }
   })
 
-  // Cargar interfaz
+  // Cargar interfaz: compatible con desarrollo y producción en todas las plataformas
   if (app.isPackaged) {
-    mainWindow.loadFile(path.join(__dirname, 'frontend', 'dist', 'index.html'))
+    // En producción, usar app.getAppPath() que funciona correctamente en todas las plataformas
+    const indexPath = path.join(app.getAppPath(), 'frontend', 'dist', 'index.html')
+    mainWindow.loadFile(indexPath)
   } else {
+    // En desarrollo, usar el servidor de Vite
     mainWindow.loadURL('http://localhost:5173')
   }
 
@@ -606,17 +948,49 @@ function createWindow () {
   })
 }
 
+// Variables de estado del portapapeles (fuera de app.whenReady para accesibilidad global)
+let lastImageDataUrl = ''
+let lastText = ''
+let lastFilesKey = ''
+
+// Función para reinicializar el estado de los archivos del portapapeles
+// Se llama al iniciar la app, al iniciar sesión, y cuando se reactiva la app
+function resetClipboardFilesState () {
+  lastFilesKey = getCurrentClipboardFilesKey()
+}
+
 app.whenReady().then(async () => {
   try { require('./autolaunch').configureAutoLaunch() } catch (e) { log.error('Autolaunch setup failed', e) }
   await db.init(app)
   createWindow()
-  const iconPath = path.join(
-    __dirname,
-    'frontend',
-    'media',
-    '64x64.png'
-  )
-  const image = nativeImage.createFromPath(iconPath)
+  // Ruta del icono: compatible con desarrollo y producción en todas las plataformas
+  // En empaquetado, usar app.getAppPath() que funciona correctamente en todas las plataformas
+  const iconPath = app.isPackaged
+    ? path.join(app.getAppPath(), 'frontend', 'media', '64x64.png')
+    : path.join(__dirname, 'frontend', 'media', '64x64.png')
+  
+  // Verificar que el icono existe, usar fallback si no
+  let image
+  try {
+    if (fs.existsSync(iconPath)) {
+      image = nativeImage.createFromPath(iconPath)
+      if (image && image.isEmpty()) {
+        throw new Error('Icono vacío')
+      }
+    } else {
+      // Fallback: intentar desde __dirname (puede funcionar en desarrollo)
+      const fallbackPath = path.join(__dirname, 'frontend', 'media', '64x64.png')
+      if (fs.existsSync(fallbackPath)) {
+        image = nativeImage.createFromPath(fallbackPath)
+      } else {
+        image = nativeImage.createEmpty()
+      }
+    }
+  } catch (e) {
+    log.error('Error cargando icono:', e?.message || e)
+    // Último fallback: icono vacío (Electron usará el icono por defecto)
+    image = nativeImage.createEmpty()
+  }
   tray = new Tray(image)
   tray.setToolTip('Copyfy++')
   const menu = Menu.buildFromTemplate([
@@ -679,9 +1053,6 @@ app.whenReady().then(async () => {
   } catch {}
 
   const pollClipboard = () => {
-    let lastImageDataUrl = ''
-    let lastText = ''
-
     // Normalizar historial ya cargado y enviar al renderer inmediatamente
     try {
       history = authToken ? db.getAll(getCurrentDeviceName()) : db.getAllGuest(getCurrentDeviceName())
@@ -693,7 +1064,84 @@ app.whenReady().then(async () => {
       mainWindow.webContents.send('clipboard-update', augmentHistoryWithImagePaths(history))
     }
 
+    // Inicializar lastFilesKey con el estado actual del portapapeles
+    // Esto previene que archivos copiados antes de abrir la app/iniciar sesión/desbloquear se procesen
+    resetClipboardFilesState()
+
     setInterval(() => {
+      try {
+        // Solo detectar archivos si el usuario está autenticado
+        if (!authToken) {
+          // Si no hay autenticación, resetear lastFilesKey para evitar detecciones previas
+          if (lastFilesKey !== '') {
+            lastFilesKey = ''
+          }
+          // Continuar con el resto del polling (texto e imágenes)
+        } else {
+          // Usuario autenticado - procesar archivos del portapapeles
+          const rawUris = readClipboardFileUris()
+          const uniqueFileMap = new Map()
+
+          if (rawUris && rawUris.length > 0) {
+            for (const uri of rawUris) {
+              const p = uriToPath(uri)
+              if (p && fs.existsSync(p)) {
+                try {
+                  const stat = fs.statSync(p)
+                  // Solo procesar archivos de texto
+                  if (stat.isFile() && isTextFile(p)) {
+                    // Clave única basada en inodo para detectar duplicados (e.g. 8.3 vs nombre largo)
+                    // Usar inodo + device si están disponibles, sino usar ruta normalizada
+                    const key = (stat.ino && stat.dev) ? `${stat.dev}-${stat.ino}` : path.resolve(p).toLowerCase()
+                    const existing = uniqueFileMap.get(key)
+                    
+                    if (!existing) {
+                      uniqueFileMap.set(key, p)
+                    } else {
+                      // Heurística para elegir el "mejor" nombre de archivo (preferir nombre largo sobre 8.3)
+                      const score = (pathStr) => {
+                         let s = 0
+                         // Penalizar nombre corto 8.3 (contiene ~ y digito)
+                         if (/~\d+(\.|$)/i.test(pathStr)) s -= 10
+                         // Penalizar todo mayúsculas si el otro tiene minúsculas
+                         if (pathStr === pathStr.toUpperCase() && /[a-z]/.test(pathStr.toLowerCase())) s -= 2
+                         // Preferir longitud mayor como desempate
+                         return s + (pathStr.length * 0.01)
+                      }
+                      if (score(p) > score(existing)) {
+                        uniqueFileMap.set(key, p)
+                      }
+                    }
+                  }
+                } catch (e) {
+                  // Silenciar errores menores durante polling normal
+                }
+              }
+            }
+          }
+
+          if (uniqueFileMap.size > 0) {
+            const sortedPaths = Array.from(uniqueFileMap.values()).sort()
+            // Normalizar las rutas para la comparación (resolver paths relativos y absolutos)
+            const normalizedPaths = sortedPaths.map(p => path.resolve(p)).sort()
+            const currentFilesKey = normalizedPaths.join('|')
+            
+            if (currentFilesKey !== lastFilesKey) {
+              // Solo loggear cuando haya un cambio real en los archivos
+              log.info(`Archivos de texto detectados: ${sortedPaths.length} archivo(s)`, sortedPaths.map(p => path.basename(p)))
+              lastFilesKey = currentFilesKey
+              // Upload files - pasar todos los archivos de texto juntos
+              askForUpload(sortedPaths)
+            }
+          } else {
+            // Solo resetear lastFilesKey si realmente cambió (no hay archivos)
+            if (lastFilesKey !== '') {
+              lastFilesKey = ''
+            }
+          }
+        }
+      } catch {}
+
       try {
         const currentImage = clipboard.readImage()
         if (currentImage.isEmpty()) {
@@ -920,6 +1368,42 @@ app.on('before-quit', () => {
 app.on('will-quit', () => {
   try { globalShortcut.unregisterAll() } catch {}
 })
+
+// Reinicializar el estado de los archivos cuando la app se reactiva o el sistema se desbloquea
+// Esto previene que archivos copiados antes de desbloquear/reactivar se procesen
+if (powerMonitor) {
+  // Evento unlock-screen funciona en macOS y Linux
+  powerMonitor.on('unlock-screen', () => {
+    resetClipboardFilesState()
+  })
+  
+  // En Windows, usar el evento 'resume' que se dispara cuando el sistema vuelve de suspensión
+  if (process.platform === 'win32') {
+    powerMonitor.on('resume', () => {
+      resetClipboardFilesState()
+    })
+  }
+}
+
+// Reinicializar cuando la ventana principal recibe foco (app se reactiva)
+// Esto ayuda especialmente en Windows cuando se desbloquea o inicia sesión
+app.on('browser-window-focus', (event, window) => {
+  if (window === mainWindow) {
+    // Pequeño delay para asegurar que el estado del sistema esté actualizado
+    setTimeout(() => {
+      resetClipboardFilesState()
+    }, 500)
+  }
+})
+
+// En Windows, también detectar cuando la app vuelve a estar activa después de estar inactiva
+if (process.platform === 'win32') {
+  app.on('activate', () => {
+    setTimeout(() => {
+      resetClipboardFilesState()
+    }, 500)
+  })
+}
 
 // Quick switcher desactivado
 
@@ -1176,7 +1660,11 @@ ipcMain.on('open-code-editor', (_, codeText) => {
     const mainBounds = mainWindow?.getBounds() || { width: 400, x: wa.x + wa.width - 400, y: wa.y, height: wa.height }
     const viewerWidth = Math.max(300, wa.width - mainBounds.width)
     win.setBounds({ x: wa.x, y: wa.y, width: viewerWidth, height: wa.height })
-    win.loadFile(path.join(__dirname, 'viewer', 'code-editor.html'))
+    // Ruta del viewer compatible con desarrollo y producción en todas las plataformas
+    const editorPath = app.isPackaged
+      ? path.join(app.getAppPath(), 'viewer', 'code-editor.html')
+      : path.join(__dirname, 'viewer', 'code-editor.html')
+    win.loadFile(editorPath)
     win.webContents.on('did-finish-load', () => {
       try {
         const b64 = Buffer.from(String(codeText || ''), 'utf-8').toString('base64')
@@ -1296,6 +1784,7 @@ ipcMain.on('open-external-url', (_, url) => {
   }
 })
 let BACKEND_URL = 'https://copyfy.webcolsoluciones.com.co'
+//let BACKEND_URL = 'http://localhost:3000'
 try { BACKEND_URL = require('./config').BACKEND_URL || BACKEND_URL } catch {}
 let authToken = null
 let deviceId = null
@@ -1440,7 +1929,17 @@ async function getDevicesFromBackend () {
 
 function sanitizeDeviceName (name) {
   const s = String(name || '').trim()
-  return s.replace(/[<>:"/\\|?*]/g, '').slice(0, 64) || 'device'
+  // Caracteres prohibidos en nombres de archivos/carpetas en Windows, Linux y macOS:
+  // Windows: < > : " / \ | ? *
+  // Linux/macOS: / (y null bytes, pero eso se maneja con trim)
+  // Usar una regex que funcione en todas las plataformas
+  // También remover caracteres de control y espacios al inicio/final
+  return s
+    .replace(/[<>:"/\\|?*\x00-\x1f]/g, '') // Remover caracteres prohibidos y control
+    .replace(/^\s+|\s+$/g, '') // Remover espacios al inicio y final
+    .replace(/\.{2,}/g, '.') // Reemplazar múltiples puntos consecutivos
+    .replace(/^\.+|\.+$/g, '') // Remover puntos al inicio y final (problemas en Linux)
+    .slice(0, 64) || 'device'
 }
 
 async function ensureLocalDevices () {
@@ -1474,6 +1973,9 @@ async function ensureLocalDevices () {
 
 ipcMain.on('set-auth-token', (event, token) => {
   authToken = token
+  // Reinicializar el estado de los archivos del portapapeles al iniciar sesión
+  // Esto previene que archivos copiados antes de iniciar sesión se procesen
+  resetClipboardFilesState()
   syncClipboardHistory()
   ensureLocalDevices()
   Promise.resolve(enforceHistoryLimit(1000)).catch(() => {})
@@ -1660,6 +2162,386 @@ async function ensureDeviceRegistered () {
   } catch (error) {
     log.error('ensureDeviceRegistered error', error?.message || error)
     return null
+  }
+}
+
+function askForUpload(filePaths) {
+  try {
+    // Validar autenticación - solo usuarios logueados pueden subir archivos
+    if (!authToken) {
+      log.info('Intento de subir archivos sin autenticación - ignorado')
+      return
+    }
+
+    const isArray = Array.isArray(filePaths)
+    const files = isArray ? filePaths : [filePaths]
+    if (files.length === 0) return
+
+    // Filtrar solo archivos de texto (doble verificación)
+    const textFiles = files.filter(f => isTextFile(f))
+    if (textFiles.length === 0) return
+
+    // Usar ventana de notificación con barra de progreso en todas las plataformas
+    // Las notificaciones del sistema en Linux/macOS no soportan barras de progreso interactivas
+    createNotificationWindow(textFiles)
+  } catch (e) {
+    log.error('Error mostrando notificacion', e)
+  }
+}
+
+let activeUploadWindow = null
+
+function createNotificationWindow(filePaths) {
+  try {
+    const isArray = Array.isArray(filePaths)
+    const files = isArray ? filePaths : [filePaths]
+    
+    // Cerrar ventana anterior si existe
+    if (activeUploadWindow && !activeUploadWindow.isDestroyed()) {
+      try {
+        activeUploadWindow.close()
+      } catch {}
+    }
+    
+    const title = files.length === 1 ? 'Archivo detectado' : `${files.length} Archivos detectados`
+    const message = files.length === 1 
+      ? `¿Subir "${path.basename(files[0])}" a Copyfy?` 
+      : `¿Subir ${files.length} archivos a Copyfy?`
+    
+    // Serializar los archivos para usar en el HTML como array literal de JavaScript
+    const filesJsonForJS = JSON.stringify(files)
+    
+    const display = screen.getPrimaryDisplay()
+    const { width, height } = display.workAreaSize
+    const { x: screenX, y: screenY } = display.workArea
+    const winWidth = 360
+    const winHeight = 140 // Optimizada para reducir espacio desperdiciado
+    
+    // Posicionar la ventana en la esquina inferior derecha, compatible con todas las plataformas
+    // macOS puede tener el dock en la parte inferior, Linux puede tener paneles
+    const x = screenX + width - winWidth - 20
+    const y = screenY + height - winHeight - 20
+    
+    const notifWindow = new BrowserWindow({
+      width: winWidth,
+      height: winHeight,
+      x: Math.max(0, x),
+      y: Math.max(0, y),
+      frame: false,
+      transparent: process.platform !== 'linux', // Transparencia puede no funcionar bien en algunos Linux
+      alwaysOnTop: true,
+      skipTaskbar: true,
+      resizable: false,
+      show: false,
+      hasShadow: process.platform === 'darwin', // macOS usa sombras por defecto
+      webPreferences: {
+        nodeIntegration: true,
+        contextIsolation: false
+      }
+    })
+
+    activeUploadWindow = notifWindow
+
+    // Construir el HTML usando concatenación de strings para evitar problemas con template strings anidados
+    const htmlContentParts = [
+      '<!DOCTYPE html>',
+      '<html>',
+      '<head>',
+      '<style>',
+      'body { margin: 0; padding: 10px 12px; background: #1e1e1e; color: #fff; font-family: system-ui, -apple-system, sans-serif; border-radius: 8px; border: 1px solid #333; box-shadow: 0 4px 12px rgba(0,0,0,0.5); overflow: hidden; display: flex; flex-direction: column; height: 100vh; box-sizing: border-box; }',
+      '.title { font-weight: 600; font-size: 13px; margin-bottom: 2px; color: #fff; line-height: 1.2; }',
+      '.message { font-size: 12px; color: #aaa; margin-bottom: 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; line-height: 1.3; }',
+      '.timeout-container { display: block; margin: 4px 0; }',
+      '.timeout-bar { width: 100%; height: 3px; background: #333; border-radius: 2px; overflow: hidden; margin-bottom: 2px; }',
+      '.timeout-fill { height: 100%; background: #ef4444; width: 100%; transition: width 1s linear; }',
+      '.timeout-text { font-size: 9px; color: #888; text-align: center; line-height: 1.2; }',
+      '.progress-container { display: none; margin: 6px 0; }',
+      '.progress-container.visible { display: block; }',
+      '.progress-bar { width: 100%; height: 5px; background: #333; border-radius: 3px; overflow: hidden; margin-bottom: 3px; }',
+      '.progress-fill { height: 100%; background: #3b82f6; width: 0%; transition: width 0.3s ease; }',
+      '.progress-text { font-size: 10px; color: #888; text-align: center; line-height: 1.2; }',
+      '.current-file { font-size: 10px; color: #aaa; margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; line-height: 1.2; }',
+      '.actions { display: flex; gap: 6px; margin-top: 6px; justify-content: flex-end; }',
+      '.actions.uploading { display: none; }',
+      'button { border: none; padding: 5px 10px; border-radius: 4px; font-size: 11px; cursor: pointer; transition: background 0.2s; font-weight: 500; line-height: 1.2; }',
+      '.btn-primary { background: #3b82f6; color: white; }',
+      '.btn-primary:hover { background: #2563eb; }',
+      '.btn-secondary { background: #333; color: #ccc; }',
+      '.btn-secondary:hover { background: #444; }',
+      '.close { position: absolute; top: 6px; right: 6px; background: none; color: #666; font-size: 14px; padding: 0; cursor: pointer; width: 18px; height: 18px; display: flex; align-items: center; justify-content: center; }',
+      '.close:hover { color: #fff; }',
+      '</style>',
+      '</head>',
+      '<body>',
+      '<button class="close" onclick="cancel()">×</button>',
+      '<div class="title">' + title.replace(/</g, '&lt;').replace(/>/g, '&gt;') + '</div>',
+      '<div class="message">' + message.replace(/</g, '&lt;').replace(/>/g, '&gt;') + '</div>',
+      '<div class="timeout-container" id="timeoutContainer">',
+      '<div class="timeout-bar">',
+      '<div class="timeout-fill" id="timeoutFill"></div>',
+      '</div>',
+      '<div class="timeout-text" id="timeoutText">60s restantes</div>',
+      '</div>',
+      '<div class="progress-container" id="progressContainer">',
+      '<div class="progress-bar">',
+      '<div class="progress-fill" id="progressFill"></div>',
+      '</div>',
+      '<div class="progress-text" id="progressText">0%</div>',
+      '<div class="current-file" id="currentFile"></div>',
+      '</div>',
+      '<div class="actions" id="actions">',
+      '<button class="btn-secondary" onclick="cancel()">Cancelar</button>',
+      '<button class="btn-primary" onclick="confirm()">' + (files.length === 1 ? 'Subir archivo' : 'Subir todos') + '</button>',
+      '</div>',
+      '<script>',
+      'const { ipcRenderer } = require(\'electron\')',
+      'const progressContainer = document.getElementById(\'progressContainer\')',
+      'const progressFill = document.getElementById(\'progressFill\')',
+      'const progressText = document.getElementById(\'progressText\')',
+      'const currentFile = document.getElementById(\'currentFile\')',
+      'const actions = document.getElementById(\'actions\')',
+      'const timeoutContainer = document.getElementById(\'timeoutContainer\')',
+      'const timeoutFill = document.getElementById(\'timeoutFill\')',
+      'const timeoutText = document.getElementById(\'timeoutText\')',
+      '',
+      '// Archivos a subir (pasados desde el main process)',
+      'const filePaths = ' + filesJsonForJS + ';',
+      '',
+      'let autoClose = null',
+      'let countdownInterval = null',
+      'let remainingSeconds = 60',
+      'const TIMEOUT_MS = 60000',
+      '',
+      'function updateCountdown() {',
+      '  remainingSeconds--',
+      '  const percentage = (remainingSeconds / 60) * 100',
+      '  timeoutFill.style.width = percentage + "%"',
+      '  timeoutText.textContent = remainingSeconds + "s restantes"',
+      '  if (remainingSeconds <= 10) {',
+      '    timeoutText.style.color = "#ef4444"',
+      '    timeoutFill.style.background = "#ef4444"',
+      '  } else if (remainingSeconds <= 20) {',
+      '    timeoutText.style.color = "#f59e0b"',
+      '    timeoutFill.style.background = "#f59e0b"',
+      '  } else {',
+      '    timeoutText.style.color = "#888"',
+      '    timeoutFill.style.background = "#3b82f6"',
+      '  }',
+      '  if (remainingSeconds <= 0) {',
+      '    clearInterval(countdownInterval)',
+      '    clearTimeout(autoClose)',
+      '    ipcRenderer.send(\'notification-timeout\', { filePaths: filePaths })',
+      '    window.close()',
+      '  }',
+      '}',
+      '',
+      'function confirm() {',
+      '  clearTimeout(autoClose)',
+      '  clearInterval(countdownInterval)',
+      '  timeoutContainer.style.display = "none"',
+      '  progressContainer.classList.add("visible")',
+      '  actions.classList.add("uploading")',
+      '  ipcRenderer.send(\'notification-action\', { action: "upload", filePaths: filePaths })',
+      '}',
+      '',
+      'function cancel() {',
+      '  clearTimeout(autoClose)',
+      '  clearInterval(countdownInterval)',
+      '  ipcRenderer.send(\'notification-cancel\', { filePaths: filePaths })',
+      '  window.close()',
+      '}',
+      '',
+      'ipcRenderer.on(\'upload-progress\', (_, data) => {',
+      '  const { percent, current, total, fileName } = data',
+      '  progressFill.style.width = percent + "%"',
+      '  progressText.textContent = percent.toFixed(0) + "%"',
+      '  if (fileName) {',
+      '    currentFile.textContent = fileName',
+      '  }',
+      '})',
+      '',
+      'ipcRenderer.on(\'upload-complete\', () => {',
+      '  clearInterval(countdownInterval)',
+      '  timeoutContainer.style.display = "none"',
+      '  progressFill.style.width = "100%"',
+      '  progressText.textContent = "100% ✓"',
+      '  setTimeout(() => window.close(), 1500)',
+      '})',
+      '',
+      'countdownInterval = setInterval(updateCountdown, 1000)',
+      '',
+      'autoClose = setTimeout(() => {',
+      '  clearInterval(countdownInterval)',
+      '  if (!progressContainer.classList.contains("visible")) {',
+      '    ipcRenderer.send(\'notification-timeout\', { filePaths: filePaths })',
+      '    window.close()',
+      '  }',
+      '}, TIMEOUT_MS)',
+      '',
+      'setTimeout(() => {',
+      '  timeoutFill.style.width = "100%"',
+      '  timeoutFill.style.transition = "width 60s linear"',
+      '  timeoutFill.style.width = "0%"',
+      '}, 100)',
+      '</script>',
+      '</body>',
+      '</html>'
+    ]
+    
+    const htmlContent = htmlContentParts.join('\n')
+
+    notifWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(htmlContent)}`)
+    notifWindow.once('ready-to-show', () => notifWindow.show())
+    
+    notifWindow.on('closed', () => {
+      if (activeUploadWindow === notifWindow) {
+        activeUploadWindow = null
+      }
+    })
+  } catch (e) {
+    log.error('Error creando ventana de notificacion', e)
+  }
+}
+
+ipcMain.on('notification-action', async (_, { action, filePath, filePaths }) => {
+  if (action === 'upload') {
+    const targets = filePaths || (filePath ? [filePath] : [])
+    
+    if (targets.length === 0) return
+    
+    let completed = 0
+    const total = targets.length
+    
+    // Función para actualizar progreso
+    const updateProgress = (current, fileName) => {
+      const percent = (current / total) * 100
+      try {
+        if (activeUploadWindow && !activeUploadWindow.isDestroyed() && !activeUploadWindow.webContents.isDestroyed()) {
+          activeUploadWindow.webContents.send('upload-progress', {
+            percent,
+            current,
+            total,
+            fileName: fileName ? path.basename(fileName) : null
+          })
+        }
+      } catch (e) {
+        // Ventana cerrada durante la subida
+      }
+      if (mainWindow?.webContents && !mainWindow.webContents.isDestroyed()) {
+        mainWindow.webContents.send('file-upload-status', { status: 'uploading', file: fileName, progress: percent })
+      }
+    }
+    
+    // Subir archivos secuencialmente para mostrar progreso correcto
+    for (let i = 0; i < targets.length; i++) {
+      const p = targets[i]
+      const fileName = path.basename(p)
+      
+      try {
+        updateProgress(completed, p)
+        
+        const res = await uploadFile(p)
+        
+        if (res.success) {
+          completed++
+          updateProgress(completed, p)
+          
+          if (mainWindow?.webContents) {
+            mainWindow.webContents.send('file-uploaded', res.data)
+          }
+        } else {
+          completed++
+          updateProgress(completed, p)
+          
+          if (mainWindow?.webContents) {
+            mainWindow.webContents.send('file-upload-error', { file: p, error: res.error })
+          }
+          new Notification({ title: 'Error', body: `Error al subir ${fileName}.` }).show()
+        }
+      } catch (error) {
+        completed++
+        updateProgress(completed, p)
+        
+        if (mainWindow?.webContents) {
+          mainWindow.webContents.send('file-upload-error', { file: p, error: error?.message || 'Error desconocido' })
+        }
+        new Notification({ title: 'Error', body: `Error al subir ${fileName}.` }).show()
+      }
+    }
+    
+    // Notificar finalización
+    try {
+      if (activeUploadWindow && !activeUploadWindow.isDestroyed() && !activeUploadWindow.webContents.isDestroyed()) {
+        activeUploadWindow.webContents.send('upload-complete')
+      }
+    } catch (e) {
+      // Ventana ya cerrada
+    }
+    
+    // Mostrar notificación de éxito si todos fueron subidos correctamente
+    if (completed === total) {
+      new Notification({ 
+        title: 'Subida completada', 
+        body: total === 1 ? `${path.basename(targets[0])} se ha subido correctamente.` : `${total} archivos subidos correctamente.` 
+      }).show()
+    }
+  }
+})
+
+// Handler para cuando el timeout expira - reinicializar el estado de los archivos
+ipcMain.on('notification-timeout', (_, { filePaths }) => {
+  try {
+    // Reinicializar el estado de los archivos para que no se vuelvan a procesar
+    resetClipboardFilesState()
+    log.info('Timeout de notificación de subir archivos - estado reinicializado')
+  } catch (e) {
+    log.error('Error en notification-timeout', e)
+  }
+})
+
+// Handler para cuando el usuario cancela - reinicializar el estado de los archivos
+ipcMain.on('notification-cancel', (_, { filePaths }) => {
+  try {
+    // Reinicializar el estado de los archivos para que no se vuelvan a procesar
+    resetClipboardFilesState()
+    log.info('Usuario canceló notificación de subir archivos - estado reinicializado')
+  } catch (e) {
+    log.error('Error en notification-cancel', e)
+  }
+})
+
+async function uploadFile(filePath) {
+  try {
+    if (!authToken) return { success: false, message: 'No autenticado' }
+    if (!fs.existsSync(filePath)) return { success: false, message: 'Archivo no encontrado' }
+    
+    const form = new FormData()
+    form.append('file', fs.createReadStream(filePath))
+    
+    const axiosInstance = getAxiosInstance()
+    const clientId = activeDeviceName || os.hostname()
+    
+    const headers = {
+      ...axiosInstance.defaults.headers,
+      ...form.getHeaders(),
+      'x-device-id': clientId
+    }
+    
+    // Asegurar que el Content-Type sea el del form-data (multipart)
+    if (headers['Content-Type'] === 'application/json') {
+      delete headers['Content-Type']
+    }
+    // form-data devuelve headers en minúsculas usualmente
+    const formHeaders = form.getHeaders()
+    for (const k in formHeaders) {
+      headers[k] = formHeaders[k]
+    }
+    
+    const res = await axiosInstance.post('/api/files/upload', form, { headers })
+    return { success: true, data: res.data }
+  } catch (error) {
+    log.error('Error subiendo archivo', error?.message || error)
+    return { success: false, error: error?.message || 'Error de red' }
   }
 }
 
@@ -2007,10 +2889,28 @@ ipcMain.handle('clear-user-data', async () => {
     }
     try { fs.rmSync(legacyHistoryPath, { force: true }) } catch {}
     try {
-      const alt1 = path.join(__dirname, '.clipboard-history.json')
-      const alt2 = path.join(__dirname, 'clipboard-history.json')
-      if (fs.existsSync(alt1)) { try { fs.rmSync(alt1, { force: true }) } catch {} }
-      if (fs.existsSync(alt2)) { try { fs.rmSync(alt2, { force: true }) } catch {} }
+      // Limpiar archivos legacy en diferentes ubicaciones posibles (multiplataforma)
+      const legacyPaths = [
+        legacyHistoryPath, // Ya verificado arriba
+        path.join(os.homedir(), 'clipboard-history.json'), // Alternativa
+        path.join(app.getPath('userData'), 'clipboard-history.json'), // En userData
+      ]
+      
+      // Solo intentar limpiar __dirname si estamos en desarrollo (no empaquetado)
+      if (!app.isPackaged) {
+        legacyPaths.push(
+          path.join(__dirname, '.clipboard-history.json'),
+          path.join(__dirname, 'clipboard-history.json')
+        )
+      }
+      
+      for (const legacyPath of legacyPaths) {
+        try {
+          if (fs.existsSync(legacyPath)) {
+            fs.rmSync(legacyPath, { force: true })
+          }
+        } catch {}
+      }
     } catch {}
     authToken = null
     deviceId = null
@@ -2080,6 +2980,83 @@ ipcMain.handle('list-recent', async (_, payload) => {
     return []
   }
 })
+
+ipcMain.handle('list-files', async (_, params) => {
+  try {
+    // Validar autenticación - solo usuarios logueados pueden ver archivos
+    if (!authToken) {
+      log.info('Intento de listar archivos sin autenticación')
+      return { success: false, error: 'No autenticado', items: [] }
+    }
+
+    const axiosInstance = getAxiosInstance()
+    
+    // Configurar parámetros de paginación con defaults correctos
+    const page = params?.page ? Math.max(1, parseInt(params.page)) : 1
+    const limit = params?.limit ? Math.min(200, Math.max(1, parseInt(params.limit))) : 50
+    
+    // clientId es opcional - solo incluirlo si está en params o si hay activeDeviceName
+    const p = { page, limit }
+    if (params?.clientId) {
+      p.clientId = params.clientId
+    } else if (activeDeviceName) {
+      p.clientId = activeDeviceName
+    }
+    
+    log.info('list-files FULL URL:', `${axiosInstance.defaults.baseURL}/api/files`, 'PARAMS:', p)
+    const res = await axiosInstance.get('/api/files', { params: p })
+    log.info('list-files response data:', JSON.stringify(res.data, null, 2))
+    return res.data
+  } catch (e) {
+    log.error('list-files error:', e.message)
+    if (e.response) log.error('list-files response error:', e.response.data)
+    return { success: false, error: e.message, items: [] }
+  }
+})
+
+ipcMain.handle('delete-file', async (_, fileId) => {
+  try {
+    // Validar autenticación - solo usuarios logueados pueden eliminar archivos
+    if (!authToken) {
+      log.info('Intento de eliminar archivo sin autenticación')
+      return { success: false, error: 'No autenticado' }
+    }
+
+    const axiosInstance = getAxiosInstance()
+    const res = await axiosInstance.delete(`/api/files/${fileId}`)
+    return res.data
+  } catch (e) {
+    return { success: false, error: e.message }
+  }
+})
+
+ipcMain.handle('download-file', async (_, fileId, fileName) => {
+  try {
+    // Validar autenticación - solo usuarios logueados pueden descargar archivos
+    if (!authToken) {
+      log.info('Intento de descargar archivo sin autenticación')
+      return { success: false, error: 'No autenticado', canceled: false }
+    }
+
+    const axiosInstance = getAxiosInstance()
+    const { canceled, filePath } = await dialog.showSaveDialog(mainWindow, { 
+       title: 'Guardar archivo',
+       defaultPath: fileName || 'downloaded-file' 
+    })
+    if (canceled || !filePath) return { success: false, canceled: true }
+    
+    const res = await axiosInstance.get(`/api/files/${fileId}/download`, { responseType: 'stream' })
+    const writer = fs.createWriteStream(filePath)
+    res.data.pipe(writer)
+    return new Promise((resolve, reject) => {
+      writer.on('finish', () => resolve({ success: true }))
+      writer.on('error', (e) => reject({ success: false, error: e.message }))
+    })
+  } catch (e) {
+    return { success: false, error: e.message }
+  }
+})
+
 process.on('unhandledRejection', (reason) => {
   try { log.error('unhandledRejection', reason?.message || reason) } catch {}
 })
