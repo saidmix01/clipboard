@@ -23,12 +23,26 @@ import type { HistoryItem, FilterType } from './types'
 
 // tipos movidos a ./types
 
+const formatBytes = (bytes: number, decimals = 2) => {
+  if (!+bytes) return '0 B'
+  const k = 1024
+  const dm = decimals < 0 ? 0 : decimals
+  const sizes = ['B', 'KB', 'MB', 'GB', 'TB']
+  const i = Math.floor(Math.log(bytes) / Math.log(k))
+  return `${parseFloat((bytes / Math.pow(k, i)).toFixed(dm))} ${sizes[i]}`
+}
+
 function App () {
   const [filter, setFilter] = useState<FilterType>('all')
   const [displayed, setDisplayed] = useState<HistoryItem[]>([])
   const [listLoading, setListLoading] = useState<boolean>(false)
   const [syncing, setSyncing] = useState<boolean>(false)
   const [syncPct, setSyncPct] = useState<number>(0)
+  const [downloading, setDownloading] = useState<boolean>(false)
+  const [downloadPct, setDownloadPct] = useState<number>(0)
+  const [downloadFileName, setDownloadFileName] = useState<string>('')
+  const [downloadBytes, setDownloadBytes] = useState<number>(0)
+  const [downloadTotal, setDownloadTotal] = useState<number>(0)
   const [, setHistory] = useState<HistoryItem[]>([])
   const [search, setSearch] = useState<string>('')
   const searchInputRef = useRef<HTMLInputElement>(null)
@@ -54,10 +68,10 @@ function App () {
   async function refreshAuthToken () {
     try {
       const raw = localStorage.getItem('session')
-      if (!raw) return
+      if (!raw) return false
       const sess = JSON.parse(raw)
       const rt = sess?.refreshToken
-      if (!rt) return
+      if (!rt) return false
       const res = await fetch(`${API_BASE}/auth/refresh`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -72,8 +86,12 @@ function App () {
         handleLoginSuccess(newToken)
         const newSession = { ...sess, token: newToken, refreshToken: newRefresh || rt }
         localStorage.setItem('session', JSON.stringify(newSession))
+        return true
       }
-    } catch {}
+      return false
+    } catch {
+      return false
+    }
   }
 
   const handleLoginSuccess = (newToken: string) => {
@@ -227,23 +245,43 @@ function App () {
   }
 
   useEffect(() => {
-    try {
-      const raw = localStorage.getItem('session')
-      if (raw) {
-        const sess = JSON.parse(raw)
-        if (sess?.refreshToken) { refreshAuthToken(); return }
-        if (sess?.token) {
-          handleLoginSuccess(sess.token)
-          ;(window as any).electronAPI?.setAuthToken(sess.token)
-          return
+    async function restoreSession () {
+      try {
+        const raw = localStorage.getItem('session')
+        if (raw) {
+          const sess = JSON.parse(raw)
+          // Si hay refreshToken, intentar refrescar primero
+          if (sess?.refreshToken) {
+            const refreshed = await refreshAuthToken()
+            if (refreshed) {
+              // Si refreshAuthToken fue exitoso, handleLoginSuccess ya fue llamado
+              return
+            }
+            // Si el refresh falla, intentar usar el token existente como fallback
+            if (sess?.token) {
+              handleLoginSuccess(sess.token)
+              ;(window as any).electronAPI?.setAuthToken(sess.token)
+              return
+            }
+          }
+          // Si no hay refreshToken pero hay token, usarlo directamente
+          if (sess?.token) {
+            handleLoginSuccess(sess.token)
+            ;(window as any).electronAPI?.setAuthToken(sess.token)
+            return
+          }
         }
+      } catch (e) {
+        // Si falla parsear session, intentar con x-token como fallback
       }
-    } catch {}
-    const token = localStorage.getItem('x-token')
-    if (token) {
-      handleLoginSuccess(token)
-      ;(window as any).electronAPI?.setAuthToken(token)
+      // Fallback: usar x-token directamente
+      const token = localStorage.getItem('x-token')
+      if (token) {
+        handleLoginSuccess(token)
+        ;(window as any).electronAPI?.setAuthToken(token)
+      }
     }
+    restoreSession()
   }, [])
 
   useEffect(() => {
@@ -417,6 +455,48 @@ function App () {
               toast.error('Sincronización fallida')
             } else {
               toast.success('Sincronización completada')
+            }
+          }
+        } catch {}
+      })
+      return () => { try { off?.() } catch {} }
+    }
+  }, [])
+  
+  useEffect(() => {
+    if ((window as any).electronAPI?.onDownloadProgress) {
+      const off = (window as any).electronAPI.onDownloadProgress((data: any) => {
+        try {
+          if (data && typeof data === 'object') {
+            const pct = Number(data.percentage || 0)
+            const fileName = String(data.fileName || '')
+            const downloaded = Number(data.downloaded || 0)
+            const total = Number(data.total || 0)
+            const error = data.error
+            
+            if (error) {
+              setDownloading(false)
+              setDownloadPct(0)
+              setDownloadFileName('')
+              setDownloadBytes(0)
+              setDownloadTotal(0)
+              toast.error(`Error al descargar: ${error}`)
+            } else {
+              setDownloadFileName(fileName)
+              setDownloadPct(pct)
+              setDownloadBytes(downloaded)
+              setDownloadTotal(total)
+              setDownloading(pct > 0 && pct < 100)
+              
+              if (pct === 100) {
+                setTimeout(() => {
+                  setDownloading(false)
+                  setDownloadPct(0)
+                  setDownloadFileName('')
+                  setDownloadBytes(0)
+                  setDownloadTotal(0)
+                }, 1000)
+              }
             }
           }
         } catch {}
@@ -744,6 +824,29 @@ function App () {
           {syncing && (
             <div className="fixed top-2 right-2 z-[20000] glass px-3 py-2">
               <div className="spinner"><span className="ring"></span><span>Sincronizando… {Math.round(syncPct)}%</span></div>
+            </div>
+          )}
+          {downloading && (
+            <div className="fixed top-2 right-2 z-[20000] glass px-3 py-2 rounded-lg shadow-lg" style={{ top: syncing ? '70px' : '8px' }}>
+              <div className="flex flex-col gap-2 min-w-[200px]">
+                <div className="text-xs font-medium text-[color:var(--color-text)] truncate" title={downloadFileName}>
+                  Descargando: {downloadFileName}
+                </div>
+                <div className="flex items-center gap-2">
+                  <div className="flex-1 h-2 bg-[color:var(--color-bg)] rounded-full overflow-hidden border border-[color:var(--color-border)]">
+                    <div 
+                      className="h-full bg-[color:var(--color-primary)] transition-all duration-300"
+                      style={{ width: `${Math.max(0, Math.min(100, downloadPct))}%` }}
+                    />
+                  </div>
+                  <span className="text-xs text-[color:var(--color-muted)] whitespace-nowrap">{Math.round(downloadPct)}%</span>
+                </div>
+                {downloadTotal > 0 && (
+                  <div className="text-[10px] text-[color:var(--color-muted)]">
+                    {formatBytes(downloadBytes)} / {formatBytes(downloadTotal)}
+                  </div>
+                )}
+              </div>
             </div>
           )}
 

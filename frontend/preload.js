@@ -43,5 +43,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
     const listener = (_, status) => cb(status)
     ipcRenderer.on('file-upload-status', listener)
     return () => ipcRenderer.removeListener('file-upload-status', listener)
+  },
+  onDownloadProgress: (cb) => {
+    const listener = (_, data) => cb(data)
+    ipcRenderer.on('download-progress', listener)
+    return () => ipcRenderer.removeListener('download-progress', listener)
   }
 })

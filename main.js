@@ -23,6 +23,7 @@ if (process.platform === 'win32') {
 const axios = require('axios')
 const fs = require('fs')
 const os = require('os')
+const { PassThrough } = require('stream')
 const db = require('./db')
 const legacyHistoryPath = path.join(os.homedir(), '.clipboard-history.json')
 const { exec, execFile, spawnSync } = require('child_process')
@@ -3046,13 +3047,76 @@ ipcMain.handle('download-file', async (_, fileId, fileName) => {
     if (canceled || !filePath) return { success: false, canceled: true }
     
     const res = await axiosInstance.get(`/api/files/${fileId}/download`, { responseType: 'stream' })
+    
+    // Obtener el tamaño total del archivo desde los headers
+    const totalSize = parseInt(res.headers['content-length'] || '0', 10)
+    let downloadedSize = 0
+    
+    // Enviar evento inicial de inicio de descarga
+    if (mainWindow?.webContents && !mainWindow.webContents.isDestroyed()) {
+      mainWindow.webContents.send('download-progress', {
+        fileName: fileName || 'downloaded-file',
+        percentage: 0,
+        downloaded: 0,
+        total: totalSize
+      })
+    }
+    
+    // Crear un stream intermedio para monitorear el progreso
+    const progressStream = new PassThrough()
     const writer = fs.createWriteStream(filePath)
-    res.data.pipe(writer)
+    
+    // Monitorear el progreso de descarga en el stream intermedio
+    progressStream.on('data', (chunk) => {
+      downloadedSize += chunk.length
+      if (mainWindow?.webContents && !mainWindow.webContents.isDestroyed()) {
+        const percentage = totalSize > 0 ? Math.min(100, Math.round((downloadedSize / totalSize) * 100)) : 0
+        mainWindow.webContents.send('download-progress', {
+          fileName: fileName || 'downloaded-file',
+          percentage,
+          downloaded: downloadedSize,
+          total: totalSize
+        })
+      }
+    })
+    
+    // Pipe el stream de respuesta a través del stream de progreso y luego al writer
+    res.data.pipe(progressStream).pipe(writer)
+    
     return new Promise((resolve, reject) => {
-      writer.on('finish', () => resolve({ success: true }))
-      writer.on('error', (e) => reject({ success: false, error: e.message }))
+      writer.on('finish', () => {
+        // Enviar evento de finalización
+        if (mainWindow?.webContents && !mainWindow.webContents.isDestroyed()) {
+          mainWindow.webContents.send('download-progress', {
+            fileName: fileName || 'downloaded-file',
+            percentage: 100,
+            downloaded: totalSize || downloadedSize,
+            total: totalSize || downloadedSize
+          })
+        }
+        resolve({ success: true })
+      })
+      writer.on('error', (e) => {
+        // Enviar evento de error
+        if (mainWindow?.webContents && !mainWindow.webContents.isDestroyed()) {
+          mainWindow.webContents.send('download-progress', {
+            fileName: fileName || 'downloaded-file',
+            percentage: 0,
+            error: e.message
+          })
+        }
+        reject({ success: false, error: e.message })
+      })
     })
   } catch (e) {
+    // Enviar evento de error en caso de excepción
+    if (mainWindow?.webContents && !mainWindow.webContents.isDestroyed()) {
+      mainWindow.webContents.send('download-progress', {
+        fileName: fileName || 'downloaded-file',
+        percentage: 0,
+        error: e.message
+      })
+    }
     return { success: false, error: e.message }
   }
 })
