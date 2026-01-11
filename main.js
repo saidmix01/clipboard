@@ -1976,19 +1976,54 @@ async function ensureLocalDevices () {
   }
 }
 
-// Funciones para respaldar sesión en archivo (para AppImage en Linux)
+/**
+ * Funciones de persistencia de sesión usando app.getPath('userData')
+ * 
+ * En Linux con AppImage, app.getPath('userData') devuelve: ~/.config/copyfy/
+ * Esta ruta es persistente y funciona correctamente en AppImage porque:
+ * - No depende de la ubicación del ejecutable AppImage
+ * - Usa el directorio estándar XDG_CONFIG_HOME en Linux
+ * - Electron garantiza que el directorio existe
+ * - Los datos persisten entre reinicios del sistema
+ * 
+ * NOTA: NO usar rutas relativas, __dirname, o rutas junto al AppImage.
+ * Solo usar app.getPath('userData') para datos persistentes.
+ */
+
 function getSessionFilePath () {
-  return path.join(app.getPath('userData'), 'session.json')
+  // app.getPath('userData') devuelve:
+  // - Linux: ~/.config/<nombre-app>/ (donde <nombre-app> es el nombre de la app, en este caso 'copyfy')
+  // - Windows: %APPDATA%\<nombre-app>\
+  // - macOS: ~/Library/Application Support/<nombre-app>/
+  // Electron garantiza que este directorio existe
+  const userDataDir = app.getPath('userData')
+  return path.join(userDataDir, 'session.json')
 }
 
 function saveSessionToFile (sessionData) {
   try {
     const sessionPath = getSessionFilePath()
-    fs.writeFileSync(sessionPath, JSON.stringify(sessionData), 'utf-8')
-    log.info('Sesión guardada en archivo', { path: sessionPath })
+    const userDataDir = path.dirname(sessionPath)
+    
+    // Asegurar que el directorio userData existe (aunque Electron ya lo garantiza, es defensivo)
+    if (!fs.existsSync(userDataDir)) {
+      fs.mkdirSync(userDataDir, { recursive: true })
+    }
+    
+    // Escribir el archivo de sesión
+    const sessionJson = JSON.stringify(sessionData, null, 2)
+    fs.writeFileSync(sessionPath, sessionJson, 'utf-8')
+    
+    log.info('Sesión guardada en archivo', { 
+      path: sessionPath,
+      userDataDir: userDataDir 
+    })
     return true
   } catch (error) {
-    log.error('Error guardando sesión en archivo', error?.message || error)
+    log.error('Error guardando sesión en archivo', {
+      error: error?.message || error,
+      stack: error?.stack
+    })
     return false
   }
 }
@@ -1996,15 +2031,43 @@ function saveSessionToFile (sessionData) {
 function readSessionFromFile () {
   try {
     const sessionPath = getSessionFilePath()
-    if (fs.existsSync(sessionPath)) {
-      const raw = fs.readFileSync(sessionPath, 'utf-8')
-      const session = JSON.parse(raw)
-      log.info('Sesión leída desde archivo', { path: sessionPath })
-      return session
+    
+    if (!fs.existsSync(sessionPath)) {
+      log.debug('Archivo de sesión no existe', { path: sessionPath })
+      return null
     }
-    return null
+    
+    const raw = fs.readFileSync(sessionPath, 'utf-8')
+    if (!raw || !raw.trim()) {
+      log.warn('Archivo de sesión vacío', { path: sessionPath })
+      return null
+    }
+    
+    const session = JSON.parse(raw)
+    
+    // Validar que la sesión tiene la estructura esperada
+    if (!session || typeof session !== 'object') {
+      log.warn('Sesión inválida: no es un objeto', { path: sessionPath })
+      return null
+    }
+    
+    log.info('Sesión leída desde archivo', { 
+      path: sessionPath,
+      hasToken: !!session.token,
+      hasRefreshToken: !!session.refreshToken
+    })
+    
+    return session
   } catch (error) {
-    log.error('Error leyendo sesión desde archivo', error?.message || error)
+    if (error.code === 'ENOENT') {
+      // Archivo no existe, esto es normal si el usuario no ha iniciado sesión
+      return null
+    }
+    log.error('Error leyendo sesión desde archivo', {
+      error: error?.message || error,
+      code: error?.code,
+      stack: error?.stack
+    })
     return null
   }
 }
@@ -2012,13 +2075,25 @@ function readSessionFromFile () {
 function clearSessionFile () {
   try {
     const sessionPath = getSessionFilePath()
+    
     if (fs.existsSync(sessionPath)) {
       fs.unlinkSync(sessionPath)
       log.info('Archivo de sesión eliminado', { path: sessionPath })
+    } else {
+      log.debug('Archivo de sesión no existe, no hay nada que eliminar', { path: sessionPath })
     }
+    
     return true
   } catch (error) {
-    log.error('Error eliminando archivo de sesión', error?.message || error)
+    if (error.code === 'ENOENT') {
+      // Archivo no existe, esto es aceptable
+      return true
+    }
+    log.error('Error eliminando archivo de sesión', {
+      error: error?.message || error,
+      code: error?.code,
+      stack: error?.stack
+    })
     return false
   }
 }
