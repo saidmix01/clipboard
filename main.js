@@ -668,6 +668,33 @@ function performPaste (mainWindow) {
       )
     }, 300)
   } else if (platform === 'linux') {
+    // ✅ Always ensure clipboard is written first (already done by copy handlers)
+    // ✅ Check if auto-paste is enabled in preferences
+    let enableAutoPaste = false
+    try {
+      const prefsStr = db.getConfig('preferences')
+      const prefs = prefsStr ? JSON.parse(prefsStr) : {}
+      enableAutoPaste = prefs.enableAutoPaste === true
+    } catch (e) {
+      log.error('Error reading preferences for auto-paste', e)
+    }
+
+    // ✅ If auto-paste is disabled, just inform user politely
+    if (!enableAutoPaste) {
+      log.info('Auto-paste disabled. Content is in clipboard. Press Ctrl+V to paste.')
+      try {
+        if (mainWindow?.webContents) {
+          mainWindow.webContents.send('paste-status', { 
+            ok: true, 
+            message: 'Content copied to clipboard. Press Ctrl+V to paste.',
+            autoPasteDisabled: true 
+          })
+        }
+      } catch {}
+      return
+    }
+
+    // ✅ Auto-paste is enabled - attempt it as fallback
     setTimeout(async () => {
       const isWayland = !!(process.env.XDG_SESSION_TYPE === 'wayland' || process.env.WAYLAND_DISPLAY)
       const has = name => {
@@ -680,6 +707,8 @@ function performPaste (mainWindow) {
       }
       const tasks = []
       const text = clipboard.readText()
+      
+      // Priority order: wtype (Wayland) > xdotool (X11) > ydotool (last resort, Wayland only)
       if (isWayland && has('wtype')) {
         tasks.push(() => new Promise(resolve => {
           exec('wtype -M ctrl -k v -m ctrl', err => {
@@ -734,6 +763,8 @@ function performPaste (mainWindow) {
           })
         }))
       }
+      
+      // ✅ Try auto-paste if tools are available
       let done = false
       for (const t of tasks) {
         const res = await t()
@@ -743,11 +774,17 @@ function performPaste (mainWindow) {
           break
         }
       }
+      
+      // ✅ If auto-paste failed or no tools available, inform user politely
       if (!done) {
-        log.error('No se pudo pegar en Linux. Instala xdotool (X11) o wtype/ydotool (Wayland).')
+        log.info('Auto-paste not available. Content is in clipboard. Press Ctrl+V to paste.')
         try {
           if (mainWindow?.webContents) {
-            mainWindow.webContents.send('paste-status', { ok: false, message: 'No se pudo pegar en Linux. Instala xdotool (X11) o wtype/ydotool (Wayland).' })
+            mainWindow.webContents.send('paste-status', { 
+              ok: true, 
+              message: 'Content copied to clipboard. Press Ctrl+V to paste.',
+              autoPasteFailed: true 
+            })
           }
         } catch {}
       }
@@ -809,6 +846,33 @@ function performPasteImage (mainWindow) {
       )
     }, 300)
   } else if (platform === 'linux') {
+    // ✅ Always ensure clipboard is written first (already done by copy handlers)
+    // ✅ Check if auto-paste is enabled in preferences
+    let enableAutoPaste = false
+    try {
+      const prefsStr = db.getConfig('preferences')
+      const prefs = prefsStr ? JSON.parse(prefsStr) : {}
+      enableAutoPaste = prefs.enableAutoPaste === true
+    } catch (e) {
+      log.error('Error reading preferences for auto-paste', e)
+    }
+
+    // ✅ If auto-paste is disabled, just inform user politely
+    if (!enableAutoPaste) {
+      log.info('Auto-paste disabled. Image is in clipboard. Press Ctrl+V to paste.')
+      try {
+        if (mainWindow?.webContents) {
+          mainWindow.webContents.send('paste-status', { 
+            ok: true, 
+            message: 'Image copied to clipboard. Press Ctrl+V to paste.',
+            autoPasteDisabled: true 
+          })
+        }
+      } catch {}
+      return
+    }
+
+    // ✅ Auto-paste is enabled - attempt it as fallback
     setTimeout(() => {
       const isWayland = !!(process.env.XDG_SESSION_TYPE === 'wayland' || process.env.WAYLAND_DISPLAY)
       const has = name => {
@@ -820,15 +884,22 @@ function performPasteImage (mainWindow) {
         }
       }
       const cmds = []
+      // Priority order: wtype (Wayland) > xdotool (X11)
       if (isWayland && has('wtype')) cmds.push('wtype -M ctrl -k v -m ctrl')
       if (has('xdotool')) cmds.push('xdotool key ctrl+v')
+      
       const run = () => {
         const cmd = cmds.shift()
         if (!cmd) {
-          log.error('Error pegando imagen en Linux. Instala xdotool (X11) o wtype (Wayland).')
+          // ✅ No tools available - inform user politely
+          log.info('Auto-paste not available. Image is in clipboard. Press Ctrl+V to paste.')
           try {
             if (mainWindow?.webContents) {
-              mainWindow.webContents.send('paste-status', { ok: false, message: 'No se pudo pegar imagen en Linux. Instala xdotool (X11) o wtype (Wayland).' })
+              mainWindow.webContents.send('paste-status', { 
+                ok: true, 
+                message: 'Image copied to clipboard. Press Ctrl+V to paste.',
+                autoPasteFailed: true 
+              })
             }
           } catch {}
           return
@@ -836,7 +907,17 @@ function performPasteImage (mainWindow) {
         exec(cmd, err => {
           if (err) {
             if (cmds.length) return run()
-            log.error('Error pegando imagen en Linux', err)
+            // ✅ All tools failed - inform user politely
+            log.info('Auto-paste failed. Image is in clipboard. Press Ctrl+V to paste.')
+            try {
+              if (mainWindow?.webContents) {
+                mainWindow.webContents.send('paste-status', { 
+                  ok: true, 
+                  message: 'Image copied to clipboard. Press Ctrl+V to paste.',
+                  autoPasteFailed: true 
+                })
+              }
+            } catch {}
           } else {
             log.info('Imagen pegada en Linux')
           }
