@@ -679,18 +679,18 @@ function performPaste (mainWindow) {
       log.error('Error reading preferences for auto-paste', e)
     }
 
-    // ✅ If auto-paste is disabled, just inform user politely
+    // ✅ If auto-paste is disabled, just inform user politely with system notification
     if (!enableAutoPaste) {
       log.info('Auto-paste disabled. Content is in clipboard. Press Ctrl+V to paste.')
       try {
-        if (mainWindow?.webContents) {
-          mainWindow.webContents.send('paste-status', { 
-            ok: true, 
-            message: 'Content copied to clipboard. Press Ctrl+V to paste.',
-            autoPasteDisabled: true 
-          })
-        }
-      } catch {}
+        new Notification({ 
+          title: 'Copyfy', 
+          body: 'Contenido copiado al portapapeles. Presiona Ctrl+V para pegar.',
+          silent: false
+        }).show()
+      } catch (e) {
+        log.error('Error showing paste notification', e)
+      }
       return
     }
 
@@ -775,18 +775,18 @@ function performPaste (mainWindow) {
         }
       }
       
-      // ✅ If auto-paste failed or no tools available, inform user politely
+      // ✅ If auto-paste failed or no tools available, inform user politely with system notification
       if (!done) {
         log.info('Auto-paste not available. Content is in clipboard. Press Ctrl+V to paste.')
         try {
-          if (mainWindow?.webContents) {
-            mainWindow.webContents.send('paste-status', { 
-              ok: true, 
-              message: 'Content copied to clipboard. Press Ctrl+V to paste.',
-              autoPasteFailed: true 
-            })
-          }
-        } catch {}
+          new Notification({ 
+            title: 'Copyfy', 
+            body: 'Contenido copiado al portapapeles. Presiona Ctrl+V para pegar.',
+            silent: false
+          }).show()
+        } catch (e) {
+          log.error('Error showing paste notification', e)
+        }
       }
     }, 300)
   } else {
@@ -857,18 +857,18 @@ function performPasteImage (mainWindow) {
       log.error('Error reading preferences for auto-paste', e)
     }
 
-    // ✅ If auto-paste is disabled, just inform user politely
+    // ✅ If auto-paste is disabled, just inform user politely with system notification
     if (!enableAutoPaste) {
       log.info('Auto-paste disabled. Image is in clipboard. Press Ctrl+V to paste.')
       try {
-        if (mainWindow?.webContents) {
-          mainWindow.webContents.send('paste-status', { 
-            ok: true, 
-            message: 'Image copied to clipboard. Press Ctrl+V to paste.',
-            autoPasteDisabled: true 
-          })
-        }
-      } catch {}
+        new Notification({ 
+          title: 'Copyfy', 
+          body: 'Imagen copiada al portapapeles. Presiona Ctrl+V para pegar.',
+          silent: false
+        }).show()
+      } catch (e) {
+        log.error('Error showing paste notification', e)
+      }
       return
     }
 
@@ -891,33 +891,33 @@ function performPasteImage (mainWindow) {
       const run = () => {
         const cmd = cmds.shift()
         if (!cmd) {
-          // ✅ No tools available - inform user politely
+          // ✅ No tools available - inform user politely with system notification
           log.info('Auto-paste not available. Image is in clipboard. Press Ctrl+V to paste.')
           try {
-            if (mainWindow?.webContents) {
-              mainWindow.webContents.send('paste-status', { 
-                ok: true, 
-                message: 'Image copied to clipboard. Press Ctrl+V to paste.',
-                autoPasteFailed: true 
-              })
-            }
-          } catch {}
+            new Notification({ 
+              title: 'Copyfy', 
+              body: 'Imagen copiada al portapapeles. Presiona Ctrl+V para pegar.',
+              silent: false
+            }).show()
+          } catch (e) {
+            log.error('Error showing paste notification', e)
+          }
           return
         }
         exec(cmd, err => {
           if (err) {
             if (cmds.length) return run()
-            // ✅ All tools failed - inform user politely
+            // ✅ All tools failed - inform user politely with system notification
             log.info('Auto-paste failed. Image is in clipboard. Press Ctrl+V to paste.')
             try {
-              if (mainWindow?.webContents) {
-                mainWindow.webContents.send('paste-status', { 
-                  ok: true, 
-                  message: 'Image copied to clipboard. Press Ctrl+V to paste.',
-                  autoPasteFailed: true 
-                })
-              }
-            } catch {}
+              new Notification({ 
+                title: 'Copyfy', 
+                body: 'Imagen copiada al portapapeles. Presiona Ctrl+V para pegar.',
+                silent: false
+              }).show()
+            } catch (e) {
+              log.error('Error showing paste notification', e)
+            }
           } else {
             log.info('Imagen pegada en Linux')
           }
@@ -3332,26 +3332,46 @@ ipcMain.handle('download-file', async (_, fileId, fileName) => {
     // Mostrar el diálogo - en Linux puede necesitar manejo especial
     let dialogResult
     try {
-      // Intentar mostrar el diálogo con la ventana principal si está disponible
-      if (mainWindow && !mainWindow.isDestroyed()) {
-        // Asegurar que la ventana esté visible y enfocada
-        if (!mainWindow.isVisible()) {
-          mainWindow.show()
-        }
-        mainWindow.focus()
-        // Pequeño delay para asegurar que la ventana esté lista
-        await new Promise(resolve => setTimeout(resolve, 100))
-        dialogResult = await dialog.showSaveDialog(mainWindow, dialogOptions)
+      // En Linux, usar un enfoque más robusto para evitar bloqueos
+      if (process.platform === 'linux') {
+        // En Linux, siempre usar sin ventana padre para evitar bloqueos
+        // y dar más tiempo para que el sistema esté listo
+        log.info('Linux detectado: usando diálogo sin ventana padre con delay extendido')
+        await new Promise(resolve => setTimeout(resolve, 300))
+        
+        // Usar Promise.race con timeout para evitar bloqueos indefinidos
+        const dialogPromise = dialog.showSaveDialog(dialogOptions)
+        const timeoutPromise = new Promise((_, reject) => {
+          setTimeout(() => reject(new Error('Timeout en diálogo de guardado')), 10000)
+        })
+        
+        dialogResult = await Promise.race([dialogPromise, timeoutPromise])
       } else {
-        // Si no hay ventana, mostrar diálogo sin ventana padre (funciona mejor en Linux/AppImage)
-        log.info('Mostrando diálogo sin ventana padre')
-        dialogResult = await dialog.showSaveDialog(dialogOptions)
+        // Para Windows y macOS, usar la ventana padre si está disponible
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          // Asegurar que la ventana esté visible y enfocada
+          if (!mainWindow.isVisible()) {
+            mainWindow.show()
+          }
+          mainWindow.focus()
+          // Pequeño delay para asegurar que la ventana esté lista
+          await new Promise(resolve => setTimeout(resolve, 100))
+          dialogResult = await dialog.showSaveDialog(mainWindow, dialogOptions)
+        } else {
+          // Si no hay ventana, mostrar diálogo sin ventana padre
+          log.info('Mostrando diálogo sin ventana padre')
+          dialogResult = await dialog.showSaveDialog(dialogOptions)
+        }
       }
     } catch (dialogError) {
       log.error('Error en showSaveDialog:', dialogError)
       // Intentar una vez más sin ventana padre si falló con ventana
       try {
         log.info('Reintentando diálogo sin ventana padre')
+        // En Linux, agregar delay adicional antes del reintento
+        if (process.platform === 'linux') {
+          await new Promise(resolve => setTimeout(resolve, 200))
+        }
         dialogResult = await dialog.showSaveDialog(dialogOptions)
       } catch (retryError) {
         log.error('Error en segundo intento de diálogo:', retryError)
@@ -3378,9 +3398,16 @@ ipcMain.handle('download-file', async (_, fileId, fileName) => {
       if (!fs.existsSync(dir)) {
         fs.mkdirSync(dir, { recursive: true })
       }
+      // Verificar permisos de escritura
+      fs.accessSync(dir, fs.constants.W_OK)
     } catch (dirError) {
-      log.error('Error creando directorio:', dirError)
-      return { success: false, error: `No se pudo crear el directorio: ${dirError.message}` }
+      log.error('Error creando/verificando directorio:', dirError)
+      return { success: false, error: `No se pudo crear o escribir en el directorio: ${dirError.message}` }
+    }
+    
+    // En Linux, agregar un pequeño delay antes de iniciar la descarga para evitar bloqueos
+    if (process.platform === 'linux') {
+      await new Promise(resolve => setTimeout(resolve, 100))
     }
     
     const res = await axiosInstance.get(`/api/files/${fileId}/download`, { responseType: 'stream' })
