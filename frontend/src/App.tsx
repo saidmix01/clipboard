@@ -71,10 +71,27 @@ function App () {
   async function refreshAuthToken () {
     try {
       const sessionStr = await (window as any).electronAPI?.getConfig?.('session')
-      if (!sessionStr) return false
+      if (!sessionStr) {
+        console.warn('refreshAuthToken: No hay sesión guardada')
+        return false
+      }
       const sess = JSON.parse(sessionStr)
       const rt = sess?.refreshToken
-      if (!rt) return false
+      if (!rt || rt === null || rt === undefined) {
+        console.warn('refreshAuthToken: No hay refreshToken en la sesión', {
+          hasSession: !!sess,
+          sessionKeys: sess ? Object.keys(sess) : [],
+          refreshTokenValue: rt
+        })
+        return false
+      }
+      
+      console.log('refreshAuthToken: Intentando refrescar token', {
+        hasRefreshToken: !!rt,
+        refreshTokenType: typeof rt,
+        refreshTokenLength: String(rt).length
+      })
+      
       const res = await fetch(`${API_BASE}/auth/refresh`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -90,10 +107,20 @@ function App () {
         const newSession = { ...sess, token: newToken, refreshToken: newRefresh || rt }
         await (window as any).electronAPI?.setConfig?.('session', JSON.stringify(newSession))
         await (window as any).electronAPI?.saveSession?.(newSession)
+        console.log('refreshAuthToken: Token refrescado exitosamente')
         return true
+      } else {
+        console.warn('refreshAuthToken: Respuesta inválida', {
+          ok: res.ok,
+          okFlag,
+          hasToken: !!newToken,
+          status: res.status,
+          data
+        })
       }
       return false
-    } catch {
+    } catch (error) {
+      console.error('refreshAuthToken: Error al refrescar token', error)
       return false
     }
   }
@@ -318,6 +345,17 @@ function App () {
       refreshAuthToken()
     }, 15 * 60 * 1000)
     return () => clearInterval(id)
+  }, [])
+
+  // Listener para cuando el token se refresca desde el main process
+  useEffect(() => {
+    const off = (window as any).electronAPI?.onTokenRefreshed?.((newToken: string) => {
+      console.log('Token refrescado desde main process')
+      handleLoginSuccess(newToken)
+    })
+    return () => {
+      if (off) off()
+    }
   }, [])
 
   useEffect(() => {

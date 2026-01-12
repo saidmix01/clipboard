@@ -100,5 +100,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
     const listener = (_, status) => cb(status)
     ipcRenderer.on('file-upload-status', listener)
     return () => ipcRenderer.removeListener('file-upload-status', listener)
+  },
+  onTokenRefreshed: (cb) => {
+    const listener = (_, token) => cb(token)
+    ipcRenderer.on('token-refreshed', listener)
+    return () => ipcRenderer.removeListener('token-refreshed', listener)
   }
 })

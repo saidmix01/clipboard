@@ -83,14 +83,26 @@ export default function LoginModal({
         try {
           const session: any = {
             token: tokenResp,
-            refreshToken: refreshResp,
+            refreshToken: refreshResp || null,
             email: (userResp?.email ?? emailTrim),
             name: (userResp?.name ?? (mode === 'register' ? nameTrim : undefined)),
             user: userResp
           }
+          
+          // Validar que el refreshToken existe antes de guardar
+          if (!session.refreshToken) {
+            console.warn('Advertencia: No se recibió refreshToken en la respuesta del servidor', {
+              hasRefreshToken: !!refreshResp,
+              payloadKeys: Object.keys(payload || {}),
+              dataKeys: Object.keys(data || {})
+            })
+          }
+          
           await (window as any).electronAPI?.setConfig?.('session', JSON.stringify(session))
           await (window as any).electronAPI?.saveSession?.(session)
-        } catch {}
+        } catch (e) {
+          console.error('Error al guardar sesión:', e)
+        }
         onLoginSuccess(tokenResp)
         onClose()
       }

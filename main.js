@@ -2075,10 +2075,21 @@ async function refreshTokenFromSession (session) {
     }
 
     const url = `${BACKEND_URL}/auth/refresh`
-    log.info('Intentando refrescar token', { url, hasRefreshToken: !!session.refreshToken })
+    const refreshTokenValue = session.refreshToken
+    log.info('Intentando refrescar token', { 
+      url, 
+      hasRefreshToken: !!refreshTokenValue,
+      refreshTokenType: typeof refreshTokenValue,
+      refreshTokenLength: refreshTokenValue ? String(refreshTokenValue).length : 0
+    })
+    
+    if (!refreshTokenValue || refreshTokenValue === null || refreshTokenValue === undefined) {
+      log.error('refreshToken es null o undefined en la sesión', { sessionKeys: Object.keys(session || {}) })
+      return null
+    }
     
     const res = await axios.post(url, {
-      refreshToken: session.refreshToken
+      refreshToken: refreshTokenValue
     }, {
       headers: { 'Content-Type': 'application/json' }
     })
@@ -2315,7 +2326,7 @@ function getAxiosInstance () {
     throw new Error('No hay token de autenticación disponible')
   }
 
-  return axios.create({
+  const instance = axios.create({
     baseURL: BACKEND_URL,
     maxBodyLength: Infinity,
     maxContentLength: Infinity,
@@ -2326,6 +2337,67 @@ function getAxiosInstance () {
       'Content-Type': 'application/json'
     }
   })
+
+  // Interceptor para manejar errores 401 y refrescar token automáticamente
+  instance.interceptors.response.use(
+    (response) => response,
+    async (error) => {
+      const originalRequest = error.config
+
+      // Si el error es 401 y no hemos intentado refrescar ya
+      if (error.response?.status === 401 && !originalRequest._retry) {
+        originalRequest._retry = true
+
+        try {
+          // Obtener la sesión desde la DB
+          const sessionStr = db.getConfig('session')
+          if (!sessionStr) {
+            log.warn('No hay sesión guardada para refrescar token')
+            return Promise.reject(error)
+          }
+
+          const session = JSON.parse(sessionStr)
+          if (!session || !session.refreshToken) {
+            log.warn('No hay refreshToken en la sesión')
+            return Promise.reject(error)
+          }
+
+          log.info('Token expirado, intentando refrescar con refreshToken')
+          
+          // Intentar refrescar el token
+          const newToken = await refreshTokenFromSession(session)
+          
+          if (newToken) {
+            // Actualizar el token global
+            authToken = newToken
+            
+            // Notificar al frontend del nuevo token
+            if (mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents) {
+              mainWindow.webContents.send('token-refreshed', newToken)
+            }
+            
+            // Actualizar el header de autorización para la petición original
+            originalRequest.headers.Authorization = `Bearer ${newToken}`
+            
+            log.info('Token refrescado exitosamente, reintentando petición original')
+            
+            // Reintentar la petición original con el nuevo token
+            return instance(originalRequest)
+          } else {
+            log.warn('No se pudo refrescar el token')
+            return Promise.reject(error)
+          }
+        } catch (refreshError) {
+          log.error('Error al intentar refrescar token:', refreshError)
+          return Promise.reject(error)
+        }
+      }
+
+      return Promise.reject(error)
+    }
+  )
+
+  return instance
 }
 
 async function enforceHistoryLimit (limit = 1000) {
