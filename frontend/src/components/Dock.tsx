@@ -1,5 +1,5 @@
 import { motion } from 'framer-motion'
-import { TagIcon, Squares2X2Icon, Cog6ToothIcon, UserCircleIcon, ArrowRightStartOnRectangleIcon, ArrowLeftEndOnRectangleIcon, UserPlusIcon } from '@heroicons/react/24/outline'
+import { TagIcon, Squares2X2Icon, Cog6ToothIcon, UserCircleIcon, ArrowRightStartOnRectangleIcon, ArrowLeftEndOnRectangleIcon, UserPlusIcon, DocumentTextIcon } from '@heroicons/react/24/outline'
 import type { FilterType } from '../types'
 
 type DockItem = {
@@ -14,11 +14,12 @@ type Props = {
   filter: FilterType
   onChangeFilter: (f: FilterType) => void
   disabledFavorites?: boolean
+  hasAuth?: boolean
 }
 
 import { useState } from 'react'
 
-export default function Dock({ items, userAvatar, filter, onChangeFilter, disabledFavorites }: Props) {
+export default function Dock({ items, userAvatar, filter, onChangeFilter, disabledFavorites, hasAuth = false }: Props) {
   const [avatarError, setAvatarError] = useState(false)
   const [filtersOpen, setFiltersOpen] = useState(false)
   const btn = (active: boolean) => `w-full px-2 py-1 rounded-md border flex flex-col items-center justify-center text-center ${
@@ -50,7 +51,7 @@ export default function Dock({ items, userAvatar, filter, onChangeFilter, disabl
       </div>
       {filtersOpen && (
         <div className="absolute bottom-16 left-0 right-0 mx-3 z-[20000] glass px-2 py-2">
-          <div className="grid grid-cols-4 gap-2">
+          <div className="grid grid-cols-5 gap-2">
             <button className={btn(filter === 'all')} onClick={() => { onChangeFilter('all'); setFiltersOpen(false) }}>
               <span className="flex flex-col items-center gap-1"><Squares2X2Icon className="w-4 h-4" /><span className="text-[10px]">Todo</span></span>
             </button>
@@ -62,6 +63,16 @@ export default function Dock({ items, userAvatar, filter, onChangeFilter, disabl
             </button>
             <button className={`${btn(filter === 'favorite')} ${disabledFavorites ? 'opacity-60 cursor-not-allowed' : ''}`} onClick={() => { if (disabledFavorites) return; onChangeFilter('favorite'); setFiltersOpen(false) }}>
               <span className="flex flex-col items-center gap-1"><span className="text-base leading-none">⭐</span><span className="text-[10px]">Favoritos</span></span>
+            </button>
+            <button 
+              className={`${btn(filter === 'documents')} ${!hasAuth ? 'opacity-60 cursor-not-allowed' : ''}`} 
+              onClick={() => { 
+                if (!hasAuth) return
+                onChangeFilter('documents')
+                setFiltersOpen(false)
+              }}
+            >
+              <span className="flex flex-col items-center gap-1"><DocumentTextIcon className="w-4 h-4" /><span className="text-[10px]">Docs</span></span>
             </button>
           </div>
         </div>

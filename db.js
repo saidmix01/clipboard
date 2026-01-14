@@ -55,6 +55,11 @@ async function init(app) {
       created_at DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%f', 'now')),
       is_deleted INTEGER NOT NULL DEFAULT 0
     );
+    CREATE TABLE IF NOT EXISTS config (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL,
+      updated_at DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%f', 'now'))
+    );
     CREATE UNIQUE INDEX IF NOT EXISTS idx_guest_device_value ON guest_history(device, value);
     CREATE INDEX IF NOT EXISTS idx_guest_device_created ON guest_history(device, created_at DESC);
   `)
@@ -435,7 +440,11 @@ function searchGuest(device, query, filter) {
   const where = ['device=?']
   const params = [device]
   const q = String(query || '').trim()
-  if (q.length > 0) { where.push('value LIKE ?'); params.push('%' + q + '%') }
+  if (q.length > 0) {
+    where.push('value LIKE ?')
+    params.push('%' + q + '%')
+    where.push("value NOT LIKE 'data:image%'")
+  }
   const f = String(filter || 'all')
   if (f === 'image') where.push("value LIKE 'data:image%'")
   else if (f === 'text') where.push("value NOT LIKE 'data:image%'")
@@ -474,7 +483,11 @@ function search(device, query, filter) {
   const where = ['device=?']
   const params = [device]
   const q = String(query || '').trim()
-  if (q.length > 0) { where.push('value LIKE ?'); params.push('%' + q + '%') }
+  if (q.length > 0) {
+    where.push('value LIKE ?')
+    params.push('%' + q + '%')
+    where.push("value NOT LIKE 'data:image%'")
+  }
   const f = String(filter || 'all')
   if (f === 'image') where.push("value LIKE 'data:image%'")
   else if (f === 'text') where.push("value NOT LIKE 'data:image%'")
@@ -626,4 +639,85 @@ function countGuestActive(device) {
   }
 }
 
-module.exports = { init, getAll, insert, setFavorite, clear, importItems, search, getRecent, getByValues, getNotIn, trimToLimit, insertGuest, getAllGuest, clearGuest, trimGuestToLimit, searchGuest, getRecentGuest, deleteById, getById, updateRemoteIdByValue, getDirtyItems, markSynced, updateFromConflict, updateRemoteId, countActive, countGuestActive }
+function deleteNotInRemote(device, remoteValues) {
+  const values = Array.isArray(remoteValues) ? remoteValues.filter(v => typeof v === 'string') : []
+  if (values.length === 0) {
+    const stmt = db.prepare('DELETE FROM history WHERE device=? AND is_deleted=0 AND remote_id IS NOT NULL')
+    stmt.bind([device])
+    stmt.step()
+    stmt.free()
+    persist()
+    return
+  }
+  const placeholders = values.map(() => '?').join(',')
+  const sql = `DELETE FROM history WHERE device=? AND is_deleted=0 AND remote_id IS NOT NULL AND value NOT IN (${placeholders})`
+  const stmt = db.prepare(sql)
+  stmt.bind([device, ...values])
+  stmt.step()
+  stmt.free()
+  persist()
+}
+
+// Funciones para manejar configuración
+function getConfig(key) {
+  try {
+    const stmt = db.prepare('SELECT value FROM config WHERE key=?')
+    stmt.bind([key])
+    let result = null
+    if (stmt.step()) {
+      const r = stmt.getAsObject()
+      result = r.value ? String(r.value) : null
+    }
+    stmt.free()
+    return result
+  } catch (e) {
+    console.error('getConfig failed:', e)
+    return null
+  }
+}
+
+function setConfig(key, value) {
+  try {
+    const stmt = db.prepare('INSERT OR REPLACE INTO config(key, value, updated_at) VALUES(?, ?, strftime(\'%Y-%m-%d %H:%M:%f\', \'now\'))')
+    stmt.bind([key, value])
+    stmt.step()
+    stmt.free()
+    persist()
+    return true
+  } catch (e) {
+    console.error('setConfig failed:', e)
+    return false
+  }
+}
+
+function removeConfig(key) {
+  try {
+    const stmt = db.prepare('DELETE FROM config WHERE key=?')
+    stmt.bind([key])
+    stmt.step()
+    stmt.free()
+    persist()
+    return true
+  } catch (e) {
+    console.error('removeConfig failed:', e)
+    return false
+  }
+}
+
+function getAllConfig() {
+  try {
+    const stmt = db.prepare('SELECT key, value FROM config')
+    const result = {}
+    while (stmt.step()) {
+      const r = stmt.getAsObject()
+      result[String(r.key)] = String(r.value)
+    }
+    stmt.free()
+    return result
+  } catch (e) {
+    console.error('getAllConfig failed:', e)
+    return {}
+  }
+}
+
+module.exports = { init, getAll, insert, setFavorite, clear, importItems, search, getRecent, getByValues, getNotIn, trimToLimit, insertGuest, getAllGuest, clearGuest, trimGuestToLimit, searchGuest, getRecentGuest, deleteById, getById, updateRemoteIdByValue, getDirtyItems, markSynced, updateFromConflict, updateRemoteId, countActive, countGuestActive, deleteNotInRemote, getConfig, setConfig, removeConfig, getAllConfig }

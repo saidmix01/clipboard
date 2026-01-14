@@ -1,5 +1,4 @@
 import { useEffect, useRef, useState } from 'react'
-import { motion } from 'framer-motion'
 import hljs from 'highlight.js'
 import 'highlight.js/styles/github.css'
 import { StarIcon as StarOutline } from '@heroicons/react/24/outline'
@@ -47,13 +46,9 @@ export default function Card({ item, selected, onCopy, onToggleFavorite, highlig
   const isCode = isCodeSnippet(item.value)
 
   return (
-    <motion.div
-      layout
-      initial={{ opacity: 0, y: 12 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.18, ease: [0.22, 0.9, 0.38, 1] }}
+    <div
       className={`relative mb-2 p-2 rounded-[12px] border border-[color:var(--color-border)] ${selected ? 'ring-2 ring-[color:var(--color-primary)]' : ''}`}
-      style={{ cursor: 'pointer', backgroundColor: 'var(--color-surface)', maxHeight: expanded ? undefined : '140px', overflow: 'hidden' }}
+      style={{ cursor: 'pointer', backgroundColor: 'var(--color-surface)', overflow: 'hidden' }}
       onClick={onCopy}
       onContextMenu={onContextMenu}
     >
@@ -70,13 +65,18 @@ export default function Card({ item, selected, onCopy, onToggleFavorite, highlig
 
       <div>
         {isImage ? (
-          <img src={item.value} alt="imagen" className="max-w-full rounded-[10px]" style={{ maxHeight: expanded ? undefined : 120, objectFit: 'cover' }} />
+          <img
+            src={item.value}
+            alt="imagen"
+            className="max-w-full rounded-[10px]"
+            style={{ maxHeight: expanded ? undefined : 120, objectFit: 'cover' }}
+          />
         ) : isCode ? (
           <div style={{ maxHeight: expanded ? undefined : 120, overflow: 'hidden' }}>
             <CodeBlock code={item.value} />
           </div>
         ) : (
-          <div className="text-sm text-[color:var(--color-text)] break-words" style={{ maxHeight: expanded ? undefined : 120, overflow: 'hidden' }}>
+          <div className="text-[color:var(--color-text)] break-words" style={{ fontSize: 'var(--font-size-card)', maxHeight: expanded ? undefined : 120, overflow: 'hidden' }}>
             {highlightMatch(item.value, search)}
           </div>
         )}
@@ -84,7 +84,7 @@ export default function Card({ item, selected, onCopy, onToggleFavorite, highlig
 
       {item.value.length > 300 && (
         <div
-          className="absolute left-0 bottom-0 w-full text-center text-xs py-1 border-t border-[color:var(--color-border)] bg-[color:var(--color-surface)]"
+          className="-mx-2 -mb-2 mt-2 text-center text-xs py-1 border-t border-[color:var(--color-border)] bg-[color:var(--color-surface)]"
           onClick={(e) => {
             e.stopPropagation()
             if (canOpenModal && isImage) { (window as any).electronAPI?.openImageViewer?.(item.value); return }
@@ -95,6 +95,6 @@ export default function Card({ item, selected, onCopy, onToggleFavorite, highlig
           {expanded ? '▲ Ver menos' : '▼ Ver más'}
         </div>
       )}
-    </motion.div>
+    </div>
   )
 }

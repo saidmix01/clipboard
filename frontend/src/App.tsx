@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef } from 'react'
+import { useEffect, useState, useRef, useCallback } from 'react'
 import type { ReactNode } from 'react'
 import { Toaster, toast } from 'react-hot-toast'
 import { motion } from 'framer-motion'
@@ -10,6 +10,7 @@ import AppShell from './components/AppShell'
 import TopBar from './components/TopBar'
 import Dock from './components/Dock'
 import HistoryList from './components/HistoryList'
+import FileList from './components/FileList'
 // filtros movidos a la barra inferior
 import SearchQuickSwitcher from './components/SearchQuickSwitcher'
 import SettingsMenu from './components/SettingsMenu'
@@ -22,7 +23,26 @@ import type { HistoryItem, FilterType } from './types'
 
 // tipos movidos a ./types
 
+const formatBytes = (bytes: number, decimals = 2) => {
+  if (!+bytes) return '0 B'
+  const k = 1024
+  const dm = decimals < 0 ? 0 : decimals
+  const sizes = ['B', 'KB', 'MB', 'GB', 'TB']
+  const i = Math.floor(Math.log(bytes) / Math.log(k))
+  return `${parseFloat((bytes / Math.pow(k, i)).toFixed(dm))} ${sizes[i]}`
+}
+
 function App () {
+  const [filter, setFilter] = useState<FilterType>('all')
+  const [displayed, setDisplayed] = useState<HistoryItem[]>([])
+  const [listLoading, setListLoading] = useState<boolean>(false)
+  const [syncing, setSyncing] = useState<boolean>(false)
+  const [syncPct, setSyncPct] = useState<number>(0)
+  const [downloading, setDownloading] = useState<boolean>(false)
+  const [downloadPct, setDownloadPct] = useState<number>(0)
+  const [downloadFileName, setDownloadFileName] = useState<string>('')
+  const [downloadBytes, setDownloadBytes] = useState<number>(0)
+  const [downloadTotal, setDownloadTotal] = useState<number>(0)
   const [, setHistory] = useState<HistoryItem[]>([])
   const [search, setSearch] = useState<string>('')
   const searchInputRef = useRef<HTMLInputElement>(null)
@@ -35,23 +55,43 @@ function App () {
   const [globalLoading, setGlobalLoading] = useState(false)
   const [userAvatar, setUserAvatar] = useState<string | null>(null)
 
-  const logout = () => {
+  const logout = async () => {
     setToken(null)
-    localStorage.removeItem('x-token')
-    localStorage.removeItem('session')
-    try { localStorage.removeItem('clientId') } catch {}
-    ;(window as any).electronAPI?.setAuthToken?.('')
-    try { (window as any).electronAPI?.clearUserData?.() } catch {}
+    try {
+      await (window as any).electronAPI?.removeConfig?.('x-token')
+      await (window as any).electronAPI?.removeConfig?.('session')
+      await (window as any).electronAPI?.removeConfig?.('clientId')
+      await (window as any).electronAPI?.clearSessionFile?.()
+      ;(window as any).electronAPI?.setAuthToken?.('')
+      await (window as any).electronAPI?.clearUserData?.()
+    } catch {}
     toast.success('Sesión cerrada')
   }
 
   async function refreshAuthToken () {
     try {
-      const raw = localStorage.getItem('session')
-      if (!raw) return
-      const sess = JSON.parse(raw)
+      const sessionStr = await (window as any).electronAPI?.getConfig?.('session')
+      if (!sessionStr) {
+        console.warn('refreshAuthToken: No hay sesión guardada')
+        return false
+      }
+      const sess = JSON.parse(sessionStr)
       const rt = sess?.refreshToken
-      if (!rt) return
+      if (!rt || rt === null || rt === undefined) {
+        console.warn('refreshAuthToken: No hay refreshToken en la sesión', {
+          hasSession: !!sess,
+          sessionKeys: sess ? Object.keys(sess) : [],
+          refreshTokenValue: rt
+        })
+        return false
+      }
+      
+      console.log('refreshAuthToken: Intentando refrescar token', {
+        hasRefreshToken: !!rt,
+        refreshTokenType: typeof rt,
+        refreshTokenLength: String(rt).length
+      })
+      
       const res = await fetch(`${API_BASE}/auth/refresh`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -63,16 +103,31 @@ function App () {
       const newToken = payload?.token
       const newRefresh = payload?.refreshToken
       if ((okFlag ?? res.ok) && newToken) {
-        handleLoginSuccess(newToken)
+        await handleLoginSuccess(newToken)
         const newSession = { ...sess, token: newToken, refreshToken: newRefresh || rt }
-        localStorage.setItem('session', JSON.stringify(newSession))
+        await (window as any).electronAPI?.setConfig?.('session', JSON.stringify(newSession))
+        await (window as any).electronAPI?.saveSession?.(newSession)
+        console.log('refreshAuthToken: Token refrescado exitosamente')
+        return true
+      } else {
+        console.warn('refreshAuthToken: Respuesta inválida', {
+          ok: res.ok,
+          okFlag,
+          hasToken: !!newToken,
+          status: res.status,
+          data
+        })
       }
-    } catch {}
+      return false
+    } catch (error) {
+      console.error('refreshAuthToken: Error al refrescar token', error)
+      return false
+    }
   }
 
-  const handleLoginSuccess = (newToken: string) => {
+  const handleLoginSuccess = async (newToken: string) => {
     setToken(newToken)
-    localStorage.setItem('x-token', newToken)
+    await (window as any).electronAPI?.setConfig?.('x-token', newToken)
 
     if ((window as any).electronAPI?.setAuthToken) {
       ;(window as any).electronAPI?.setAuthToken(newToken)
@@ -87,6 +142,118 @@ function App () {
 
   // Ref para el contenedor scrollable y para cada item
   const itemRefs = useRef<(HTMLDivElement | null)[]>([])
+
+  const [files, setFiles] = useState<any[]>([])
+  const [filesLoading, setFilesLoading] = useState(false)
+  const [storageInfo, setStorageInfo] = useState<{ usedBytes: number, availableBytes: number, quotaBytes: number } | null>(null)
+  const [filesPage, setFilesPage] = useState<number>(1)
+  const [filesLimit, setFilesLimit] = useState<number>(50)
+  const [filesTotal, setFilesTotal] = useState<number>(0)
+  
+  // Ref para mantener el valor actual de filesLimit en callbacks
+  const filesLimitRef = useRef(filesLimit)
+  filesLimitRef.current = filesLimit
+
+  const loadFiles = useCallback(async (page: number = 1, limit: number = 50) => {
+     if (!token) {
+        return
+     }
+     setFilesLoading(true)
+     try {
+        if (!(window as any).electronAPI?.listFiles) {
+           setFiles([])
+           return
+        }
+        
+        const res = await (window as any).electronAPI.listFiles({ 
+          page, 
+          limit 
+        })
+        
+        // Manejar la nueva estructura de respuesta con paginación
+        let items = []
+        let total = 0
+        let responsePage = page
+        let responseLimit = limit
+        
+        if (res?.success && res?.data) {
+          // Nueva estructura: { success: true, data: { items, page, limit, total, storage } }
+          if (Array.isArray(res.data.items)) {
+            items = res.data.items
+          }
+          total = typeof res.data.total === 'number' ? res.data.total : 0
+          responsePage = typeof res.data.page === 'number' ? res.data.page : page
+          responseLimit = typeof res.data.limit === 'number' ? res.data.limit : limit
+          
+          // Extraer info de storage
+          if (res.data.storage) {
+            setStorageInfo(res.data.storage)
+          }
+        } else {
+          // Soporte para estructura anterior (backward compatibility)
+          if (res?.data?.items && Array.isArray(res.data.items)) {
+            items = res.data.items
+          } else if (res?.items && Array.isArray(res.items)) {
+            items = res.items
+          } else if (Array.isArray(res?.data)) {
+            items = res.data
+          }
+          
+          if (res?.data?.storage) {
+            setStorageInfo(res.data.storage)
+          } else if (res?.storage) {
+            setStorageInfo(res.storage)
+          }
+        }
+        
+        setFiles(items)
+        setFilesTotal(total)
+        setFilesPage(responsePage)
+        setFilesLimit(responseLimit)
+     } catch (err) {
+        setFiles([])
+        setFilesTotal(0)
+     } finally {
+        setFilesLoading(false)
+     }
+  }, [token])
+
+  useEffect(() => {
+    if (filter === 'documents') {
+       setFilesPage(1) // Resetear a página 1 al cambiar a documentos
+       loadFiles(1, filesLimitRef.current)
+    }
+  }, [filter, token, loadFiles])
+  
+  useEffect(() => {
+    if ((window as any).electronAPI?.onFileUploaded) {
+      const off = (window as any).electronAPI.onFileUploaded(() => {
+         toast.success('Archivo subido')
+         if (filter === 'documents') {
+            // Recargar la primera página después de subir un archivo
+            setFilesPage(1)
+            loadFiles(1, filesLimitRef.current)
+         }
+      })
+      return () => { try { off?.() } catch {} }
+    }
+  }, [filter, loadFiles])
+
+  useEffect(() => {
+    if ((window as any).electronAPI?.onFileUploadError) {
+      const off = (window as any).electronAPI.onFileUploadError((err: any) => {
+         const msg = err?.error || 'Error al subir archivo'
+         // Mensaje para el usuario si no hay internet
+         if (String(msg).includes('Network') || String(msg).includes('EAI_AGAIN') || String(msg).includes('ENOTFOUND')) {
+            toast.error('No hay conexión a internet para subir el archivo')
+         } else {
+            toast.error(`Error al subir: ${msg}`)
+         }
+      })
+      return () => { try { off?.() } catch {} }
+    }
+  }, [])
+
 
   const highlightMatch = (
     text: string,
@@ -108,30 +275,69 @@ function App () {
     )
   }
 
-  const [filter, setFilter] = useState<FilterType>('all')
-  const [displayed, setDisplayed] = useState<HistoryItem[]>([])
-  const [listLoading, setListLoading] = useState<boolean>(false)
-  const [syncing, setSyncing] = useState<boolean>(false)
-  const [syncPct, setSyncPct] = useState<number>(0)
-
   useEffect(() => {
-    try {
-      const raw = localStorage.getItem('session')
-      if (raw) {
-        const sess = JSON.parse(raw)
-        if (sess?.refreshToken) { refreshAuthToken(); return }
-        if (sess?.token) {
-          handleLoginSuccess(sess.token)
-          ;(window as any).electronAPI?.setAuthToken(sess.token)
-          return
+    async function restoreSession () {
+      try {
+        // Cargar desde DB local
+        let sessionStr = await (window as any).electronAPI?.getConfig?.('session')
+        let sess = null
+        
+        if (sessionStr) {
+          try {
+            sess = JSON.parse(sessionStr)
+          } catch (e) {
+            // Si falla parsear, intentar desde archivo (migración)
+          }
         }
+        
+        // Si no hay sesión en DB, intentar desde archivo (migración)
+        if (!sess) {
+          try {
+            sess = await (window as any).electronAPI?.readSession?.()
+            if (sess) {
+              // Migrar a DB
+              await (window as any).electronAPI?.setConfig?.('session', JSON.stringify(sess))
+            }
+          } catch (e) {
+            // Silenciar errores
+          }
+        }
+        
+        if (sess) {
+          // Si hay refreshToken, intentar refrescar primero
+          if (sess?.refreshToken) {
+            const refreshed = await refreshAuthToken()
+            if (refreshed) {
+              // Si refreshAuthToken fue exitoso, handleLoginSuccess ya fue llamado
+              return
+            }
+            // Si el refresh falla, intentar usar el token existente como fallback
+            if (sess?.token) {
+              await handleLoginSuccess(sess.token)
+              ;(window as any).electronAPI?.setAuthToken(sess.token)
+              return
+            }
+          }
+          // Si no hay refreshToken pero hay token, usarlo directamente
+          if (sess?.token) {
+            await handleLoginSuccess(sess.token)
+            ;(window as any).electronAPI?.setAuthToken(sess.token)
+            return
+          }
+        }
+      } catch (e) {
+        // Si falla parsear session, intentar con x-token como fallback
       }
-    } catch {}
-    const token = localStorage.getItem('x-token')
-    if (token) {
-      handleLoginSuccess(token)
-      ;(window as any).electronAPI?.setAuthToken(token)
+      // Fallback: usar x-token directamente desde DB
+      try {
+        const token = await (window as any).electronAPI?.getConfig?.('x-token')
+        if (token) {
+          await handleLoginSuccess(token)
+          ;(window as any).electronAPI?.setAuthToken(token)
+        }
+      } catch {}
     }
+    restoreSession()
   }, [])
 
   useEffect(() => {
@@ -139,6 +345,17 @@ function App () {
       refreshAuthToken()
     }, 15 * 60 * 1000)
     return () => clearInterval(id)
+  }, [])
+
+  // Listener para cuando el token se refresca desde el main process
+  useEffect(() => {
+    const off = (window as any).electronAPI?.onTokenRefreshed?.((newToken: string) => {
+      console.log('Token refrescado desde main process')
+      handleLoginSuccess(newToken)
+    })
+    return () => {
+      if (off) off()
+    }
   }, [])
 
   useEffect(() => {
@@ -196,7 +413,7 @@ function App () {
 
   useEffect(() => {
     if ((window as any).electronAPI?.onClipboardUpdate) {
-      ;(window as any).electronAPI.onClipboardUpdate((data: HistoryItem[]) => {
+      const off = (window as any).electronAPI.onClipboardUpdate((data: HistoryItem[]) => {
         setHistory(data)
         setFilter('all')
         if (!searchLocked) {
@@ -204,11 +421,10 @@ function App () {
           if (Array.isArray(data)) {
             setDisplayed(data.slice(0, 50))
           }
-        } else {
-          // Si estamos filtrando, no sobreescribimos la lista mostrada
         }
         setListLoading(false)
       })
+      return () => { try { off?.() } catch {} }
     }
   }, [searchLocked])
 
@@ -245,19 +461,68 @@ function App () {
     }
   }, [])
 
-  const [darkMode, setDarkMode] = useState<boolean>(() => {
-    const stored = localStorage.getItem('darkMode')
-    return stored === 'true'
-  })
+  const [darkMode, setDarkMode] = useState<boolean>(false)
+  const [darkModeLoaded, setDarkModeLoaded] = useState<boolean>(false)
 
   useEffect(() => {
-    localStorage.setItem('darkMode', darkMode.toString())
-  }, [darkMode])
+    async function loadDarkMode() {
+      try {
+        const stored = await (window as any).electronAPI?.getConfig?.('darkMode')
+        if (stored !== null && stored !== undefined) {
+          setDarkMode(stored === 'true')
+        }
+        setDarkModeLoaded(true)
+      } catch {
+        setDarkModeLoaded(true)
+      }
+    }
+    loadDarkMode()
+  }, [])
 
   useEffect(() => {
+    if (!darkModeLoaded) return
+    async function saveDarkMode() {
+      try {
+        await (window as any).electronAPI?.setConfig?.('darkMode', darkMode.toString())
+      } catch {}
+    }
+    saveDarkMode()
+  }, [darkMode, darkModeLoaded])
+
+  useEffect(() => {
+    if (!darkModeLoaded) return
     const root = document.documentElement
     root.setAttribute('data-theme', darkMode ? 'dark' : 'light')
-  }, [darkMode])
+  }, [darkMode, darkModeLoaded])
+
+  useEffect(() => {
+    async function loadPreferences() {
+      try {
+        const prefs = await (window as any).electronAPI?.getPreferences?.()
+        if (prefs) {
+          if (prefs.colorPrimary) {
+            document.documentElement.style.setProperty('--color-primary', prefs.colorPrimary)
+          }
+          if (prefs.colorSecondary) {
+            document.documentElement.style.setProperty('--color-secondary', prefs.colorSecondary)
+          }
+          if (prefs.colorBg) {
+            document.documentElement.style.setProperty('--color-bg', prefs.colorBg)
+          }
+          if (prefs.colorSurface) {
+            document.documentElement.style.setProperty('--color-surface', prefs.colorSurface)
+          }
+          if (prefs.colorText) {
+            document.documentElement.style.setProperty('--color-text', prefs.colorText)
+          }
+          if (prefs.fontSize) {
+            document.documentElement.style.setProperty('--font-size-card', `${prefs.fontSize}px`)
+          }
+        }
+      } catch {}
+    }
+    loadPreferences()
+  }, [])
 
   const [appVersion, setAppVersion] = useState<string>('')
   const [showTour, setShowTour] = useState<boolean>(false)
@@ -288,15 +553,67 @@ function App () {
       return () => { try { off?.() } catch {} }
     }
   }, [])
+  
+  useEffect(() => {
+    if ((window as any).electronAPI?.onDownloadProgress) {
+      const off = (window as any).electronAPI.onDownloadProgress((data: any) => {
+        try {
+          if (data && typeof data === 'object') {
+            const pct = Number(data.percentage || 0)
+            const fileName = String(data.fileName || '')
+            const downloaded = Number(data.downloaded || 0)
+            const total = Number(data.total || 0)
+            const error = data.error
+            
+            if (error) {
+              setDownloading(false)
+              setDownloadPct(0)
+              setDownloadFileName('')
+              setDownloadBytes(0)
+              setDownloadTotal(0)
+              toast.error(`Error al descargar: ${error}`)
+            } else {
+              setDownloadFileName(fileName)
+              setDownloadPct(pct)
+              setDownloadBytes(downloaded)
+              setDownloadTotal(total)
+              setDownloading(pct > 0 && pct < 100)
+              
+              if (pct === 100) {
+                setTimeout(() => {
+                  setDownloading(false)
+                  setDownloadPct(0)
+                  setDownloadFileName('')
+                  setDownloadBytes(0)
+                  setDownloadTotal(0)
+                }, 1000)
+              }
+            }
+          }
+        } catch {}
+      })
+      return () => { try { off?.() } catch {} }
+    }
+  }, [])
   useEffect(() => {
     if ((window as any).electronAPI?.onUpdateStatus) {
-      ;(window as any).electronAPI.onUpdateStatus((message: string) => {
+      const off = (window as any).electronAPI.onUpdateStatus((message: string) => {
         try {
           if (typeof message === 'string' && message.trim()) {
             toast(message)
           }
         } catch {}
       })
+      return () => { try { off?.() } catch {} }
+    }
+  }, [])
+
+  useEffect(() => {
+    if ((window as any).electronAPI?.onOpenTutorial) {
+      const off = (window as any).electronAPI.onOpenTutorial(() => {
+        try { setShowTour(true) } catch {}
+      })
+      return () => { try { off?.() } catch {} }
     }
   }, [])
 
@@ -414,7 +731,7 @@ function App () {
   }, [])
   useEffect(() => {
     if ((window as any).electronAPI?.onApplySearch) {
-      ;(window as any).electronAPI.onApplySearch((payload: any) => {
+      const off = (window as any).electronAPI.onApplySearch((payload: any) => {
         try {
           const q = (payload && typeof payload === 'object') ? String(payload.query || '') : ''
           const items = (payload && typeof payload === 'object' && Array.isArray(payload.items)) ? payload.items : []
@@ -428,6 +745,7 @@ function App () {
           }
         } catch {}
       })
+      return () => { try { off?.() } catch {} }
     }
   }, [])
   useEffect(() => {
@@ -440,7 +758,7 @@ function App () {
         .then((res: HistoryItem[]) => { if (Array.isArray(res)) setDisplayed(res) })
         .finally(() => setListLoading(false))
     } else {
-      const payload = { query: q, filter }
+      const payload = { query: q, filter: 'text' }
       Promise.resolve((window as any).electronAPI?.searchHistory?.(payload))
         .then((res: HistoryItem[]) => { if (Array.isArray(res)) setDisplayed(res) })
         .finally(() => setListLoading(false))
@@ -513,6 +831,50 @@ function App () {
 
           {/* filtros ahora en Dock */}
 
+          {filter === 'documents' ? (
+            !token ? (
+              <div className="flex-1 px-3 py-1 flex flex-col items-center justify-center text-[color:var(--color-muted)] text-xs gap-2 min-h-[200px]">
+                <div>Debes iniciar sesión para acceder a los documentos</div>
+                <button 
+                  onClick={() => setShowLogin(true)}
+                  className="px-4 py-2 rounded-md bg-[color:var(--color-primary)] text-white hover:opacity-80 transition text-sm"
+                >
+                  Iniciar sesión
+                </button>
+              </div>
+            ) : filesLoading ? (
+               <div className="flex-1 px-3 py-1 flex items-center justify-center text-[color:var(--color-muted)] text-xs">Cargando documentos...</div>
+             ) : (
+               <FileList
+                  items={files.filter(f => !search || f.originalName?.toLowerCase().includes(search.toLowerCase()))}
+                  storage={storageInfo}
+                  currentPage={filesPage}
+                  totalPages={filesTotal > 0 ? Math.max(1, Math.ceil(filesTotal / filesLimit)) : 1}
+                  totalItems={filesTotal}
+                  limit={filesLimit}
+                  onPageChange={(newPage) => {
+                     setFilesPage(newPage)
+                     loadFiles(newPage, filesLimit)
+                  }}
+                  onLimitChange={(newLimit) => {
+                     setFilesLimit(newLimit)
+                     setFilesPage(1)
+                     loadFiles(1, newLimit)
+                  }}
+                  onDelete={async (item) => {
+                     if (!window.confirm('¿Eliminar archivo?')) return
+                     await (window as any).electronAPI.deleteFile(item.id)
+                     loadFiles(filesPage, filesLimit)
+                     toast.success('Archivo eliminado')
+                  }}
+                  onDownload={async (item) => {
+                     const res = await (window as any).electronAPI.downloadFile(item.id, item.originalName)
+                     if (res.success) toast.success('Descarga completada')
+                     else if (!res.canceled) toast.error('Error al descargar')
+                  }}
+               />
+             )
+          ) : (
           <HistoryList
             items={displayed}
             search={search}
@@ -546,12 +908,36 @@ function App () {
               setContextMenu({ x: e.clientX, y: e.clientY, item })
             }}
           />
+          )}
           {listLoading && (
             <div className="px-3 py-1 text-[color:var(--color-muted)] text-xs">Cargando…</div>
           )}
           {syncing && (
             <div className="fixed top-2 right-2 z-[20000] glass px-3 py-2">
               <div className="spinner"><span className="ring"></span><span>Sincronizando… {Math.round(syncPct)}%</span></div>
+            </div>
+          )}
+          {downloading && (
+            <div className="fixed top-2 right-2 z-[20000] glass px-3 py-2 rounded-lg shadow-lg" style={{ top: syncing ? '70px' : '8px' }}>
+              <div className="flex flex-col gap-2 min-w-[200px]">
+                <div className="text-xs font-medium text-[color:var(--color-text)] truncate" title={downloadFileName}>
+                  Descargando: {downloadFileName}
+                </div>
+                <div className="flex items-center gap-2">
+                  <div className="flex-1 h-2 bg-[color:var(--color-bg)] rounded-full overflow-hidden border border-[color:var(--color-border)]">
+                    <div 
+                      className="h-full bg-[color:var(--color-primary)] transition-all duration-300"
+                      style={{ width: `${Math.max(0, Math.min(100, downloadPct))}%` }}
+                    />
+                  </div>
+                  <span className="text-xs text-[color:var(--color-muted)] whitespace-nowrap">{Math.round(downloadPct)}%</span>
+                </div>
+                {downloadTotal > 0 && (
+                  <div className="text-[10px] text-[color:var(--color-muted)]">
+                    {formatBytes(downloadBytes)} / {formatBytes(downloadTotal)}
+                  </div>
+                )}
+              </div>
             </div>
           )}
 
@@ -569,8 +955,15 @@ function App () {
             ]}
             userAvatar={userAvatar}
             filter={filter}
-            onChangeFilter={(f) => { if (!token && f==='favorite') { toast.error('Debes iniciar sesión'); return } setFilter(f) }}
+            onChangeFilter={(f) => { 
+              if (!token && (f === 'favorite' || f === 'documents')) { 
+                toast.error('Debes iniciar sesión para acceder a esta sección'); 
+                return 
+              } 
+              setFilter(f) 
+            }}
             disabledFavorites={!token}
+            hasAuth={!!token}
           />
           <div className="px-3 pb-1 text-right text-[11px] text-[color:var(--color-muted)]" title='Versión de la app'>v{appVersion}</div>
 

@@ -21,6 +21,8 @@
   --traffic-red: #ff5f57;
   --traffic-yellow: #fdbc40;
   --traffic-green: #28c940;
+
+  --font-size-card: 14px;
 }
 
 :root[data-theme="dark"] {
@@ -41,9 +43,16 @@ html, body, #root {
   background: transparent;
   overflow: hidden;
   font-family: var(--font-sans);
+  height: 100%;
 }
 
-body { color: var(--color-text); }
+body { 
+  color: var(--color-text);
+  /* Ensure background covers the whole area */
+  background-color: var(--color-bg);
+  min-height: 100vh;
+  width: 100vw;
+}
 button { cursor: pointer; }
 ::placeholder { color: var(--color-muted); }
 
@@ -85,7 +94,7 @@ button { cursor: pointer; }
   display: block;
   overflow-x: auto;
   font-family: ui-monospace, "SFMono-Regular", Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
-  font-size: 0.85rem;
+  font-size: var(--font-size-card);
 }
 
 .no-match { color: var(--color-muted); }

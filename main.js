@@ -8,18 +8,28 @@ const {
   nativeImage,
   Tray,
   Menu,
-  shell
+  shell,
+  Notification,
+  powerMonitor
 } = require('electron')
 const { autoUpdater } = require('electron-updater')
 const log = require('electron-log')
 const path = require('path')
+
+if (process.platform === 'win32') {
+  app.setAppUserModelId('Copyfy')
+}
+
 const axios = require('axios')
 const fs = require('fs')
 const os = require('os')
+const { PassThrough } = require('stream')
 const db = require('./db')
 const legacyHistoryPath = path.join(os.homedir(), '.clipboard-history.json')
 const { exec, execFile, spawnSync } = require('child_process')
 const crypto = require('crypto')
+const FormData = require('form-data')
+const { dialog } = require('electron')
 
 let mainWindow
 let quickWindow
@@ -30,7 +40,19 @@ let isQuitting = false
 
 if (process.platform === 'linux') {
   try { app.setName('copyfy') } catch {}
-  try { app.commandLine.appendSwitch('ozone-platform', 'x11') } catch {}
+  // Forzar --no-sandbox para AppImage (necesario para evitar problemas de permisos)
+  if (process.env.APPIMAGE) {
+    try { app.commandLine.appendSwitch('no-sandbox') } catch {}
+  }
+  // Detectar si Wayland está disponible, sino usar X11
+  // En Electron, si no se especifica, intentará usar Wayland primero si está disponible
+  // Solo forzar X11 si hay problemas específicos con Wayland
+  const isWayland = process.env.XDG_SESSION_TYPE === 'wayland' || process.env.WAYLAND_DISPLAY
+  if (!isWayland) {
+    // Si no es Wayland, usar X11 explícitamente
+    try { app.commandLine.appendSwitch('ozone-platform', 'x11') } catch {}
+  }
+  // Si es Wayland, dejar que Electron use el default (Wayland)
 }
 
 const gotTheLock = app.requestSingleInstanceLock()
@@ -40,43 +62,167 @@ if (!gotTheLock) {
 } else {
   app.on('second-instance', (event, commandLine, workingDirectory) => {
     // Si alguien intenta correr una segunda instancia, enfocamos nuestra ventana
-    if (mainWindow) {
+    if (mainWindow && !mainWindow.isDestroyed()) {
       if (mainWindow.isMinimized()) mainWindow.restore()
       if (!mainWindow.isVisible()) mainWindow.show()
       mainWindow.focus()
+      // En Linux, mover al frente puede requerir métodos adicionales
+      if (process.platform === 'linux') {
+        mainWindow.moveTop()
+      }
     }
   })
 }
 
 function uriToPath (uri) {
-  let u = String(uri || '').trim()
-  if (!u) return ''
-  if (u.startsWith('file://')) {
-    if (process.platform === 'win32') {
-      u = decodeURI(u.replace(/^file:\/\/\//, ''))
-      return u.replace(/\//g, '\\')
-    } else {
-      return decodeURI(u.replace(/^file:\/\//, ''))
+  try {
+    let u = String(uri || '').trim()
+    if (!u) return ''
+    
+    // Manejar diferentes formatos de URI de archivos
+    if (u.startsWith('file://')) {
+      if (process.platform === 'win32') {
+        // Windows: file:///C:/path o file://C:/path
+        // Remover el prefijo file:// y manejar diferentes variantes
+        u = u.replace(/^file:\/\/(\/+)?/, '')
+        // Decodificar URI y normalizar
+        u = decodeURIComponent(u)
+        // path.normalize() ya maneja correctamente los separadores en Windows
+        return path.normalize(u)
+      } else {
+        // macOS/Linux: file:///path o file://localhost/path
+        u = u.replace(/^file:\/\/(localhost\/)?/, '')
+        u = decodeURIComponent(u)
+        // Normalizar ruta (path.normalize() usa el separador correcto para la plataforma)
+        return path.normalize(u)
+      }
     }
+    
+    // Si ya es una ruta, normalizarla usando path.normalize() que es multiplataforma
+    return path.normalize(u)
+  } catch (e) {
+    log.error('Error convirtiendo URI a path:', e?.message || e)
+    return String(uri || '').trim()
   }
-  return u
+}
+
+// Extensiones de archivos de texto y documentos permitidas
+const TEXT_FILE_EXTENSIONS = new Set([
+  // Archivos de texto plano y código fuente
+  'txt', 'md', 'js', 'ts', 'jsx', 'tsx', 'json', 'xml', 'html', 'htm', 'css', 'scss', 'sass', 'less',
+  'py', 'java', 'cpp', 'c', 'h', 'hpp', 'cs', 'php', 'rb', 'go', 'rs', 'swift', 'kt', 'scala',
+  'sh', 'bash', 'zsh', 'fish', 'bat', 'cmd', 'ps1', 'vbs',
+  'sql', 'csv', 'tsv', 'log', 'ini', 'cfg', 'conf', 'config', 'yaml', 'yml', 'toml',
+  'dockerfile', 'makefile', 'cmake', 'gradle', 'maven',
+  'r', 'm', 'pl', 'pm', 'lua', 'vim', 'diff', 'patch',
+  'tex', 'bib', 'rst', 'adoc', 'wiki', 'org',
+  // Documentos de Office y PDF
+  'pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'odt', 'ods', 'odp',
+  'rtf', 'pages', 'numbers', 'key', 'wps', 'wpd'
+])
+
+function isTextFile(filePath) {
+  try {
+    const ext = path.extname(filePath).toLowerCase().replace('.', '')
+    return TEXT_FILE_EXTENSIONS.has(ext)
+  } catch {
+    return false
+  }
 }
 
 function parseCFHDrop (buf) {
   try {
-    if (!Buffer.isBuffer(buf) || buf.length < 6) return []
-    const pFiles = buf.readUInt32LE(0)
-    const fWide = !!buf.readUInt16LE(4)
-    const start = Math.min(Math.max(pFiles, 0), buf.length)
-    const slice = buf.subarray(start)
+    if (!Buffer.isBuffer(buf) || buf.length < 20) return []
+    
+    // Estructura DROPFILES (20 bytes):
+    // Offset 0-3: pFiles (DWORD) - offset donde empiezan los paths (típicamente 20)
+    // Offset 4-7: pt.x (LONG) - coordenada X del mouse
+    // Offset 8-11: pt.y (LONG) - coordenada Y del mouse
+    // Offset 12-15: fNC (BOOL) - flag
+    // Offset 16-19: fWide (BOOL) - 0 = ANSI, 1 = Unicode
+    
+    const pFiles = buf.readUInt32LE(0) // Offset donde empiezan los paths
+    const fWide = buf.readUInt32LE(16) !== 0 // Flag unicode (offset 16-19)
+    
+    // El offset mínimo debería ser 20 (tamaño de DROPFILES structure)
+    const start = Math.max(pFiles, 20)
+    if (start >= buf.length) return []
+    
+    const files = []
+    let pos = start
+    
     if (fWide) {
-      const raw = slice.toString('utf16le')
-      return raw.split('\0').map(s => String(s || '').trim()).filter(Boolean)
+      // Unicode (UTF-16LE): cada path termina con doble null (\0\0 = 4 bytes)
+      // La lista completa termina con cuádruple null (8 bytes)
+      while (pos + 4 < buf.length) {
+        // Buscar el siguiente doble null (dos UInt16LE consecutivos que sean 0)
+        let pathStart = pos
+        let foundDoubleNull = false
+        
+        while (pos + 4 <= buf.length) {
+          const u16_1 = buf.readUInt16LE(pos)
+          const u16_2 = buf.readUInt16LE(pos + 2)
+          
+          if (u16_1 === 0 && u16_2 === 0) {
+            foundDoubleNull = true
+            break
+          }
+          pos += 2
+        }
+        
+        if (foundDoubleNull && pos > pathStart) {
+          // Extraer el path desde pathStart hasta pos
+          const pathBuf = buf.subarray(pathStart, pos)
+          const pathStr = pathBuf.toString('utf16le').replace(/\0+$/, '').trim()
+          if (pathStr && pathStr.length > 0) {
+            files.push(pathStr)
+          }
+          
+          // Saltar el doble null (4 bytes)
+          pos += 4
+          
+          // Verificar si hay otro doble null (fin de lista)
+          if (pos + 4 <= buf.length && buf.readUInt16LE(pos) === 0 && buf.readUInt16LE(pos + 2) === 0) {
+            break // Fin de lista
+          }
+        } else {
+          break // No encontramos más archivos
+        }
+      }
     } else {
-      const raw = slice.toString('ascii')
-      return raw.split('\0').map(s => String(s || '').trim()).filter(Boolean)
+      // ANSI: cada path termina con null (1 byte)
+      // La lista completa termina con doble null (2 bytes)
+      while (pos < buf.length) {
+        // Buscar el siguiente null terminator
+        let pathStart = pos
+        while (pos < buf.length && buf[pos] !== 0) {
+          pos++
+        }
+        
+        if (pos > pathStart) {
+          // Extraer el path
+          const pathBuf = buf.subarray(pathStart, pos)
+          const pathStr = pathBuf.toString('ascii').trim()
+          if (pathStr && pathStr.length > 0) {
+            files.push(pathStr)
+          }
+        }
+        
+        // Saltar el null
+        pos++
+        
+        // Si encontramos otro null inmediatamente, significa fin de lista
+        if (pos < buf.length && buf[pos] === 0) {
+          break
+        }
+      }
     }
-  } catch {
+    
+    // Eliminar duplicados y retornar
+    const uniqueFiles = [...new Set(files)].filter(Boolean)
+    return uniqueFiles
+  } catch (e) {
+    log.error('Error parseando CF_HDROP:', e?.message || e)
     return []
   }
 }
@@ -85,61 +231,176 @@ function readClipboardFileUris () {
   try {
     const formats = (clipboard.availableFormats() || []).map(f => String(f || '').toLowerCase())
     const out = []
+    const seen = new Set() // Para evitar duplicados
+    
+    // En Windows, CF_HDROP es el formato más confiable para múltiples archivos
+    if (process.platform === 'win32') {
+      const bufDrop = clipboard.readBuffer('CF_HDROP')
+      if (Buffer.isBuffer(bufDrop) && bufDrop.length > 0) {
+        const parts = parseCFHDrop(bufDrop)
+        for (const p of parts) {
+          if (p) {
+            // Usar path.resolve() para obtener ruta absoluta normalizada (compatible con todas las plataformas)
+            const resolved = path.resolve(p)
+            const normalized = resolved.toLowerCase()
+            if (!seen.has(normalized)) {
+              seen.add(normalized)
+              out.push(resolved)
+            }
+          }
+        }
+      }
+    }
+    
+    // También verificar otros formatos como respaldo
+    // text/uri-list: formato estándar usado en Linux y algunas aplicaciones
     if (formats.includes('text/uri-list')) {
       const buf = clipboard.readBuffer('text/uri-list')
       const txt = Buffer.isBuffer(buf) ? buf.toString('utf-8') : ''
       for (const line of String(txt || '').split(/\r?\n/)) {
         const s = String(line || '').trim()
-        if (s) out.push(s)
+        if (s && !s.startsWith('#')) { // Ignorar comentarios en URI list
+          const p = uriToPath(s)
+          if (p) {
+            const resolved = path.resolve(p)
+            const normalized = resolved.toLowerCase()
+            if (!seen.has(normalized)) {
+              seen.add(normalized)
+              out.push(resolved)
+            }
+          }
+        }
       }
     }
+    
+    // public.file-url: formato usado en algunas aplicaciones Linux/macOS
     if (formats.includes('public.file-url')) {
       const buf = clipboard.readBuffer('public.file-url')
       const txt = Buffer.isBuffer(buf) ? buf.toString('utf-8') : ''
       for (const line of String(txt || '').split(/\r?\n/)) {
         const s = String(line || '').trim()
-        if (s) out.push(s)
+        if (s) {
+          const p = uriToPath(s)
+          if (p) {
+            const resolved = path.resolve(p)
+            const normalized = resolved.toLowerCase()
+            if (!seen.has(normalized)) {
+              seen.add(normalized)
+              out.push(resolved)
+            }
+          }
+        }
       }
     }
-    if (formats.includes('nsfilenamespboardtype')) {
-      const buf = clipboard.readBuffer('NSFilenamesPboardType')
-      const txt = Buffer.isBuffer(buf) ? buf.toString('utf-8') : ''
-      for (const line of String(txt || '').split(/\r?\n/)) {
-        const s = String(line || '').trim()
-        if (s) out.push(s)
+    
+    // macOS: NSFilenamesPboardType es un array serializado de PropertyList (plist)
+    if (process.platform === 'darwin' && formats.includes('nsfilenamespboardtype')) {
+      try {
+        const buf = clipboard.readBuffer('NSFilenamesPboardType')
+        if (Buffer.isBuffer(buf) && buf.length > 0) {
+          // Intentar parsear como plist binario o XML
+          // En macOS moderno, Electron puede devolver esto como string JSON o array
+          // Primero intentar como string/array si es posible
+          try {
+            const text = buf.toString('utf8')
+            // Si parece JSON (array de strings)
+            if (text.startsWith('[') || text.startsWith('"')) {
+              const parsed = JSON.parse(text)
+              const files = Array.isArray(parsed) ? parsed : [parsed]
+              for (const file of files) {
+                const filePath = String(file || '').trim()
+                if (filePath) {
+                  // Convertir a ruta absoluta normalizada
+                  const resolved = path.resolve(filePath)
+                  const normalized = resolved.toLowerCase()
+                  if (!seen.has(normalized)) {
+                    seen.add(normalized)
+                    out.push(resolved)
+                  }
+                }
+              }
+            }
+          } catch {
+            // Si no es JSON, intentar leer como texto plano (archivos separados por null o newline)
+            const text = buf.toString('utf8')
+            const parts = text.split(/\0|\r?\n/).map(s => s.trim()).filter(Boolean)
+            for (const part of parts) {
+              if (part) {
+                // Convertir a ruta absoluta normalizada
+                const resolved = path.resolve(part)
+                const normalized = resolved.toLowerCase()
+                if (!seen.has(normalized)) {
+                  seen.add(normalized)
+                  out.push(resolved)
+                }
+              }
+            }
+          }
+        }
+      } catch (e) {
+        log.error('Error leyendo NSFilenamesPboardType:', e?.message || e)
       }
     }
-    {
+    
+    // FileNameW y FileName: formatos de Windows para un solo archivo (rara vez múltiples)
+    if (process.platform === 'win32') {
       const bufW = clipboard.readBuffer('FileNameW')
       if (Buffer.isBuffer(bufW) && bufW.length > 0) {
         const raw = bufW.toString('utf16le')
         const parts = String(raw || '').split('\0').map(s => String(s || '').trim()).filter(Boolean)
-        for (const p of parts) out.push(p)
+        for (const p of parts) {
+          if (p) {
+            const resolved = path.resolve(p)
+            const normalized = resolved.toLowerCase()
+            if (!seen.has(normalized)) {
+              seen.add(normalized)
+              out.push(resolved)
+            }
+          }
+        }
       }
       const bufA = clipboard.readBuffer('FileName')
       if (Buffer.isBuffer(bufA) && bufA.length > 0) {
         const raw = bufA.toString('ascii')
         const parts = String(raw || '').split('\0').map(s => String(s || '').trim()).filter(Boolean)
-        for (const p of parts) out.push(p)
-      }
-      const bufDrop = clipboard.readBuffer('CF_HDROP')
-      if (Buffer.isBuffer(bufDrop) && bufDrop.length > 0) {
-        const parts = parseCFHDrop(bufDrop)
-        for (const p of parts) out.push(p)
+        for (const p of parts) {
+          if (p) {
+            const resolved = path.resolve(p)
+            const normalized = resolved.toLowerCase()
+            if (!seen.has(normalized)) {
+              seen.add(normalized)
+              out.push(resolved)
+            }
+          }
+        }
       }
     }
+    
+    // x-special/gnome-copied-files: formato usado en GNOME/Linux
     if (formats.includes('x-special/gnome-copied-files')) {
       const buf = clipboard.readBuffer('x-special/gnome-copied-files')
       const txt = Buffer.isBuffer(buf) ? buf.toString('utf-8') : ''
       const lines = String(txt || '').split(/\r?\n/)
-      const rest = lines.filter((_, i) => i > 0)
+      const rest = lines.filter((_, i) => i > 0) // Saltar primera línea (acción: copy/cut)
       for (const line of rest) {
         const s = String(line || '').trim()
-        if (s) out.push(s)
+        if (s) {
+          const p = uriToPath(s)
+          if (p) {
+            const resolved = path.resolve(p)
+            const normalized = resolved.toLowerCase()
+            if (!seen.has(normalized)) {
+              seen.add(normalized)
+              out.push(resolved)
+            }
+          }
+        }
       }
     }
+    
     return out
-  } catch {
+  } catch (e) {
+    log.error('Error leyendo archivos del portapapeles:', e)
     return []
   }
 }
@@ -156,6 +417,58 @@ function getImagePathFromClipboard () {
     return null
   } catch {
     return null
+  }
+}
+
+// Función helper para obtener el estado actual de los archivos del portapapeles
+// Devuelve la clave (key) que representa los archivos de texto actuales, o '' si no hay archivos de texto
+function getCurrentClipboardFilesKey () {
+  try {
+    if (!authToken) return ''
+    
+    const rawUris = readClipboardFileUris()
+    const uniqueFileMap = new Map()
+
+    if (rawUris && rawUris.length > 0) {
+      for (const uri of rawUris) {
+        const p = uriToPath(uri)
+        if (p && fs.existsSync(p)) {
+          try {
+            const stat = fs.statSync(p)
+            if (stat.isFile() && isTextFile(p)) {
+              const key = (stat.ino && stat.dev) ? `${stat.dev}-${stat.ino}` : path.resolve(p).toLowerCase()
+              const existing = uniqueFileMap.get(key)
+              
+              if (!existing) {
+                uniqueFileMap.set(key, p)
+              } else {
+                const score = (pathStr) => {
+                  let s = 0
+                  if (/~\d+(\.|$)/i.test(pathStr)) s -= 10
+                  if (pathStr === pathStr.toUpperCase() && /[a-z]/.test(pathStr.toLowerCase())) s -= 2
+                  return s + (pathStr.length * 0.01)
+                }
+                if (score(p) > score(existing)) {
+                  uniqueFileMap.set(key, p)
+                }
+              }
+            }
+          } catch (e) {
+            // Silenciar errores menores
+          }
+        }
+      }
+    }
+
+    if (uniqueFileMap.size > 0) {
+      const sortedPaths = Array.from(uniqueFileMap.values()).sort()
+      const normalizedPaths = sortedPaths.map(p => path.resolve(p)).sort()
+      return normalizedPaths.join('|')
+    }
+    
+    return ''
+  } catch {
+    return ''
   }
 }
 
@@ -248,35 +561,48 @@ function saveClipboardImagePNG (image) {
   return filePath
 }
 
-function startClipboardImagePolling (intervalMs = 1000) {
-  let lastHash = ''
-  let lastFormatsSig = ''
-  setInterval(() => {
+function getImagePathFromDataURL (dataUrl) {
+  try {
+    if (typeof dataUrl !== 'string' || !dataUrl.startsWith('data:image')) return null
+    const ni = nativeImage.createFromDataURL(dataUrl)
+    if (!ni || ni.isEmpty()) return null
+    const png = ni.toPNG()
+    if (!png || png.length === 0) return null
+    const hash = crypto.createHash('sha256').update(png).digest('hex')
+    const dir = getImageHistoryDir()
+    const manifestPath = path.join(dir, 'images.json')
     try {
-      let img = readClipboardImageSmart()
-      if (img && img.isEmpty()) {
-        if (process.platform === 'linux') {
-          const selImg = clipboard.readImage('selection')
-          if (!selImg.isEmpty()) img = selImg
-        }
-        try {
-          const fmts = (clipboard.availableFormats() || []).join('|')
-          if (fmts && fmts !== lastFormatsSig) {
-            lastFormatsSig = fmts
-            try { log.info('Clipboard formats', { formats: fmts }) } catch {}
-          }
-        } catch {}
-      }
-      if (img && !img.isEmpty()) {
-        const png = img.toPNG()
-        const hash = crypto.createHash('sha256').update(png).digest('hex')
-        if (hash !== lastHash) {
-          const saved = saveClipboardImagePNG(img)
-          lastHash = hash
+      if (fs.existsSync(manifestPath)) {
+        const raw = fs.readFileSync(manifestPath, 'utf-8')
+        const manifest = JSON.parse(raw)
+        const found = Array.isArray(manifest) ? manifest.find(x => x && x.hash === hash) : null
+        if (found && found.file) {
+          const p = path.join(dir, found.file)
+          if (fs.existsSync(p)) return p
         }
       }
     } catch {}
-  }, Math.max(250, Number(intervalMs) || 1000))
+    const saved = saveClipboardImagePNG(ni)
+    return saved || null
+  } catch {
+    return null
+  }
+}
+
+function augmentHistoryWithImagePaths (list) {
+  try {
+    const arr = Array.isArray(list) ? list : []
+    return arr.map(it => {
+      const v = it && typeof it.value === 'string' ? it.value : ''
+      if (v.startsWith('data:image')) {
+        const p = getImagePathFromDataURL(v)
+        if (p) return { ...it, imagePath: p }
+      }
+      return it
+    })
+  } catch {
+    return Array.isArray(list) ? list : []
+  }
 }
 
 function normalizeHistory (raw) {
@@ -305,17 +631,28 @@ function performPaste (mainWindow) {
   log.info('Entorno', { env: isDev ? 'desarrollo' : 'producción' })
 
   if (platform === 'win32') {
-    const exePath = isDev
-      ? path.join(__dirname, 'helpers', 'paste.exe')
-      : path.join(
-          process.resourcesPath,
-          'app.asar.unpacked',
-          'helpers',
-          'paste.exe'
-        )
+    // Rutas de ejecutables compatibles con desarrollo y producción en Windows
+    let exePath
+    if (isDev) {
+      exePath = path.join(__dirname, 'helpers', 'paste.exe')
+    } else {
+      // En producción, intentar múltiples ubicaciones posibles
+      const possiblePaths = [
+        path.join(process.resourcesPath, 'app.asar.unpacked', 'helpers', 'paste.exe'),
+        path.join(process.resourcesPath, 'helpers', 'paste.exe'),
+        path.join(path.dirname(process.execPath), 'resources', 'app.asar.unpacked', 'helpers', 'paste.exe'),
+        path.join(path.dirname(process.execPath), 'helpers', 'paste.exe')
+      ]
+      
+      exePath = possiblePaths.find(p => fs.existsSync(p)) || possiblePaths[0]
+    }
+
+    if (!fs.existsSync(exePath)) {
+      log.error('paste.exe no encontrado en:', exePath)
+      return
+    }
 
     log.info('Ejecutando', { exePath })
-
     execFile(exePath, err => {
       if (err) {
         log.error('Error al ejecutar paste.exe', err)
@@ -335,6 +672,33 @@ function performPaste (mainWindow) {
       )
     }, 300)
   } else if (platform === 'linux') {
+    // ✅ Always ensure clipboard is written first (already done by copy handlers)
+    // ✅ Check if auto-paste is enabled in preferences
+    let enableAutoPaste = false
+    try {
+      const prefsStr = db.getConfig('preferences')
+      const prefs = prefsStr ? JSON.parse(prefsStr) : {}
+      enableAutoPaste = prefs.enableAutoPaste === true
+    } catch (e) {
+      log.error('Error reading preferences for auto-paste', e)
+    }
+
+    // ✅ If auto-paste is disabled, just inform user politely with system notification
+    if (!enableAutoPaste) {
+      log.info('Auto-paste disabled. Content is in clipboard. Press Ctrl+V to paste.')
+      try {
+        new Notification({ 
+          title: 'Copyfy', 
+          body: 'Contenido copiado al portapapeles. Presiona Ctrl+V para pegar.',
+          silent: false
+        }).show()
+      } catch (e) {
+        log.error('Error showing paste notification', e)
+      }
+      return
+    }
+
+    // ✅ Auto-paste is enabled - attempt it as fallback
     setTimeout(async () => {
       const isWayland = !!(process.env.XDG_SESSION_TYPE === 'wayland' || process.env.WAYLAND_DISPLAY)
       const has = name => {
@@ -347,6 +711,8 @@ function performPaste (mainWindow) {
       }
       const tasks = []
       const text = clipboard.readText()
+      
+      // Priority order: wtype (Wayland) > xdotool (X11) > ydotool (last resort, Wayland only)
       if (isWayland && has('wtype')) {
         tasks.push(() => new Promise(resolve => {
           exec('wtype -M ctrl -k v -m ctrl', err => {
@@ -365,13 +731,17 @@ function performPaste (mainWindow) {
       }
       if (isWayland && has('ydotool') && typeof text === 'string' && text.trim() !== '') {
         tasks.push(() => new Promise(resolve => {
-          const tmp = path.join(os.tmpdir(), `copyfy_text_${Date.now()}.txt`)
+          // os.tmpdir() es multiplataforma y devuelve la ruta correcta en todas las plataformas
+          const tmp = path.join(os.tmpdir(), `copyfy_text_${Date.now()}_${Math.random().toString(36).substr(2, 9)}.txt`)
           try {
             fs.writeFileSync(tmp, text, 'utf-8')
           } catch (e) {
             return resolve({ ok: false, err: e })
           }
-          exec(`ydotool type --file "${tmp}"`, err => {
+          // Escapar la ruta correctamente para evitar problemas con espacios o caracteres especiales
+          // En Linux, usar comillas simples y normalizar separadores de ruta
+          const normalizedTmp = tmp.replace(/\\/g, '/')
+          exec(`ydotool type --file '${normalizedTmp.replace(/'/g, "'\"'\"'")}'`, err => {
             try { fs.rmSync(tmp, { force: true }) } catch {}
             if (err) return resolve({ ok: false, err })
             resolve({ ok: true })
@@ -380,19 +750,25 @@ function performPaste (mainWindow) {
       }
       if (has('xdotool') && typeof text === 'string' && text.trim() !== '') {
         tasks.push(() => new Promise(resolve => {
-          const tmp = path.join(os.tmpdir(), `copyfy_text_${Date.now()}.txt`)
+          // os.tmpdir() es multiplataforma (funciona en Windows, Linux, macOS)
+          const tmp = path.join(os.tmpdir(), `copyfy_text_${Date.now()}_${Math.random().toString(36).substr(2, 9)}.txt`)
           try {
             fs.writeFileSync(tmp, text, 'utf-8')
           } catch (e) {
             return resolve({ ok: false, err: e })
           }
-          exec(`xdotool type --clearmodifiers --delay 1 --file "${tmp}"`, err => {
+          // Escapar la ruta correctamente para evitar problemas con espacios o caracteres especiales
+          // Normalizar separadores para Linux (usar /)
+          const normalizedTmp = tmp.replace(/\\/g, '/')
+          exec(`xdotool type --clearmodifiers --delay 1 --file '${normalizedTmp.replace(/'/g, "'\"'\"'")}'`, err => {
             try { fs.rmSync(tmp, { force: true }) } catch {}
             if (err) return resolve({ ok: false, err })
             resolve({ ok: true })
           })
         }))
       }
+      
+      // ✅ Try auto-paste if tools are available
       let done = false
       for (const t of tasks) {
         const res = await t()
@@ -402,13 +778,19 @@ function performPaste (mainWindow) {
           break
         }
       }
+      
+      // ✅ If auto-paste failed or no tools available, inform user politely with system notification
       if (!done) {
-        log.error('No se pudo pegar en Linux. Instala xdotool (X11) o wtype/ydotool (Wayland).')
+        log.info('Auto-paste not available. Content is in clipboard. Press Ctrl+V to paste.')
         try {
-          if (mainWindow?.webContents) {
-            mainWindow.webContents.send('paste-status', { ok: false, message: 'No se pudo pegar en Linux. Instala xdotool (X11) o wtype/ydotool (Wayland).' })
-          }
-        } catch {}
+          new Notification({ 
+            title: 'Copyfy', 
+            body: 'Contenido copiado al portapapeles. Presiona Ctrl+V para pegar.',
+            silent: false
+          }).show()
+        } catch (e) {
+          log.error('Error showing paste notification', e)
+        }
       }
     }, 300)
   } else {
@@ -427,17 +809,28 @@ function performPasteImage (mainWindow) {
   log.info('Entorno', { env: isDev ? 'desarrollo' : 'producción' })
 
   if (platform === 'win32') {
-    const exePath = isDev
-      ? path.join(__dirname, 'helpers', 'paste-image.exe')
-      : path.join(
-          process.resourcesPath,
-          'app.asar.unpacked',
-          'helpers',
-          'paste-image.exe'
-        )
+    // Rutas de ejecutables compatibles con desarrollo y producción en Windows
+    let exePath
+    if (isDev) {
+      exePath = path.join(__dirname, 'helpers', 'paste-image.exe')
+    } else {
+      // En producción, intentar múltiples ubicaciones posibles
+      const possiblePaths = [
+        path.join(process.resourcesPath, 'app.asar.unpacked', 'helpers', 'paste-image.exe'),
+        path.join(process.resourcesPath, 'helpers', 'paste-image.exe'),
+        path.join(path.dirname(process.execPath), 'resources', 'app.asar.unpacked', 'helpers', 'paste-image.exe'),
+        path.join(path.dirname(process.execPath), 'helpers', 'paste-image.exe')
+      ]
+      
+      exePath = possiblePaths.find(p => fs.existsSync(p)) || possiblePaths[0]
+    }
+
+    if (!fs.existsSync(exePath)) {
+      log.error('paste-image.exe no encontrado en:', exePath)
+      return
+    }
 
     log.info('Ejecutando', { exePath })
-
     execFile(exePath, err => {
       if (err) {
         log.error('Error al ejecutar paste-image.exe', err)
@@ -457,6 +850,33 @@ function performPasteImage (mainWindow) {
       )
     }, 300)
   } else if (platform === 'linux') {
+    // ✅ Always ensure clipboard is written first (already done by copy handlers)
+    // ✅ Check if auto-paste is enabled in preferences
+    let enableAutoPaste = false
+    try {
+      const prefsStr = db.getConfig('preferences')
+      const prefs = prefsStr ? JSON.parse(prefsStr) : {}
+      enableAutoPaste = prefs.enableAutoPaste === true
+    } catch (e) {
+      log.error('Error reading preferences for auto-paste', e)
+    }
+
+    // ✅ If auto-paste is disabled, just inform user politely with system notification
+    if (!enableAutoPaste) {
+      log.info('Auto-paste disabled. Image is in clipboard. Press Ctrl+V to paste.')
+      try {
+        new Notification({ 
+          title: 'Copyfy', 
+          body: 'Imagen copiada al portapapeles. Presiona Ctrl+V para pegar.',
+          silent: false
+        }).show()
+      } catch (e) {
+        log.error('Error showing paste notification', e)
+      }
+      return
+    }
+
+    // ✅ Auto-paste is enabled - attempt it as fallback
     setTimeout(() => {
       const isWayland = !!(process.env.XDG_SESSION_TYPE === 'wayland' || process.env.WAYLAND_DISPLAY)
       const has = name => {
@@ -468,23 +888,40 @@ function performPasteImage (mainWindow) {
         }
       }
       const cmds = []
+      // Priority order: wtype (Wayland) > xdotool (X11)
       if (isWayland && has('wtype')) cmds.push('wtype -M ctrl -k v -m ctrl')
       if (has('xdotool')) cmds.push('xdotool key ctrl+v')
+      
       const run = () => {
         const cmd = cmds.shift()
         if (!cmd) {
-          log.error('Error pegando imagen en Linux. Instala xdotool (X11) o wtype (Wayland).')
+          // ✅ No tools available - inform user politely with system notification
+          log.info('Auto-paste not available. Image is in clipboard. Press Ctrl+V to paste.')
           try {
-            if (mainWindow?.webContents) {
-              mainWindow.webContents.send('paste-status', { ok: false, message: 'No se pudo pegar imagen en Linux. Instala xdotool (X11) o wtype (Wayland).' })
-            }
-          } catch {}
+            new Notification({ 
+              title: 'Copyfy', 
+              body: 'Imagen copiada al portapapeles. Presiona Ctrl+V para pegar.',
+              silent: false
+            }).show()
+          } catch (e) {
+            log.error('Error showing paste notification', e)
+          }
           return
         }
         exec(cmd, err => {
           if (err) {
             if (cmds.length) return run()
-            log.error('Error pegando imagen en Linux', err)
+            // ✅ All tools failed - inform user politely with system notification
+            log.info('Auto-paste failed. Image is in clipboard. Press Ctrl+V to paste.')
+            try {
+              new Notification({ 
+                title: 'Copyfy', 
+                body: 'Imagen copiada al portapapeles. Presiona Ctrl+V para pegar.',
+                silent: false
+              }).show()
+            } catch (e) {
+              log.error('Error showing paste notification', e)
+            }
           } else {
             log.info('Imagen pegada en Linux')
           }
@@ -516,64 +953,70 @@ function createWindow () {
     backgroundColor: '#00FFFFFF',
     alwaysOnTop: true,
     resizable: false, // ✅ importante: no redimensionable
-    icon: path.join(__dirname, 'frontend', 'media', '64x64.png'),
+    icon: app.isPackaged 
+      ? path.join(app.getAppPath(), 'frontend', 'media', '64x64.png')
+      : path.join(__dirname, 'frontend', 'media', '64x64.png'),
     show: false,
     hasShadow: true, // ✅ sombra opcional
     title: '',
     webPreferences: {
-      preload: path.join(__dirname, 'preload.js'),
+      // Ruta de preload compatible con desarrollo y producción en todas las plataformas
+      preload: app.isPackaged 
+        ? path.join(app.getAppPath(), 'preload.js')
+        : path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
       devTools: !app.isPackaged
     }
   })
 
-  // Cargar interfaz
+  // Cargar interfaz: compatible con desarrollo y producción en todas las plataformas
   if (app.isPackaged) {
-    mainWindow.loadFile(path.join(__dirname, 'frontend', 'dist', 'index.html'))
+    // En producción, usar app.getAppPath() que funciona correctamente en todas las plataformas
+    const indexPath = path.join(app.getAppPath(), 'frontend', 'dist', 'index.html')
+    mainWindow.loadFile(indexPath)
   } else {
+    // En desarrollo, usar el servidor de Vite
     mainWindow.loadURL('http://localhost:5173')
   }
 
-  // Enviar historial al frontend
+  // Enviar historial al frontend (ya cargado al inicio)
   mainWindow.webContents.on('did-finish-load', () => {
-    try {
-      history = authToken ? db.getAll(getCurrentDeviceName()) : db.getAllGuest(getCurrentDeviceName())
-    } catch {
-      history = []
+    if (mainWindow?.webContents) {
+      mainWindow.webContents.send('clipboard-update', augmentHistoryWithImagePaths(history))
     }
-    mainWindow.webContents.send('clipboard-update', history)
   })
 
-  // Mostrar con animación
+  // Mostrar sin animación manual para evitar bloqueos
   mainWindow.once('ready-to-show', () => {
     mainWindow.setTitle('')
-    mainWindow.show()
-
-    const duration = 300 // ms
-    const steps = 30
-    const stepTime = duration / steps
-    const deltaX = (startX - finalX) / steps
-
-    let currentX = startX
-    const interval = setInterval(() => {
-      currentX -= deltaX
-      if (currentX <= finalX) {
-        currentX = finalX
-        clearInterval(interval)
+    mainWindow.setBounds({
+      x: finalX,
+      y: 0,
+      width: windowWidth,
+      height: windowHeight
+    })
+    
+    // Comprobar si debe iniciar minimizada
+    try {
+      const prefsStr = db.getConfig('preferences')
+      const prefs = prefsStr ? JSON.parse(prefsStr) : {}
+      if (!prefs.startMinimized) {
+        mainWindow.show()
       }
-      mainWindow.setBounds({
-        x: Math.round(currentX),
-        y: 0,
-        width: windowWidth,
-        height: windowHeight
-      })
-    }, stepTime)
-    setTimeout(() => {
-      try { mainWindow.focus() } catch {}
-      try { mainWindow.webContents.focus() } catch {}
-      try { mainWindow.webContents.send('focus-search') } catch {}
-    }, 150)
+    } catch {
+      mainWindow.show()
+    }
+    if (mainWindow && !mainWindow.isVisible()) {
+      setTimeout(() => {
+        try { mainWindow.focus() } catch {}
+        try { mainWindow.webContents.focus() } catch {}
+        try { mainWindow.webContents.send('focus-search') } catch {}
+      }, 150)
+    } else {
+      // Si inicia minimizada, aseguramos que esté oculta pero lista
+      mainWindow.hide() 
+    }
   })
 
   // Evitar cierre completo
@@ -598,23 +1041,60 @@ function createWindow () {
   })
 }
 
+// Variables de estado del portapapeles (fuera de app.whenReady para accesibilidad global)
+let lastImageDataUrl = ''
+let lastText = ''
+let lastFilesKey = ''
+
+// Función para reinicializar el estado de los archivos del portapapeles
+// Se llama al iniciar la app, al iniciar sesión, y cuando se reactiva la app
+function resetClipboardFilesState () {
+  lastFilesKey = getCurrentClipboardFilesKey()
+}
+
 app.whenReady().then(async () => {
   try { require('./autolaunch').configureAutoLaunch() } catch (e) { log.error('Autolaunch setup failed', e) }
   await db.init(app)
   createWindow()
-  const iconPath = path.join(
-    __dirname,
-    'frontend',
-    'media',
-    '64x64.png'
-  )
-  const image = nativeImage.createFromPath(iconPath)
+  // Ruta del icono: compatible con desarrollo y producción en todas las plataformas
+  // En empaquetado, usar app.getAppPath() que funciona correctamente en todas las plataformas
+  const iconPath = app.isPackaged
+    ? path.join(app.getAppPath(), 'frontend', 'media', '64x64.png')
+    : path.join(__dirname, 'frontend', 'media', '64x64.png')
+  
+  // Verificar que el icono existe, usar fallback si no
+  let image
+  try {
+    if (fs.existsSync(iconPath)) {
+      image = nativeImage.createFromPath(iconPath)
+      if (image && image.isEmpty()) {
+        throw new Error('Icono vacío')
+      }
+    } else {
+      // Fallback: intentar desde __dirname (puede funcionar en desarrollo)
+      const fallbackPath = path.join(__dirname, 'frontend', 'media', '64x64.png')
+      if (fs.existsSync(fallbackPath)) {
+        image = nativeImage.createFromPath(fallbackPath)
+      } else {
+        image = nativeImage.createEmpty()
+      }
+    }
+  } catch (e) {
+    log.error('Error cargando icono:', e?.message || e)
+    // Último fallback: icono vacío (Electron usará el icono por defecto)
+    image = nativeImage.createEmpty()
+  }
   tray = new Tray(image)
   tray.setToolTip('Copyfy++')
   const menu = Menu.buildFromTemplate([
     { label: 'Abrir', click: () => { if (mainWindow) { mainWindow.show(); mainWindow.focus() } } },
-    { label: 'Pegar texto', click: () => { performPaste(mainWindow) } },
-    { label: 'Pegar imagen', click: () => { performPasteImage(mainWindow) } },
+    { label: 'Ver tutorial', click: () => { 
+      if (mainWindow?.webContents) { 
+        mainWindow.show(); 
+        mainWindow.focus(); 
+        try { mainWindow.webContents.send('open-tutorial') } catch {} 
+      } 
+    } },
     { type: 'separator' },
     { label: 'Salir', click: () => { isQuitting = true; app.quit() } }
   ])
@@ -636,51 +1116,130 @@ app.whenReady().then(async () => {
     app.dock.hide()
   }
   autoUpdater.forceDevUpdateConfig = true
+  
+  // Cargar historial una sola vez al inicio (optimización)
   try {
-    const cfg = readDeviceConfigObj()
-    if (Array.isArray(cfg.history)) {
-      db.importItems(getCurrentDeviceName(), normalizeHistory(cfg.history))
-      history = db.getAll(getCurrentDeviceName())
-      log.info('Historial (device) cargado', { count: history.length })
-    } else if (fs.existsSync(legacyHistoryPath)) {
-      const data = fs.readFileSync(legacyHistoryPath, 'utf-8')
-      const parsed = JSON.parse(data)
-      const items = normalizeHistory(parsed)
-      db.importItems(getCurrentDeviceName(), items)
-      cfg.history = []
-      writeDeviceConfigObj(cfg)
-      history = db.getAll(getCurrentDeviceName())
-      log.info('Historial migrado desde legacy')
-    }
+    history = authToken ? db.getAll(getCurrentDeviceName()) : db.getAllGuest(getCurrentDeviceName())
+    log.info('Historial cargado desde DB', { count: history.length })
   } catch (err) {
     log.error('Error al leer historial (device)', err)
+    history = []
   }
-  try { 
-    if (authToken) { 
-      Promise.resolve(enforceHistoryLimit(1000)).catch(() => {})
-      history = db.getAll(getCurrentDeviceName())
-    } else { 
-      enforceGuestLimit(1000)
-      history = db.getAllGuest(getCurrentDeviceName()) 
-    } 
-  } catch {}
+  
+  // Migración legacy asíncrona (no bloquea el inicio)
+  if (fs.existsSync(legacyHistoryPath)) {
+    Promise.resolve().then(async () => {
+      try {
+        const data = fs.readFileSync(legacyHistoryPath, 'utf-8')
+        const parsed = JSON.parse(data)
+        const items = normalizeHistory(parsed)
+        db.importItems(getCurrentDeviceName(), items)
+        history = authToken ? db.getAll(getCurrentDeviceName()) : db.getAllGuest(getCurrentDeviceName())
+        log.info('Historial migrado desde legacy')
+        if (mainWindow?.webContents) {
+          mainWindow.webContents.send('clipboard-update', augmentHistoryWithImagePaths(history))
+        }
+      } catch (e) {
+        log.error('Error en migración legacy', e)
+      }
+    }).catch(() => {})
+  }
+  
+  // Diferir enforceHistoryLimit/enforceGuestLimit (no crítico para el inicio)
+  Promise.resolve().then(async () => {
+    try {
+      if (authToken) {
+        await Promise.resolve(enforceHistoryLimit(1000)).catch(() => {})
+      } else {
+        enforceGuestLimit(1000)
+      }
+    } catch {}
+  }).catch(() => {})
 
   const pollClipboard = () => {
-    let lastImageDataUrl = ''
-    let lastText = ''
-
-    // Normalizar historial ya cargado y enviar al renderer inmediatamente
-    try {
-      history = authToken ? db.getAll(getCurrentDeviceName()) : db.getAllGuest(getCurrentDeviceName())
-    } catch {
-      history = []
-    }
-
+    // Enviar historial ya cargado al renderer (ya fue cargado al inicio)
     if (mainWindow?.webContents) {
-      mainWindow.webContents.send('clipboard-update', history)
+      mainWindow.webContents.send('clipboard-update', augmentHistoryWithImagePaths(history))
     }
+
+    // Inicializar lastFilesKey con el estado actual del portapapeles
+    // Esto previene que archivos copiados antes de abrir la app/iniciar sesión/desbloquear se procesen
+    resetClipboardFilesState()
 
     setInterval(() => {
+      try {
+        // Solo detectar archivos si el usuario está autenticado
+        if (!authToken) {
+          // Si no hay autenticación, resetear lastFilesKey para evitar detecciones previas
+          if (lastFilesKey !== '') {
+            lastFilesKey = ''
+          }
+          // Continuar con el resto del polling (texto e imágenes)
+        } else {
+          // Usuario autenticado - procesar archivos del portapapeles
+          const rawUris = readClipboardFileUris()
+          const uniqueFileMap = new Map()
+
+          if (rawUris && rawUris.length > 0) {
+            for (const uri of rawUris) {
+              const p = uriToPath(uri)
+              if (p && fs.existsSync(p)) {
+                try {
+                  const stat = fs.statSync(p)
+                  // Solo procesar archivos de texto
+                  if (stat.isFile() && isTextFile(p)) {
+                    // Clave única basada en inodo para detectar duplicados (e.g. 8.3 vs nombre largo)
+                    // Usar inodo + device si están disponibles, sino usar ruta normalizada
+                    const key = (stat.ino && stat.dev) ? `${stat.dev}-${stat.ino}` : path.resolve(p).toLowerCase()
+                    const existing = uniqueFileMap.get(key)
+                    
+                    if (!existing) {
+                      uniqueFileMap.set(key, p)
+                    } else {
+                      // Heurística para elegir el "mejor" nombre de archivo (preferir nombre largo sobre 8.3)
+                      const score = (pathStr) => {
+                         let s = 0
+                         // Penalizar nombre corto 8.3 (contiene ~ y digito)
+                         if (/~\d+(\.|$)/i.test(pathStr)) s -= 10
+                         // Penalizar todo mayúsculas si el otro tiene minúsculas
+                         if (pathStr === pathStr.toUpperCase() && /[a-z]/.test(pathStr.toLowerCase())) s -= 2
+                         // Preferir longitud mayor como desempate
+                         return s + (pathStr.length * 0.01)
+                      }
+                      if (score(p) > score(existing)) {
+                        uniqueFileMap.set(key, p)
+                      }
+                    }
+                  }
+                } catch (e) {
+                  // Silenciar errores menores durante polling normal
+                }
+              }
+            }
+          }
+
+          if (uniqueFileMap.size > 0) {
+            const sortedPaths = Array.from(uniqueFileMap.values()).sort()
+            // Normalizar las rutas para la comparación (resolver paths relativos y absolutos)
+            const normalizedPaths = sortedPaths.map(p => path.resolve(p)).sort()
+            const currentFilesKey = normalizedPaths.join('|')
+            
+            if (currentFilesKey !== lastFilesKey) {
+              // Solo loggear cuando haya un cambio real en los archivos
+              log.info(`Archivos de texto detectados: ${sortedPaths.length} archivo(s)`, sortedPaths.map(p => path.basename(p)))
+              lastFilesKey = currentFilesKey
+              // Upload files - pasar todos los archivos de texto juntos
+              askForUpload(sortedPaths)
+            }
+          } else {
+            // Solo resetear lastFilesKey si realmente cambió (no hay archivos)
+            if (lastFilesKey !== '') {
+              lastFilesKey = ''
+            }
+          }
+        }
+      } catch {}
+
       try {
         const currentImage = clipboard.readImage()
         if (currentImage.isEmpty()) {
@@ -711,7 +1270,7 @@ app.whenReady().then(async () => {
                   history = db.getAllGuest(getCurrentDeviceName())
                 }
                 if (mainWindow?.webContents) {
-                  mainWindow.webContents.send('clipboard-update', history)
+                  mainWindow.webContents.send('clipboard-update', augmentHistoryWithImagePaths(history))
                 }
               }
             }
@@ -739,7 +1298,7 @@ app.whenReady().then(async () => {
               history = db.getAllGuest(getCurrentDeviceName())
             }
             if (mainWindow?.webContents) {
-              mainWindow.webContents.send('clipboard-update', history)
+              mainWindow.webContents.send('clipboard-update', augmentHistoryWithImagePaths(history))
             }
             return
           }
@@ -777,7 +1336,7 @@ app.whenReady().then(async () => {
           enforceGuestLimit(1000)
           history = db.getAllGuest(getCurrentDeviceName())
         }
-        mainWindow.webContents.send('clipboard-update', history)
+        mainWindow.webContents.send('clipboard-update', augmentHistoryWithImagePaths(history))
         return
       }
 
@@ -798,14 +1357,15 @@ app.whenReady().then(async () => {
           enforceGuestLimit(1000)
           history = db.getAllGuest(getCurrentDeviceName())
         }
-        mainWindow.webContents.send('clipboard-update', history)
+        mainWindow.webContents.send('clipboard-update', augmentHistoryWithImagePaths(history))
       }
     }, 1000)
   }
 
   pollClipboard()
-  startClipboardImagePolling(1000)
-  if (app.isPackaged) {
+  // startClipboardImagePolling(1000) // Removed as undefined
+  // Solo buscar actualizaciones en Windows
+  if (app.isPackaged && process.platform === 'win32') {
     try { mainWindow.webContents.send('update-status', 'Comprobando actualizaciones al iniciar...') } catch {}
     setTimeout(() => {
       try {
@@ -816,7 +1376,7 @@ app.whenReady().then(async () => {
         try { log.error('autoUpdater startup error', e?.message || e) } catch {}
       }
     }, 3000)
-  } else {
+  } else if (!app.isPackaged) {
     try { mainWindow.webContents.send('update-status', 'Entorno de desarrollo: se omite la comprobación automática.') } catch {}
   }
 
@@ -852,32 +1412,61 @@ app.whenReady().then(async () => {
     }, 120)
   }
 
-  // Limpiar atajos previos para evitar conflictos
-  try { globalShortcut.unregisterAll() } catch {}
+  const updateGlobalShortcuts = () => {
+    try { globalShortcut.unregisterAll() } catch {}
 
-  const ret = globalShortcut.register('Alt+X', toggleShow)
-  if (!ret) {
-    try { log.warn('Fallo al registrar shortcut Alt+X') } catch {}
+    try {
+      const prefsStr = db.getConfig('preferences')
+      const prefs = prefsStr ? JSON.parse(prefsStr) : {}
+      let modifier = prefs.shortcutModifier
+      let key = prefs.shortcutKey
+
+      // Default defaults
+      if (!modifier) modifier = process.platform === 'darwin' ? 'Command+Option' : 'Alt'
+      if (!key) key = 'X'
+
+      const accelerator = `${modifier}+${key}`
+      try {
+        const ret = globalShortcut.register(accelerator, toggleShow)
+        if (ret) {
+          log.info(`Shortcut registrado: ${accelerator}`)
+        } else {
+          log.warn(`Fallo al registrar shortcut: ${accelerator}`)
+          // Fallback safe defaults if custom fails
+          if (process.platform === 'darwin') globalShortcut.register('Command+Option+X', toggleShow)
+          else globalShortcut.register('Alt+X', toggleShow)
+        }
+      } catch (e) {
+        log.error('Error registrando shortcut', e)
+      }
+    } catch (e) {
+      log.error('Error reading preferences for shortcuts', e)
+    }
   }
 
-  if (process.platform === 'darwin') {
-    globalShortcut.register('Command+Option+X', toggleShow)
-  } else if (process.platform === 'linux') {
-    // Alternativa para Linux donde Alt suele estar reservado
-    globalShortcut.register('Control+Alt+X', toggleShow)
-  }
+  updateGlobalShortcuts()
+  app.on('update-shortcuts', updateGlobalShortcuts)
 
   // Quick switcher desactivado
 
   // Quick switcher desactivado
 
-  // Iniciar sincronización periódica solo después de que todo esté listo
+  // NO cargar sesión en el proceso principal al inicio
+  // El frontend (React) se encargará de cargar la sesión y refrescar el token
+  // Una vez que el frontend establezca el token vía 'set-auth-token', 
+  // entonces se ejecutarán las funciones que requieren autenticación (incluyendo syncClipboardHistory)
+  log.info('Iniciando aplicación - esperando que el frontend cargue y refresque la sesión')
+
+  // Iniciar sincronización periódica (se ejecutará solo si hay authToken)
   setInterval(() => {
-    syncClipboardHistory()
+    if (authToken) {
+      syncClipboardHistory()
+    }
   }, 15 * 60 * 1000)
 
-  // Primera sincronización
-  syncClipboardHistory()
+  // NO ejecutar syncClipboardHistory() inmediatamente aquí
+  // Esperar a que el frontend establezca el token vía 'set-auth-token'
+  // El handler 'set-auth-token' ya llama a syncClipboardHistory() cuando se establece el token
 })
 
 app.on('window-all-closed', () => {
@@ -891,6 +1480,42 @@ app.on('before-quit', () => {
 app.on('will-quit', () => {
   try { globalShortcut.unregisterAll() } catch {}
 })
+
+// Reinicializar el estado de los archivos cuando la app se reactiva o el sistema se desbloquea
+// Esto previene que archivos copiados antes de desbloquear/reactivar se procesen
+if (powerMonitor) {
+  // Evento unlock-screen funciona en macOS y Linux
+  powerMonitor.on('unlock-screen', () => {
+    resetClipboardFilesState()
+  })
+  
+  // En Windows, usar el evento 'resume' que se dispara cuando el sistema vuelve de suspensión
+  if (process.platform === 'win32') {
+    powerMonitor.on('resume', () => {
+      resetClipboardFilesState()
+    })
+  }
+}
+
+// Reinicializar cuando la ventana principal recibe foco (app se reactiva)
+// Esto ayuda especialmente en Windows cuando se desbloquea o inicia sesión
+app.on('browser-window-focus', (event, window) => {
+  if (window === mainWindow) {
+    // Pequeño delay para asegurar que el estado del sistema esté actualizado
+    setTimeout(() => {
+      resetClipboardFilesState()
+    }, 500)
+  }
+})
+
+// En Windows, también detectar cuando la app vuelve a estar activa después de estar inactiva
+if (process.platform === 'win32') {
+  app.on('activate', () => {
+    setTimeout(() => {
+      resetClipboardFilesState()
+    }, 500)
+  })
+}
 
 // Quick switcher desactivado
 
@@ -932,6 +1557,11 @@ ipcMain.on('force-update', () => {
   log.info('🧪 Botón forzó búsqueda de actualización...')
   if (!app.isPackaged) {
     try { mainWindow.webContents.send('update-status', 'Solo disponible en producción.') } catch {}
+    return
+  }
+  // Solo buscar actualizaciones en Windows
+  if (process.platform !== 'win32') {
+    try { mainWindow.webContents.send('update-status', 'Las actualizaciones automáticas solo están disponibles en Windows.') } catch {}
     return
   }
   Promise.resolve(autoUpdater.checkForUpdates()).catch(err => {
@@ -978,7 +1608,8 @@ autoUpdater.on('update-downloaded', () => {
 ipcMain.handle('get-clipboard-history', async () => {
   try {}
   catch {}
-  return authToken ? db.getAll(getCurrentDeviceName()) : db.getAllGuest(getCurrentDeviceName())
+  const res = authToken ? db.getAll(getCurrentDeviceName()) : db.getAllGuest(getCurrentDeviceName())
+  return augmentHistoryWithImagePaths(res)
 })
 
 ipcMain.handle('hide-window', () => {
@@ -1024,7 +1655,7 @@ ipcMain.handle('clear-history', async () => {
     history = []
     if (authToken) db.clear(getCurrentDeviceName())
     else db.clearGuest(getCurrentDeviceName())
-    mainWindow.webContents.send('clipboard-update', history)
+    mainWindow.webContents.send('clipboard-update', augmentHistoryWithImagePaths(history))
     log.info('Historial borrado')
   } catch (err) {
     log.error('Error al borrar historial', err)
@@ -1059,7 +1690,7 @@ ipcMain.handle('delete-history-item', async (_, id) => {
     
     db.deleteById(id)
     history = authToken ? db.getAll(getCurrentDeviceName()) : db.getAllGuest(getCurrentDeviceName())
-    mainWindow.webContents.send('clipboard-update', history)
+    mainWindow.webContents.send('clipboard-update', augmentHistoryWithImagePaths(history))
     log.info('Item borrado localmente:', id)
     return { success: true }
   } catch (err) {
@@ -1146,7 +1777,11 @@ ipcMain.on('open-code-editor', (_, codeText) => {
     const mainBounds = mainWindow?.getBounds() || { width: 400, x: wa.x + wa.width - 400, y: wa.y, height: wa.height }
     const viewerWidth = Math.max(300, wa.width - mainBounds.width)
     win.setBounds({ x: wa.x, y: wa.y, width: viewerWidth, height: wa.height })
-    win.loadFile(path.join(__dirname, 'viewer', 'code-editor.html'))
+    // Ruta del viewer compatible con desarrollo y producción en todas las plataformas
+    const editorPath = app.isPackaged
+      ? path.join(app.getAppPath(), 'viewer', 'code-editor.html')
+      : path.join(__dirname, 'viewer', 'code-editor.html')
+    win.loadFile(editorPath)
     win.webContents.on('did-finish-load', () => {
       try {
         const b64 = Buffer.from(String(codeText || ''), 'utf-8').toString('base64')
@@ -1219,7 +1854,7 @@ ipcMain.on('toggle-favorite', async (event, payload) => {
 
     // Enviar al frontend
     if (mainWindow?.webContents) {
-      mainWindow.webContents.send('clipboard-update', history)
+      mainWindow.webContents.send('clipboard-update', augmentHistoryWithImagePaths(history))
     }
  
     let remoteId = null
@@ -1266,6 +1901,7 @@ ipcMain.on('open-external-url', (_, url) => {
   }
 })
 let BACKEND_URL = 'https://copyfy.webcolsoluciones.com.co'
+//let BACKEND_URL = 'http://localhost:3000'
 try { BACKEND_URL = require('./config').BACKEND_URL || BACKEND_URL } catch {}
 let authToken = null
 let deviceId = null
@@ -1277,35 +1913,16 @@ function getCurrentDeviceName () {
   return sanitizeDeviceName(activeDeviceName || os.hostname())
 }
 
-function getCurrentDeviceConfigPath () {
-  const baseDir = path.join(app.getPath('userData'), 'devices')
-  const selected = activeDeviceName ? sanitizeDeviceName(activeDeviceName) : sanitizeDeviceName(os.hostname())
-  const deviceDir = path.join(baseDir, selected)
-  if (!fs.existsSync(deviceDir)) fs.mkdirSync(deviceDir, { recursive: true })
-  return path.join(deviceDir, 'config.json')
-}
-
 function readDeviceConfigObj () {
-  const cfgPath = getCurrentDeviceConfigPath()
   try {
-    if (fs.existsSync(cfgPath)) {
-      const raw = fs.readFileSync(cfgPath, 'utf-8')
-      const obj = JSON.parse(raw)
-      if (!obj.deviceName) obj.deviceName = os.hostname()
-      if (!obj.preferences) obj.preferences = {}
-      if (!obj.version) obj.version = 1
-      if (!Array.isArray(obj.history)) obj.history = []
-      return obj
-    } else {
-      const obj = {
-        deviceName: os.hostname(),
-        createdAt: new Date().toISOString(),
-        preferences: {},
-        version: 1,
-        history: []
-      }
-      fs.writeFileSync(cfgPath, JSON.stringify(obj, null, 2), 'utf-8')
-      return obj
+    const prefsStr = db.getConfig('preferences')
+    const preferences = prefsStr ? JSON.parse(prefsStr) : {}
+    return {
+      deviceName: os.hostname(),
+      createdAt: new Date().toISOString(),
+      preferences: preferences,
+      version: 1,
+      history: []
     }
   } catch {
     return {
@@ -1319,8 +1936,13 @@ function readDeviceConfigObj () {
 }
 
 function writeDeviceConfigObj (obj) {
-  const cfgPath = getCurrentDeviceConfigPath()
-  fs.writeFileSync(cfgPath, JSON.stringify(obj, null, 2), 'utf-8')
+  try {
+    if (obj.preferences) {
+      db.setConfig('preferences', JSON.stringify(obj.preferences))
+    }
+  } catch (e) {
+    log.error('Error writing preferences to DB:', e)
+  }
 }
 
 function readDeviceHistory () {
@@ -1339,21 +1961,20 @@ function writeDeviceHistory (hist) {
   }
 }
 
-function getDeviceConfigPathByName (rawName) {
-  const baseDir = path.join(app.getPath('userData'), 'devices')
-  const dirName = sanitizeDeviceName(rawName)
-  const deviceDir = path.join(baseDir, dirName)
-  return path.join(deviceDir, 'config.json')
-}
-
 function listLocalDevices () {
   try {
-    const baseDir = path.join(app.getPath('userData'), 'devices')
-    if (!fs.existsSync(baseDir)) return []
-    const dirs = fs.readdirSync(baseDir, { withFileTypes: true })
-    return dirs.filter(d => d.isDirectory()).map(d => d.name)
+    // Obtener dispositivos desde la DB (historial por dispositivo)
+    const devicesStr = db.getConfig('devices')
+    if (devicesStr) {
+      try {
+        const devices = JSON.parse(devicesStr)
+        if (Array.isArray(devices)) return devices
+      } catch {}
+    }
+    // Si no hay en DB, retornar solo el dispositivo actual
+    return [getCurrentDeviceName()]
   } catch {
-    return []
+    return [getCurrentDeviceName()]
   }
 }
 
@@ -1410,43 +2031,204 @@ async function getDevicesFromBackend () {
 
 function sanitizeDeviceName (name) {
   const s = String(name || '').trim()
-  return s.replace(/[<>:"/\\|?*]/g, '').slice(0, 64) || 'device'
+  // Caracteres prohibidos en nombres de archivos/carpetas en Windows, Linux y macOS:
+  // Windows: < > : " / \ | ? *
+  // Linux/macOS: / (y null bytes, pero eso se maneja con trim)
+  // Usar una regex que funcione en todas las plataformas
+  // También remover caracteres de control y espacios al inicio/final
+  return s
+    .replace(/[<>:"/\\|?*\x00-\x1f]/g, '') // Remover caracteres prohibidos y control
+    .replace(/^\s+|\s+$/g, '') // Remover espacios al inicio y final
+    .replace(/\.{2,}/g, '.') // Reemplazar múltiples puntos consecutivos
+    .replace(/^\.+|\.+$/g, '') // Remover puntos al inicio y final (problemas en Linux)
+    .slice(0, 64) || 'device'
 }
 
 async function ensureLocalDevices () {
   try {
     const names = await getDevicesFromBackend()
-    const baseDir = path.join(app.getPath('userData'), 'devices')
-    if (!fs.existsSync(baseDir)) fs.mkdirSync(baseDir, { recursive: true })
-
-    for (const raw of names) {
-      const dirName = sanitizeDeviceName(raw)
-      const deviceDir = path.join(baseDir, dirName)
-      const cfgPath = path.join(deviceDir, 'config.json')
-      if (!fs.existsSync(deviceDir)) fs.mkdirSync(deviceDir, { recursive: true })
-      if (!fs.existsSync(cfgPath)) {
-        const cfg = {
-          deviceName: raw,
-          createdAt: new Date().toISOString(),
-          preferences: {},
-          version: 1
-        }
-        fs.writeFileSync(cfgPath, JSON.stringify(cfg, null, 2), 'utf-8')
-        log.info('Dispositivo local creado', { dir: deviceDir })
-      }
+    // Guardar lista de dispositivos en DB
+    if (names.length > 0) {
+      db.setConfig('devices', JSON.stringify(names))
     }
-
     log.info('ensureLocalDevices completo', { count: names.length })
   } catch (error) {
     log.error('ensureLocalDevices error', error?.message || error)
   }
 }
 
+/**
+ * Intenta refrescar el token usando el refreshToken de la sesión
+ * @param {Object} session - Objeto de sesión con refreshToken
+ * @returns {Promise<string|null>} - Nuevo token si el refresh fue exitoso, null si falló
+ */
+/**
+ * Intenta refrescar el token usando el refreshToken de la sesión
+ * @param {Object} session - Objeto de sesión con refreshToken
+ * @returns {Promise<string|null>} - Nuevo token si el refresh fue exitoso, null si falló
+ */
+async function refreshTokenFromSession (session) {
+  try {
+    if (!session || !session.refreshToken) {
+      log.debug('No hay refreshToken en la sesión')
+      return null
+    }
+
+    const url = `${BACKEND_URL}/auth/refresh`
+    const refreshTokenValue = session.refreshToken
+    log.info('Intentando refrescar token', { 
+      url, 
+      hasRefreshToken: !!refreshTokenValue,
+      refreshTokenType: typeof refreshTokenValue,
+      refreshTokenLength: refreshTokenValue ? String(refreshTokenValue).length : 0
+    })
+    
+    if (!refreshTokenValue || refreshTokenValue === null || refreshTokenValue === undefined) {
+      log.error('refreshToken es null o undefined en la sesión', { sessionKeys: Object.keys(session || {}) })
+      return null
+    }
+    
+    const res = await axios.post(url, {
+      refreshToken: refreshTokenValue
+    }, {
+      headers: { 'Content-Type': 'application/json' }
+    })
+
+    const data = res?.data
+    // El formato puede ser: { data: { token, refreshToken } } o { token, refreshToken }
+    const payload = (data && typeof data === 'object' ? (data.data ?? data) : {})
+    const okFlag = (data && typeof data === 'object') ? (data.success ?? data.status ?? res.status === 200) : res.status === 200
+    const newToken = payload?.token
+    const newRefreshToken = payload?.refreshToken || session.refreshToken
+
+    if (okFlag && newToken) {
+      // Actualizar la sesión con el nuevo token
+      const updatedSession = {
+        ...session,
+        token: newToken,
+        refreshToken: newRefreshToken
+      }
+      
+      // Guardar la sesión actualizada en DB
+      db.setConfig('session', JSON.stringify(updatedSession))
+
+      log.info('Token refrescado exitosamente', { hasNewRefreshToken: !!newRefreshToken })
+      return newToken
+    } else {
+      log.warn('Refresh token falló: respuesta inválida', { 
+        status: res.status, 
+        hasToken: !!newToken,
+        okFlag: okFlag,
+        responseData: data 
+      })
+      return null
+    }
+  } catch (error) {
+    const status = error?.response?.status
+    const statusText = error?.response?.statusText
+    log.warn('Error al refrescar token', {
+      error: error?.message || error,
+      status: status,
+      statusText: statusText,
+      responseData: error?.response?.data
+    })
+    
+    // Si el error es 401, el refreshToken está expirado
+    if (status === 401 || status === 403) {
+      log.warn('RefreshToken expirado o inválido - el usuario debe iniciar sesión de nuevo')
+    }
+    
+    return null
+  }
+}
+
 ipcMain.on('set-auth-token', (event, token) => {
   authToken = token
+  // Reinicializar el estado de los archivos del portapapeles al iniciar sesión
+  // Esto previene que archivos copiados antes de iniciar sesión se procesen
+  resetClipboardFilesState()
   syncClipboardHistory()
   ensureLocalDevices()
   Promise.resolve(enforceHistoryLimit(1000)).catch(() => {})
+})
+
+// Handlers IPC para configuración (DB local)
+ipcMain.handle('get-config', (event, key) => {
+  try {
+    return db.getConfig(key)
+  } catch (e) {
+    log.error('get-config error:', e)
+    return null
+  }
+})
+
+ipcMain.handle('set-config', (event, key, value) => {
+  try {
+    return db.setConfig(key, value)
+  } catch (e) {
+    log.error('set-config error:', e)
+    return false
+  }
+})
+
+ipcMain.handle('remove-config', (event, key) => {
+  try {
+    return db.removeConfig(key)
+  } catch (e) {
+    log.error('remove-config error:', e)
+    return false
+  }
+})
+
+ipcMain.handle('get-all-config', () => {
+  try {
+    return db.getAllConfig()
+  } catch (e) {
+    log.error('get-all-config error:', e)
+    return {}
+  }
+})
+
+// Handlers IPC para sesión (usando DB local)
+ipcMain.handle('save-session', (event, sessionData) => {
+  try {
+    if (sessionData && typeof sessionData === 'object') {
+      db.setConfig('session', JSON.stringify(sessionData))
+      return true
+    }
+    return false
+  } catch (e) {
+    log.error('save-session error:', e)
+    return false
+  }
+})
+
+ipcMain.handle('read-session', () => {
+  try {
+    const sessionStr = db.getConfig('session')
+    if (sessionStr) {
+      try {
+        return JSON.parse(sessionStr)
+      } catch (e) {
+        log.error('Error parsing session from DB:', e)
+      }
+    }
+    return null
+  } catch (e) {
+    log.error('read-session error:', e)
+    return null
+  }
+})
+
+ipcMain.handle('clear-session-file', () => {
+  try {
+    db.removeConfig('session')
+    db.removeConfig('x-token')
+    return true
+  } catch (e) {
+    log.error('clear-session-file error:', e)
+    return false
+  }
 })
 
 async function resolveDeviceIdentifiers (rawName) {
@@ -1476,7 +2258,7 @@ ipcMain.handle('switch-active-device', async (_, deviceName) => {
     const devHist = readDeviceHistory()
     history = devHist
     if (mainWindow?.webContents) {
-      mainWindow.webContents.send('clipboard-update', history)
+      mainWindow.webContents.send('clipboard-update', augmentHistoryWithImagePaths(history))
     }
     try { authToken ? await enforceHistoryLimit(1000) : enforceGuestLimit(1000) } catch {}
     if (mainWindow?.webContents) {
@@ -1520,7 +2302,7 @@ ipcMain.handle('list-devices', async () => {
       const devHist = authToken ? readDeviceHistoryByName(target) : db.getAllGuest(target)
       history = devHist
       if (mainWindow?.webContents) {
-        mainWindow.webContents.send('clipboard-update', history)
+        mainWindow.webContents.send('clipboard-update', augmentHistoryWithImagePaths(history))
       }
       return history
     } catch {
@@ -1544,7 +2326,7 @@ function getAxiosInstance () {
     throw new Error('No hay token de autenticación disponible')
   }
 
-  return axios.create({
+  const instance = axios.create({
     baseURL: BACKEND_URL,
     maxBodyLength: Infinity,
     maxContentLength: Infinity,
@@ -1555,6 +2337,67 @@ function getAxiosInstance () {
       'Content-Type': 'application/json'
     }
   })
+
+  // Interceptor para manejar errores 401 y refrescar token automáticamente
+  instance.interceptors.response.use(
+    (response) => response,
+    async (error) => {
+      const originalRequest = error.config
+
+      // Si el error es 401 y no hemos intentado refrescar ya
+      if (error.response?.status === 401 && !originalRequest._retry) {
+        originalRequest._retry = true
+
+        try {
+          // Obtener la sesión desde la DB
+          const sessionStr = db.getConfig('session')
+          if (!sessionStr) {
+            log.warn('No hay sesión guardada para refrescar token')
+            return Promise.reject(error)
+          }
+
+          const session = JSON.parse(sessionStr)
+          if (!session || !session.refreshToken) {
+            log.warn('No hay refreshToken en la sesión')
+            return Promise.reject(error)
+          }
+
+          log.info('Token expirado, intentando refrescar con refreshToken')
+          
+          // Intentar refrescar el token
+          const newToken = await refreshTokenFromSession(session)
+          
+          if (newToken) {
+            // Actualizar el token global
+            authToken = newToken
+            
+            // Notificar al frontend del nuevo token
+            if (mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents) {
+              mainWindow.webContents.send('token-refreshed', newToken)
+            }
+            
+            // Actualizar el header de autorización para la petición original
+            originalRequest.headers.Authorization = `Bearer ${newToken}`
+            
+            log.info('Token refrescado exitosamente, reintentando petición original')
+            
+            // Reintentar la petición original con el nuevo token
+            return instance(originalRequest)
+          } else {
+            log.warn('No se pudo refrescar el token')
+            return Promise.reject(error)
+          }
+        } catch (refreshError) {
+          log.error('Error al intentar refrescar token:', refreshError)
+          return Promise.reject(error)
+        }
+      }
+
+      return Promise.reject(error)
+    }
+  )
+
+  return instance
 }
 
 async function enforceHistoryLimit (limit = 1000) {
@@ -1607,9 +2450,9 @@ async function fetchBackendClipboard () {
     history = mapped
     writeDeviceHistory(history)
     history = db.getAll(getCurrentDeviceName())
-    if (mainWindow?.webContents) {
-      mainWindow.webContents.send('clipboard-update', history)
-    }
+        if (mainWindow?.webContents) {
+          mainWindow.webContents.send('clipboard-update', augmentHistoryWithImagePaths(history))
+        }
   } catch (error) {
     log.error('fetchBackendClipboard error', error?.message || error)
   }
@@ -1630,6 +2473,386 @@ async function ensureDeviceRegistered () {
   } catch (error) {
     log.error('ensureDeviceRegistered error', error?.message || error)
     return null
+  }
+}
+
+function askForUpload(filePaths) {
+  try {
+    // Validar autenticación - solo usuarios logueados pueden subir archivos
+    if (!authToken) {
+      log.info('Intento de subir archivos sin autenticación - ignorado')
+      return
+    }
+
+    const isArray = Array.isArray(filePaths)
+    const files = isArray ? filePaths : [filePaths]
+    if (files.length === 0) return
+
+    // Filtrar solo archivos de texto (doble verificación)
+    const textFiles = files.filter(f => isTextFile(f))
+    if (textFiles.length === 0) return
+
+    // Usar ventana de notificación con barra de progreso en todas las plataformas
+    // Las notificaciones del sistema en Linux/macOS no soportan barras de progreso interactivas
+    createNotificationWindow(textFiles)
+  } catch (e) {
+    log.error('Error mostrando notificacion', e)
+  }
+}
+
+let activeUploadWindow = null
+
+function createNotificationWindow(filePaths) {
+  try {
+    const isArray = Array.isArray(filePaths)
+    const files = isArray ? filePaths : [filePaths]
+    
+    // Cerrar ventana anterior si existe
+    if (activeUploadWindow && !activeUploadWindow.isDestroyed()) {
+      try {
+        activeUploadWindow.close()
+      } catch {}
+    }
+    
+    const title = files.length === 1 ? 'Archivo detectado' : `${files.length} Archivos detectados`
+    const message = files.length === 1 
+      ? `¿Subir "${path.basename(files[0])}" a Copyfy?` 
+      : `¿Subir ${files.length} archivos a Copyfy?`
+    
+    // Serializar los archivos para usar en el HTML como array literal de JavaScript
+    const filesJsonForJS = JSON.stringify(files)
+    
+    const display = screen.getPrimaryDisplay()
+    const { width, height } = display.workAreaSize
+    const { x: screenX, y: screenY } = display.workArea
+    const winWidth = 360
+    const winHeight = 140 // Optimizada para reducir espacio desperdiciado
+    
+    // Posicionar la ventana en la esquina inferior derecha, compatible con todas las plataformas
+    // macOS puede tener el dock en la parte inferior, Linux puede tener paneles
+    const x = screenX + width - winWidth - 20
+    const y = screenY + height - winHeight - 20
+    
+    const notifWindow = new BrowserWindow({
+      width: winWidth,
+      height: winHeight,
+      x: Math.max(0, x),
+      y: Math.max(0, y),
+      frame: false,
+      transparent: process.platform !== 'linux', // Transparencia puede no funcionar bien en algunos Linux
+      alwaysOnTop: true,
+      skipTaskbar: true,
+      resizable: false,
+      show: false,
+      hasShadow: process.platform === 'darwin', // macOS usa sombras por defecto
+      webPreferences: {
+        nodeIntegration: true,
+        contextIsolation: false
+      }
+    })
+
+    activeUploadWindow = notifWindow
+
+    // Construir el HTML usando concatenación de strings para evitar problemas con template strings anidados
+    const htmlContentParts = [
+      '<!DOCTYPE html>',
+      '<html>',
+      '<head>',
+      '<style>',
+      'body { margin: 0; padding: 10px 12px; background: #1e1e1e; color: #fff; font-family: system-ui, -apple-system, sans-serif; border-radius: 8px; border: 1px solid #333; box-shadow: 0 4px 12px rgba(0,0,0,0.5); overflow: hidden; display: flex; flex-direction: column; height: 100vh; box-sizing: border-box; }',
+      '.title { font-weight: 600; font-size: 13px; margin-bottom: 2px; color: #fff; line-height: 1.2; }',
+      '.message { font-size: 12px; color: #aaa; margin-bottom: 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; line-height: 1.3; }',
+      '.timeout-container { display: block; margin: 4px 0; }',
+      '.timeout-bar { width: 100%; height: 3px; background: #333; border-radius: 2px; overflow: hidden; margin-bottom: 2px; }',
+      '.timeout-fill { height: 100%; background: #ef4444; width: 100%; transition: width 1s linear; }',
+      '.timeout-text { font-size: 9px; color: #888; text-align: center; line-height: 1.2; }',
+      '.progress-container { display: none; margin: 6px 0; }',
+      '.progress-container.visible { display: block; }',
+      '.progress-bar { width: 100%; height: 5px; background: #333; border-radius: 3px; overflow: hidden; margin-bottom: 3px; }',
+      '.progress-fill { height: 100%; background: #3b82f6; width: 0%; transition: width 0.3s ease; }',
+      '.progress-text { font-size: 10px; color: #888; text-align: center; line-height: 1.2; }',
+      '.current-file { font-size: 10px; color: #aaa; margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; line-height: 1.2; }',
+      '.actions { display: flex; gap: 6px; margin-top: 6px; justify-content: flex-end; }',
+      '.actions.uploading { display: none; }',
+      'button { border: none; padding: 5px 10px; border-radius: 4px; font-size: 11px; cursor: pointer; transition: background 0.2s; font-weight: 500; line-height: 1.2; }',
+      '.btn-primary { background: #3b82f6; color: white; }',
+      '.btn-primary:hover { background: #2563eb; }',
+      '.btn-secondary { background: #333; color: #ccc; }',
+      '.btn-secondary:hover { background: #444; }',
+      '.close { position: absolute; top: 6px; right: 6px; background: none; color: #666; font-size: 14px; padding: 0; cursor: pointer; width: 18px; height: 18px; display: flex; align-items: center; justify-content: center; }',
+      '.close:hover { color: #fff; }',
+      '</style>',
+      '</head>',
+      '<body>',
+      '<button class="close" onclick="cancel()">×</button>',
+      '<div class="title">' + title.replace(/</g, '&lt;').replace(/>/g, '&gt;') + '</div>',
+      '<div class="message">' + message.replace(/</g, '&lt;').replace(/>/g, '&gt;') + '</div>',
+      '<div class="timeout-container" id="timeoutContainer">',
+      '<div class="timeout-bar">',
+      '<div class="timeout-fill" id="timeoutFill"></div>',
+      '</div>',
+      '<div class="timeout-text" id="timeoutText">60s restantes</div>',
+      '</div>',
+      '<div class="progress-container" id="progressContainer">',
+      '<div class="progress-bar">',
+      '<div class="progress-fill" id="progressFill"></div>',
+      '</div>',
+      '<div class="progress-text" id="progressText">0%</div>',
+      '<div class="current-file" id="currentFile"></div>',
+      '</div>',
+      '<div class="actions" id="actions">',
+      '<button class="btn-secondary" onclick="cancel()">Cancelar</button>',
+      '<button class="btn-primary" onclick="confirm()">' + (files.length === 1 ? 'Subir archivo' : 'Subir todos') + '</button>',
+      '</div>',
+      '<script>',
+      'const { ipcRenderer } = require(\'electron\')',
+      'const progressContainer = document.getElementById(\'progressContainer\')',
+      'const progressFill = document.getElementById(\'progressFill\')',
+      'const progressText = document.getElementById(\'progressText\')',
+      'const currentFile = document.getElementById(\'currentFile\')',
+      'const actions = document.getElementById(\'actions\')',
+      'const timeoutContainer = document.getElementById(\'timeoutContainer\')',
+      'const timeoutFill = document.getElementById(\'timeoutFill\')',
+      'const timeoutText = document.getElementById(\'timeoutText\')',
+      '',
+      '// Archivos a subir (pasados desde el main process)',
+      'const filePaths = ' + filesJsonForJS + ';',
+      '',
+      'let autoClose = null',
+      'let countdownInterval = null',
+      'let remainingSeconds = 60',
+      'const TIMEOUT_MS = 60000',
+      '',
+      'function updateCountdown() {',
+      '  remainingSeconds--',
+      '  const percentage = (remainingSeconds / 60) * 100',
+      '  timeoutFill.style.width = percentage + "%"',
+      '  timeoutText.textContent = remainingSeconds + "s restantes"',
+      '  if (remainingSeconds <= 10) {',
+      '    timeoutText.style.color = "#ef4444"',
+      '    timeoutFill.style.background = "#ef4444"',
+      '  } else if (remainingSeconds <= 20) {',
+      '    timeoutText.style.color = "#f59e0b"',
+      '    timeoutFill.style.background = "#f59e0b"',
+      '  } else {',
+      '    timeoutText.style.color = "#888"',
+      '    timeoutFill.style.background = "#3b82f6"',
+      '  }',
+      '  if (remainingSeconds <= 0) {',
+      '    clearInterval(countdownInterval)',
+      '    clearTimeout(autoClose)',
+      '    ipcRenderer.send(\'notification-timeout\', { filePaths: filePaths })',
+      '    window.close()',
+      '  }',
+      '}',
+      '',
+      'function confirm() {',
+      '  clearTimeout(autoClose)',
+      '  clearInterval(countdownInterval)',
+      '  timeoutContainer.style.display = "none"',
+      '  progressContainer.classList.add("visible")',
+      '  actions.classList.add("uploading")',
+      '  ipcRenderer.send(\'notification-action\', { action: "upload", filePaths: filePaths })',
+      '}',
+      '',
+      'function cancel() {',
+      '  clearTimeout(autoClose)',
+      '  clearInterval(countdownInterval)',
+      '  ipcRenderer.send(\'notification-cancel\', { filePaths: filePaths })',
+      '  window.close()',
+      '}',
+      '',
+      'ipcRenderer.on(\'upload-progress\', (_, data) => {',
+      '  const { percent, current, total, fileName } = data',
+      '  progressFill.style.width = percent + "%"',
+      '  progressText.textContent = percent.toFixed(0) + "%"',
+      '  if (fileName) {',
+      '    currentFile.textContent = fileName',
+      '  }',
+      '})',
+      '',
+      'ipcRenderer.on(\'upload-complete\', () => {',
+      '  clearInterval(countdownInterval)',
+      '  timeoutContainer.style.display = "none"',
+      '  progressFill.style.width = "100%"',
+      '  progressText.textContent = "100% ✓"',
+      '  setTimeout(() => window.close(), 1500)',
+      '})',
+      '',
+      'countdownInterval = setInterval(updateCountdown, 1000)',
+      '',
+      'autoClose = setTimeout(() => {',
+      '  clearInterval(countdownInterval)',
+      '  if (!progressContainer.classList.contains("visible")) {',
+      '    ipcRenderer.send(\'notification-timeout\', { filePaths: filePaths })',
+      '    window.close()',
+      '  }',
+      '}, TIMEOUT_MS)',
+      '',
+      'setTimeout(() => {',
+      '  timeoutFill.style.width = "100%"',
+      '  timeoutFill.style.transition = "width 60s linear"',
+      '  timeoutFill.style.width = "0%"',
+      '}, 100)',
+      '</script>',
+      '</body>',
+      '</html>'
+    ]
+    
+    const htmlContent = htmlContentParts.join('\n')
+
+    notifWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(htmlContent)}`)
+    notifWindow.once('ready-to-show', () => notifWindow.show())
+    
+    notifWindow.on('closed', () => {
+      if (activeUploadWindow === notifWindow) {
+        activeUploadWindow = null
+      }
+    })
+  } catch (e) {
+    log.error('Error creando ventana de notificacion', e)
+  }
+}
+
+ipcMain.on('notification-action', async (_, { action, filePath, filePaths }) => {
+  if (action === 'upload') {
+    const targets = filePaths || (filePath ? [filePath] : [])
+    
+    if (targets.length === 0) return
+    
+    let completed = 0
+    const total = targets.length
+    
+    // Función para actualizar progreso
+    const updateProgress = (current, fileName) => {
+      const percent = (current / total) * 100
+      try {
+        if (activeUploadWindow && !activeUploadWindow.isDestroyed() && !activeUploadWindow.webContents.isDestroyed()) {
+          activeUploadWindow.webContents.send('upload-progress', {
+            percent,
+            current,
+            total,
+            fileName: fileName ? path.basename(fileName) : null
+          })
+        }
+      } catch (e) {
+        // Ventana cerrada durante la subida
+      }
+      if (mainWindow?.webContents && !mainWindow.webContents.isDestroyed()) {
+        mainWindow.webContents.send('file-upload-status', { status: 'uploading', file: fileName, progress: percent })
+      }
+    }
+    
+    // Subir archivos secuencialmente para mostrar progreso correcto
+    for (let i = 0; i < targets.length; i++) {
+      const p = targets[i]
+      const fileName = path.basename(p)
+      
+      try {
+        updateProgress(completed, p)
+        
+        const res = await uploadFile(p)
+        
+        if (res.success) {
+          completed++
+          updateProgress(completed, p)
+          
+          if (mainWindow?.webContents) {
+            mainWindow.webContents.send('file-uploaded', res.data)
+          }
+        } else {
+          completed++
+          updateProgress(completed, p)
+          
+          if (mainWindow?.webContents) {
+            mainWindow.webContents.send('file-upload-error', { file: p, error: res.error })
+          }
+          new Notification({ title: 'Error', body: `Error al subir ${fileName}.` }).show()
+        }
+      } catch (error) {
+        completed++
+        updateProgress(completed, p)
+        
+        if (mainWindow?.webContents) {
+          mainWindow.webContents.send('file-upload-error', { file: p, error: error?.message || 'Error desconocido' })
+        }
+        new Notification({ title: 'Error', body: `Error al subir ${fileName}.` }).show()
+      }
+    }
+    
+    // Notificar finalización
+    try {
+      if (activeUploadWindow && !activeUploadWindow.isDestroyed() && !activeUploadWindow.webContents.isDestroyed()) {
+        activeUploadWindow.webContents.send('upload-complete')
+      }
+    } catch (e) {
+      // Ventana ya cerrada
+    }
+    
+    // Mostrar notificación de éxito si todos fueron subidos correctamente
+    if (completed === total) {
+      new Notification({ 
+        title: 'Subida completada', 
+        body: total === 1 ? `${path.basename(targets[0])} se ha subido correctamente.` : `${total} archivos subidos correctamente.` 
+      }).show()
+    }
+  }
+})
+
+// Handler para cuando el timeout expira - reinicializar el estado de los archivos
+ipcMain.on('notification-timeout', (_, { filePaths }) => {
+  try {
+    // Reinicializar el estado de los archivos para que no se vuelvan a procesar
+    resetClipboardFilesState()
+    log.info('Timeout de notificación de subir archivos - estado reinicializado')
+  } catch (e) {
+    log.error('Error en notification-timeout', e)
+  }
+})
+
+// Handler para cuando el usuario cancela - reinicializar el estado de los archivos
+ipcMain.on('notification-cancel', (_, { filePaths }) => {
+  try {
+    // Reinicializar el estado de los archivos para que no se vuelvan a procesar
+    resetClipboardFilesState()
+    log.info('Usuario canceló notificación de subir archivos - estado reinicializado')
+  } catch (e) {
+    log.error('Error en notification-cancel', e)
+  }
+})
+
+async function uploadFile(filePath) {
+  try {
+    if (!authToken) return { success: false, message: 'No autenticado' }
+    if (!fs.existsSync(filePath)) return { success: false, message: 'Archivo no encontrado' }
+    
+    const form = new FormData()
+    form.append('file', fs.createReadStream(filePath))
+    
+    const axiosInstance = getAxiosInstance()
+    const clientId = activeDeviceName || os.hostname()
+    
+    const headers = {
+      ...axiosInstance.defaults.headers,
+      ...form.getHeaders(),
+      'x-device-id': clientId
+    }
+    
+    // Asegurar que el Content-Type sea el del form-data (multipart)
+    if (headers['Content-Type'] === 'application/json') {
+      delete headers['Content-Type']
+    }
+    // form-data devuelve headers en minúsculas usualmente
+    const formHeaders = form.getHeaders()
+    for (const k in formHeaders) {
+      headers[k] = formHeaders[k]
+    }
+    
+    const res = await axiosInstance.post('/api/files/upload', form, { headers })
+    return { success: true, data: res.data }
+  } catch (error) {
+    log.error('Error subiendo archivo', error?.message || error)
+    return { success: false, error: error?.message || 'Error de red' }
   }
 }
 
@@ -1829,7 +3052,7 @@ async function syncClipboardHistory () {
     const res = await axiosInstance.get('/clipboard', { params: { clientId } })
     const data = res?.data
     const items = (data && typeof data === 'object' ? (data.data?.items ?? data.items ?? []) : [])
-    
+
     const backendItems = Array.isArray(items)
       ? items.map(it => ({
           id: it && (it.id || (it.item && it.item.id)) || null,
@@ -1843,9 +3066,12 @@ async function syncClipboardHistory () {
       db.importItems(getCurrentDeviceName(), backendItems)
     }
 
+    const remoteValues = backendItems.map(it => it.value)
+    db.deleteNotInRemote(getCurrentDeviceName(), remoteValues)
+
     history = db.getAll(getCurrentDeviceName())
     if (mainWindow?.webContents) {
-      mainWindow.webContents.send('clipboard-update', history)
+      mainWindow.webContents.send('clipboard-update', augmentHistoryWithImagePaths(history))
       mainWindow.webContents.send('sync-progress', { percentage: 100, message: 'Completado' })
     }
 
@@ -1968,23 +3194,44 @@ ipcMain.handle('auth-login', async (_, body) => {
 
 ipcMain.handle('clear-user-data', async () => {
   try {
-    const baseDir = path.join(app.getPath('userData'), 'devices')
-    if (fs.existsSync(baseDir)) {
-      try { fs.rmSync(baseDir, { recursive: true, force: true }) } catch {}
-    }
     try { fs.rmSync(legacyHistoryPath, { force: true }) } catch {}
+    // Limpiar configuración de la DB
     try {
-      const alt1 = path.join(__dirname, '.clipboard-history.json')
-      const alt2 = path.join(__dirname, 'clipboard-history.json')
-      if (fs.existsSync(alt1)) { try { fs.rmSync(alt1, { force: true }) } catch {} }
-      if (fs.existsSync(alt2)) { try { fs.rmSync(alt2, { force: true }) } catch {} }
+      db.removeConfig('session')
+      db.removeConfig('x-token')
+      db.removeConfig('preferences')
+      db.removeConfig('devices')
+    } catch {}
+    try {
+      // Limpiar archivos legacy en diferentes ubicaciones posibles (multiplataforma)
+      const legacyPaths = [
+        legacyHistoryPath, // Ya verificado arriba
+        path.join(os.homedir(), 'clipboard-history.json'), // Alternativa
+        path.join(app.getPath('userData'), 'clipboard-history.json'), // En userData
+      ]
+      
+      // Solo intentar limpiar __dirname si estamos en desarrollo (no empaquetado)
+      if (!app.isPackaged) {
+        legacyPaths.push(
+          path.join(__dirname, '.clipboard-history.json'),
+          path.join(__dirname, 'clipboard-history.json')
+        )
+      }
+      
+      for (const legacyPath of legacyPaths) {
+        try {
+          if (fs.existsSync(legacyPath)) {
+            fs.rmSync(legacyPath, { force: true })
+          }
+        } catch {}
+      }
     } catch {}
     authToken = null
     deviceId = null
     activeDeviceName = null
     history = []
     if (mainWindow?.webContents) {
-      mainWindow.webContents.send('clipboard-update', history)
+      mainWindow.webContents.send('clipboard-update', augmentHistoryWithImagePaths(history))
     }
   } catch (error) {
     log.error('clear-user-data error', error?.message || error)
@@ -1993,21 +3240,40 @@ ipcMain.handle('clear-user-data', async () => {
 
 ipcMain.handle('get-preferences', async () => {
   try {
-    const obj = readDeviceConfigObj()
-    return obj.preferences || {}
-  } catch {
+    const prefsStr = db.getConfig('preferences')
+    return prefsStr ? JSON.parse(prefsStr) : {}
+  } catch (e) {
+    log.error('get-preferences error:', e)
     return {}
   }
 })
 
 ipcMain.handle('set-preferences', async (_, patch) => {
   try {
-    const obj = readDeviceConfigObj()
+    const prefsStr = db.getConfig('preferences')
+    const currentPrefs = prefsStr ? JSON.parse(prefsStr) : {}
     const prefs = (patch && typeof patch === 'object') ? patch : {}
-    obj.preferences = { ...(obj.preferences || {}), ...prefs }
-    writeDeviceConfigObj(obj)
-    return obj.preferences
-  } catch {
+    
+    // Si alguna preferencia es undefined, eliminarla del objeto
+    const newPrefs = { ...currentPrefs }
+    for (const key in prefs) {
+      if (prefs[key] === undefined || prefs[key] === null) {
+        delete newPrefs[key]
+      } else {
+        newPrefs[key] = prefs[key]
+      }
+    }
+    
+    db.setConfig('preferences', JSON.stringify(newPrefs))
+    
+    // Si cambiaron los atajos, recargar
+    if (prefs.shortcutModifier || prefs.shortcutKey) {
+      app.emit('update-shortcuts')
+    }
+    
+    return newPrefs
+  } catch (e) {
+    log.error('set-preferences error:', e)
     return {}
   }
 })
@@ -2017,9 +3283,9 @@ ipcMain.handle('search-history', async (_, payload) => {
     const f = (payload && typeof payload === 'object') ? String(payload.filter || 'all') : 'all'
     if (!authToken) {
       if (f === 'favorite') return []
-      return db.searchGuest(getCurrentDeviceName(), q, f)
+      return augmentHistoryWithImagePaths(db.searchGuest(getCurrentDeviceName(), q, f))
     }
-    return db.search(getCurrentDeviceName(), q, f)
+    return augmentHistoryWithImagePaths(db.search(getCurrentDeviceName(), q, f))
   } catch {
     return []
   }
@@ -2030,13 +3296,387 @@ ipcMain.handle('list-recent', async (_, payload) => {
     const limit = (payload && typeof payload === 'object') ? Number(payload.limit || 50) : 50
     if (!authToken) {
       if (f === 'favorite') return []
-      return db.getRecentGuest(getCurrentDeviceName(), f, limit)
+      return augmentHistoryWithImagePaths(db.getRecentGuest(getCurrentDeviceName(), f, limit))
     }
-    return db.getRecent(getCurrentDeviceName(), f, limit)
+    return augmentHistoryWithImagePaths(db.getRecent(getCurrentDeviceName(), f, limit))
   } catch {
     return []
   }
 })
+
+ipcMain.handle('list-files', async (_, params) => {
+  try {
+    // Validar autenticación - solo usuarios logueados pueden ver archivos
+    if (!authToken) {
+      log.info('Intento de listar archivos sin autenticación')
+      return { success: false, error: 'No autenticado', items: [] }
+    }
+
+    const axiosInstance = getAxiosInstance()
+    
+    // Configurar parámetros de paginación con defaults correctos
+    const page = params?.page ? Math.max(1, parseInt(params.page)) : 1
+    const limit = params?.limit ? Math.min(200, Math.max(1, parseInt(params.limit))) : 50
+    
+    // Siempre incluir clientId - usar el de params si existe, sino activeDeviceName, sino hostname
+    const p = { page, limit }
+    p.clientId = params?.clientId || activeDeviceName || os.hostname()
+    
+    log.info('list-files FULL URL:', `${axiosInstance.defaults.baseURL}/api/files`, 'PARAMS:', p)
+    const res = await axiosInstance.get('/api/files', { params: p })
+    log.info('list-files response data:', JSON.stringify(res.data, null, 2))
+    return res.data
+  } catch (e) {
+    log.error('list-files error:', e.message)
+    if (e.response) log.error('list-files response error:', e.response.data)
+    return { success: false, error: e.message, items: [] }
+  }
+})
+
+ipcMain.handle('delete-file', async (_, fileId) => {
+  try {
+    // Validar autenticación - solo usuarios logueados pueden eliminar archivos
+    if (!authToken) {
+      log.info('Intento de eliminar archivo sin autenticación')
+      return { success: false, error: 'No autenticado' }
+    }
+
+    const axiosInstance = getAxiosInstance()
+    const res = await axiosInstance.delete(`/api/files/${fileId}`)
+    return res.data
+  } catch (e) {
+    return { success: false, error: e.message }
+  }
+})
+
+ipcMain.handle('download-file', async (_, fileId, fileName) => {
+  let writer = null
+  let progressStream = null
+  let responseStream = null
+  
+  try {
+    // Validar autenticación - solo usuarios logueados pueden descargar archivos
+    if (!authToken) {
+      log.info('Intento de descargar archivo sin autenticación')
+      return { success: false, error: 'No autenticado', canceled: false }
+    }
+
+    const axiosInstance = getAxiosInstance()
+    
+    let filePath
+    
+    // En Linux, descargar directamente sin abrir diálogo del sistema
+    if (process.platform === 'linux') {
+      // Obtener directorio de descargas
+      let defaultDir
+      try {
+        defaultDir = path.join(os.homedir(), 'Downloads')
+        // Si no existe Downloads, usar home
+        if (!fs.existsSync(defaultDir)) {
+          defaultDir = os.homedir()
+        }
+      } catch {
+        defaultDir = os.homedir()
+      }
+      
+      // Construir ruta completa
+      const defaultFileName = fileName || 'downloaded-file'
+      let finalPath = path.join(defaultDir, defaultFileName)
+      
+      // Si el archivo ya existe, agregar un número para evitar sobrescribir
+      if (fs.existsSync(finalPath)) {
+        const ext = path.extname(defaultFileName)
+        const baseName = path.basename(defaultFileName, ext)
+        let counter = 1
+        do {
+          finalPath = path.join(defaultDir, `${baseName} (${counter})${ext}`)
+          counter++
+        } while (fs.existsSync(finalPath) && counter < 1000)
+      }
+      
+      filePath = finalPath
+      
+      // Mostrar notificación informando al usuario
+      try {
+        const displayName = path.basename(filePath)
+        new Notification({
+          title: 'Descarga iniciada',
+          body: `El archivo se guardará en: ${defaultDir}\n${displayName}`,
+          silent: false
+        }).show()
+      } catch (notifError) {
+        log.warn('No se pudo mostrar notificación:', notifError)
+      }
+      
+      log.info('Linux: Descargando directamente a', filePath)
+    } else {
+      // Para Windows y macOS, usar el diálogo del sistema
+      // Obtener directorio de descargas por defecto
+      let defaultDir
+      try {
+        if (process.platform === 'win32') {
+          defaultDir = path.join(os.homedir(), 'Downloads')
+        } else if (process.platform === 'darwin') {
+          defaultDir = path.join(os.homedir(), 'Downloads')
+        } else {
+          defaultDir = path.join(os.homedir(), 'Downloads')
+        }
+      } catch {
+        defaultDir = os.homedir()
+      }
+      
+      // Construir ruta por defecto completa
+      const defaultFileName = fileName || 'downloaded-file'
+      const defaultPath = path.join(defaultDir, defaultFileName)
+      
+      // Preparar opciones del diálogo
+      const dialogOptions = {
+        title: 'Guardar archivo',
+        defaultPath: defaultPath,
+        buttonLabel: 'Guardar'
+      }
+      
+      // Agregar filtros si hay extensión
+      if (fileName && path.extname(fileName)) {
+        const ext = path.extname(fileName).slice(1)
+        if (ext) {
+          dialogOptions.filters = [
+            { name: 'Archivos', extensions: [ext] },
+            { name: 'Todos los archivos', extensions: ['*'] }
+          ]
+        }
+      }
+      
+      log.info('Mostrando diálogo de guardado', { defaultPath, fileName, platform: process.platform })
+      
+      // Mostrar el diálogo
+      let dialogResult
+      try {
+        // Para Windows y macOS, usar la ventana padre si está disponible
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          // Asegurar que la ventana esté visible y enfocada
+          if (!mainWindow.isVisible()) {
+            mainWindow.show()
+          }
+          mainWindow.focus()
+          // Pequeño delay para asegurar que la ventana esté lista
+          await new Promise(resolve => setTimeout(resolve, 100))
+          dialogResult = await dialog.showSaveDialog(mainWindow, dialogOptions)
+        } else {
+          // Si no hay ventana, mostrar diálogo sin ventana padre
+          log.info('Mostrando diálogo sin ventana padre')
+          dialogResult = await dialog.showSaveDialog(dialogOptions)
+        }
+      } catch (dialogError) {
+        log.error('Error en showSaveDialog:', dialogError)
+        // Intentar una vez más sin ventana padre si falló con ventana
+        try {
+          log.info('Reintentando diálogo sin ventana padre')
+          dialogResult = await dialog.showSaveDialog(dialogOptions)
+        } catch (retryError) {
+          log.error('Error en segundo intento de diálogo:', retryError)
+          return { success: false, error: `Error al abrir diálogo de guardado: ${retryError.message || dialogError.message}`, canceled: true }
+        }
+      }
+      
+      if (!dialogResult) {
+        log.warn('Dialog result es null/undefined')
+        return { success: false, canceled: true }
+      }
+      
+      const { canceled, filePath: selectedPath } = dialogResult
+      if (canceled || !selectedPath || !selectedPath.trim()) {
+        log.info('Usuario canceló la descarga o no seleccionó ruta')
+        return { success: false, canceled: true }
+      }
+      
+      filePath = selectedPath
+      log.info('Ruta seleccionada para descarga:', filePath)
+    }
+    
+    // Validar que el directorio existe y es escribible
+    const dir = path.dirname(filePath)
+    try {
+      if (!fs.existsSync(dir)) {
+        fs.mkdirSync(dir, { recursive: true })
+      }
+      // Verificar permisos de escritura
+      fs.accessSync(dir, fs.constants.W_OK)
+    } catch (dirError) {
+      log.error('Error creando/verificando directorio:', dirError)
+      return { success: false, error: `No se pudo crear o escribir en el directorio: ${dirError.message}` }
+    }
+    
+    // En Linux, agregar un pequeño delay antes de iniciar la descarga para evitar bloqueos
+    if (process.platform === 'linux') {
+      await new Promise(resolve => setTimeout(resolve, 100))
+    }
+    
+    const res = await axiosInstance.get(`/api/files/${fileId}/download`, { responseType: 'stream' })
+    responseStream = res.data
+    
+    // Obtener el tamaño total del archivo desde los headers
+    const totalSize = parseInt(res.headers['content-length'] || '0', 10)
+    let downloadedSize = 0
+    
+    // Enviar evento inicial de inicio de descarga
+    if (mainWindow?.webContents && !mainWindow.webContents.isDestroyed()) {
+      mainWindow.webContents.send('download-progress', {
+        fileName: fileName || 'downloaded-file',
+        percentage: 0,
+        downloaded: 0,
+        total: totalSize
+      })
+    }
+    
+    // Crear un stream intermedio para monitorear el progreso
+    progressStream = new PassThrough()
+    writer = fs.createWriteStream(filePath)
+    
+    // Manejo de errores en el stream de respuesta
+    responseStream.on('error', (err) => {
+      log.error('Error en stream de respuesta:', err)
+      if (writer && !writer.destroyed) {
+        writer.destroy()
+      }
+      if (progressStream && !progressStream.destroyed) {
+        progressStream.destroy()
+      }
+      if (mainWindow?.webContents && !mainWindow.webContents.isDestroyed()) {
+        mainWindow.webContents.send('download-progress', {
+          fileName: fileName || 'downloaded-file',
+          percentage: 0,
+          error: err.message || 'Error en la descarga'
+        })
+      }
+    })
+    
+    // Manejo de errores en el progressStream
+    progressStream.on('error', (err) => {
+      log.error('Error en progressStream:', err)
+      if (writer && !writer.destroyed) {
+        writer.destroy()
+      }
+      if (responseStream && !responseStream.destroyed) {
+        responseStream.destroy()
+      }
+      if (mainWindow?.webContents && !mainWindow.webContents.isDestroyed()) {
+        mainWindow.webContents.send('download-progress', {
+          fileName: fileName || 'downloaded-file',
+          percentage: 0,
+          error: err.message || 'Error en el progreso de descarga'
+        })
+      }
+    })
+    
+    // Monitorear el progreso de descarga en el stream intermedio
+    progressStream.on('data', (chunk) => {
+      downloadedSize += chunk.length
+      if (mainWindow?.webContents && !mainWindow.webContents.isDestroyed()) {
+        const percentage = totalSize > 0 ? Math.min(100, Math.round((downloadedSize / totalSize) * 100)) : 0
+        mainWindow.webContents.send('download-progress', {
+          fileName: fileName || 'downloaded-file',
+          percentage,
+          downloaded: downloadedSize,
+          total: totalSize
+        })
+      }
+    })
+    
+    // Pipe el stream de respuesta a través del stream de progreso y luego al writer
+    responseStream.pipe(progressStream).pipe(writer)
+    
+    return new Promise((resolve, reject) => {
+      // Timeout de seguridad (30 minutos máximo)
+      const timeout = setTimeout(() => {
+        log.error('Timeout en descarga de archivo')
+        if (writer && !writer.destroyed) writer.destroy()
+        if (progressStream && !progressStream.destroyed) progressStream.destroy()
+        if (responseStream && !responseStream.destroyed) responseStream.destroy()
+        if (mainWindow?.webContents && !mainWindow.webContents.isDestroyed()) {
+          mainWindow.webContents.send('download-progress', {
+            fileName: fileName || 'downloaded-file',
+            percentage: 0,
+            error: 'Timeout en la descarga'
+          })
+        }
+        reject({ success: false, error: 'Timeout en la descarga' })
+      }, 30 * 60 * 1000)
+      
+      writer.on('finish', () => {
+        clearTimeout(timeout)
+        // Enviar evento de finalización
+        if (mainWindow?.webContents && !mainWindow.webContents.isDestroyed()) {
+          mainWindow.webContents.send('download-progress', {
+            fileName: fileName || 'downloaded-file',
+            percentage: 100,
+            downloaded: totalSize || downloadedSize,
+            total: totalSize || downloadedSize
+          })
+        }
+        
+        // En Linux, mostrar notificación de descarga completada
+        if (process.platform === 'linux') {
+          try {
+            const displayName = path.basename(filePath)
+            new Notification({
+              title: 'Descarga completada',
+              body: `${displayName}\nGuardado en: ${path.dirname(filePath)}`,
+              silent: false
+            }).show()
+          } catch (notifError) {
+            log.warn('No se pudo mostrar notificación de completado:', notifError)
+          }
+        }
+        
+        resolve({ success: true })
+      })
+      
+      writer.on('error', (e) => {
+        clearTimeout(timeout)
+        log.error('Error en writer:', e)
+        // Limpiar streams
+        if (progressStream && !progressStream.destroyed) progressStream.destroy()
+        if (responseStream && !responseStream.destroyed) responseStream.destroy()
+        // Enviar evento de error
+        if (mainWindow?.webContents && !mainWindow.webContents.isDestroyed()) {
+          mainWindow.webContents.send('download-progress', {
+            fileName: fileName || 'downloaded-file',
+            percentage: 0,
+            error: e.message || 'Error al escribir archivo'
+          })
+        }
+        reject({ success: false, error: e.message || 'Error al escribir archivo' })
+      })
+      
+      // Manejar cierre del stream de respuesta
+      responseStream.on('end', () => {
+        // El stream terminó, esperar a que el writer termine
+      })
+    })
+  } catch (e) {
+    log.error('Error en download-file:', e)
+    // Limpiar recursos en caso de error
+    try {
+      if (writer && !writer.destroyed) writer.destroy()
+      if (progressStream && !progressStream.destroyed) progressStream.destroy()
+      if (responseStream && !responseStream.destroyed) responseStream.destroy()
+    } catch (cleanupError) {
+      log.error('Error limpiando recursos:', cleanupError)
+    }
+    
+    // Enviar evento de error en caso de excepción
+    if (mainWindow?.webContents && !mainWindow.webContents.isDestroyed()) {
+      mainWindow.webContents.send('download-progress', {
+        fileName: fileName || 'downloaded-file',
+        percentage: 0,
+        error: e.message || 'Error desconocido'
+      })
+    }
+    return { success: false, error: e.message || 'Error desconocido' }
+  }
+})
+
 process.on('unhandledRejection', (reason) => {
   try { log.error('unhandledRejection', reason?.message || reason) } catch {}
 })
