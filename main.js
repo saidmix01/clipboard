@@ -972,7 +972,7 @@ function createWindow () {
         : path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
-      devTools: true // !app.isPackaged
+      devTools: !app.isPackaged
     }
   })
 
@@ -981,7 +981,6 @@ function createWindow () {
     // En producción, usar app.getAppPath() que funciona correctamente en todas las plataformas
     const indexPath = path.join(app.getAppPath(), 'frontend', 'dist', 'index.html')
     mainWindow.loadFile(indexPath)
-    mainWindow.webContents.openDevTools({ mode: 'detach' })
   } else {
     // En desarrollo, usar el servidor de Vite
     mainWindow.loadURL('http://localhost:5173')
