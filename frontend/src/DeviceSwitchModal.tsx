@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { API_BASE } from './config'
 import { ComputerDesktopIcon } from '@heroicons/react/24/outline'
 import DetailsModal from './components/DetailsModal'
+import { useTranslation } from 'react-i18next'
 
 type Props = {
   isOpen: boolean
@@ -10,6 +11,7 @@ type Props = {
 }
 
 export default function DeviceSwitchModal({ isOpen, onClose, onApplied }: Props) {
+  const { t } = useTranslation()
   const [devices, setDevices] = useState<string[]>([])
   const [selected, setSelected] = useState<string>('')
   const [loading, setLoading] = useState(false)
@@ -63,8 +65,8 @@ export default function DeviceSwitchModal({ isOpen, onClose, onApplied }: Props)
         }
         if (!initial && Array.isArray(list) && list.length) initial = list[0]
         setSelected(initial)
-      } catch {
-        setError('No se pudieron cargar los dispositivos')
+      } catch (e) {
+        setError(t('device.error_load_devices'))
       } finally {
         setLoading(false)
       }
@@ -103,10 +105,10 @@ export default function DeviceSwitchModal({ isOpen, onClose, onApplied }: Props)
           if (Array.isArray(hist)) onApplied(hist)
         })
         .catch(() => {
-          setError('No se pudo cargar el historial del dispositivo')
+          setError(t('device.error_load_history'))
         })
     } catch {
-      setError('No se pudo cargar el historial del dispositivo')
+      setError(t('device.error_load_history'))
     } finally {
       setLoading(false)
     }
@@ -115,12 +117,12 @@ export default function DeviceSwitchModal({ isOpen, onClose, onApplied }: Props)
   return (
     <DetailsModal open={isOpen} onClose={onClose}>
       <div className="space-y-3">
-        <h3 className="m-0">Cambiar dispositivo</h3>
+        <h3 className="m-0">{t('device.title')}</h3>
         <div className="mt-1">
-          <label className="text-sm opacity-80 mb-2 block">Selecciona dispositivo</label>
+          <label className="text-sm opacity-80 mb-2 block">{t('device.select_label')}</label>
           <div className="max-h-[36vh] overflow-auto space-y-2">
             {devices.length === 0 && (
-              <div className="text-sm opacity-70">Sin dispositivos</div>
+              <div className="text-sm opacity-70">{t('device.no_devices')}</div>
             )}
             {devices.map((d, i) => {
               const isSel = selected === d
@@ -145,15 +147,15 @@ export default function DeviceSwitchModal({ isOpen, onClose, onApplied }: Props)
         {error && <div className="text-sm" style={{ color: 'var(--color-accent)' }}>{error}</div>}
         {loading && (
           <div className="mt-2 space-y-2">
-            <div className="text-sm opacity-80">{status || 'Sincronizando...'}</div>
+            <div className="text-sm opacity-80">{status || t('device.status_syncing')}</div>
             <div className="w-full h-2 rounded-md" style={{ background: 'var(--color-bg)' }}>
               <div className="h-full rounded-md" style={{ width: `${Math.max(0, Math.min(100, progress))}%`, background: 'var(--color-primary)' }} />
             </div>
           </div>
         )}
         <div className="flex gap-2 mt-2">
-          <button onClick={apply} disabled={!selected || loading} className="px-3 py-2 rounded-md border border-[color:var(--color-border)] text-[color:var(--color-text)]">Aplicar</button>
-          <button onClick={onClose} className="px-3 py-2 rounded-md border border-[color:var(--color-border)] text-[color:var(--color-text)]">Cancelar</button>
+          <button onClick={apply} disabled={!selected || loading} className="px-3 py-2 rounded-md border border-[color:var(--color-border)] text-[color:var(--color-text)]">{t('device.apply')}</button>
+          <button onClick={onClose} className="px-3 py-2 rounded-md border border-[color:var(--color-border)] text-[color:var(--color-text)]">{t('device.cancel')}</button>
         </div>
       </div>
     </DetailsModal>

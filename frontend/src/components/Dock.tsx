@@ -1,5 +1,5 @@
 import { motion } from 'framer-motion'
-import { TagIcon, Squares2X2Icon, Cog6ToothIcon, UserCircleIcon, ArrowRightStartOnRectangleIcon, ArrowLeftEndOnRectangleIcon, UserPlusIcon, DocumentTextIcon } from '@heroicons/react/24/outline'
+import { TagIcon, DocumentTextIcon } from '@heroicons/react/24/outline'
 import type { FilterType } from '../types'
 
 type DockItem = {
@@ -35,26 +35,17 @@ export default function Dock({ items, userAvatar, filter, onChangeFilter, disabl
         </motion.button>
         {items.map((it, idx) => (
           <motion.button key={idx} whileHover={{ scale: 1.06 }} whileTap={{ scale: 0.98 }} className="px-3 py-2 rounded-[12px] text-[color:var(--color-text)] hover:bg-[color:var(--color-surface)] transition" onClick={it.onClick} title={it.label}>
-            {it.label === 'Ajustes' ? <Cog6ToothIcon className="w-5 h-5" /> :
-             it.label === 'Perfil' ? (
-               userAvatar && !avatarError ? (
-                 <img src={userAvatar} className="w-5 h-5 rounded-full object-cover" onError={() => setAvatarError(true)} />
-               ) : (
-                 <UserCircleIcon className="w-5 h-5" />
-               )
-             ) :
-             it.label === 'Cerrar sesión' ? <ArrowRightStartOnRectangleIcon className="w-5 h-5" /> :
-             it.label === 'Iniciar sesión' ? <ArrowLeftEndOnRectangleIcon className="w-5 h-5" /> :
-             it.label === 'Registrarse' ? <UserPlusIcon className="w-5 h-5" /> : it.icon}
+            {it.label === 'Perfil' && userAvatar && !avatarError ? (
+               <img src={userAvatar} className="w-5 h-5 rounded-full object-cover" onError={() => setAvatarError(true)} />
+             ) : (
+               it.icon
+             )}
           </motion.button>
         ))}
       </div>
       {filtersOpen && (
         <div className="absolute bottom-16 left-0 right-0 mx-3 z-[20000] glass px-2 py-2">
-          <div className="grid grid-cols-5 gap-2">
-            <button className={btn(filter === 'all')} onClick={() => { onChangeFilter('all'); setFiltersOpen(false) }}>
-              <span className="flex flex-col items-center gap-1"><Squares2X2Icon className="w-4 h-4" /><span className="text-[10px]">Todo</span></span>
-            </button>
+          <div className="grid grid-cols-4 gap-2">
             <button className={btn(filter === 'text')} onClick={() => { onChangeFilter('text'); setFiltersOpen(false) }}>
               <span className="flex flex-col items-center gap-1"><span className="text-base leading-none">🔤</span><span className="text-[10px]">Texto</span></span>
             </button>

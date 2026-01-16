@@ -1,7 +1,9 @@
 import { useEffect, useState, useRef, useCallback } from 'react'
 import type { ReactNode } from 'react'
 import { Toaster, toast } from 'react-hot-toast'
+import { useTranslation } from 'react-i18next'
 import { motion } from 'framer-motion'
+import { Cog6ToothIcon, UserCircleIcon, ArrowRightStartOnRectangleIcon, ArrowLeftEndOnRectangleIcon, UserPlusIcon } from '@heroicons/react/24/outline'
 import LoginModal from './Login'
 import UserModal from './UserModal'
 import DeviceSwitchModal from './DeviceSwitchModal'
@@ -20,9 +22,6 @@ import ContextMenu from './components/ContextMenu'
 import DeleteModal from './components/DeleteModal'
 import type { HistoryItem, FilterType } from './types'
 
-
-// tipos movidos a ./types
-
 const formatBytes = (bytes: number, decimals = 2) => {
   if (!+bytes) return '0 B'
   const k = 1024
@@ -33,7 +32,7 @@ const formatBytes = (bytes: number, decimals = 2) => {
 }
 
 function App () {
-  const [filter, setFilter] = useState<FilterType>('all')
+  const [filter, setFilter] = useState<FilterType>('text')
   const [displayed, setDisplayed] = useState<HistoryItem[]>([])
   const [listLoading, setListLoading] = useState<boolean>(false)
   const [syncing, setSyncing] = useState<boolean>(false)
@@ -65,7 +64,7 @@ function App () {
       ;(window as any).electronAPI?.setAuthToken?.('')
       await (window as any).electronAPI?.clearUserData?.()
     } catch {}
-    toast.success('Sesión cerrada')
+    toast.success(t('notifications.session_closed'))
   }
 
   async function refreshAuthToken () {
@@ -91,11 +90,14 @@ function App () {
         refreshTokenType: typeof rt,
         refreshTokenLength: String(rt).length
       })
+
+      const requestPayload = { refreshToken: rt }
+      console.log('refreshAuthToken: Sending payload:', requestPayload)
       
       const res = await fetch(`${API_BASE}/auth/refresh`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ refreshToken: rt })
+        body: JSON.stringify(requestPayload)
       })
       const data = await res.json()
       const payload = (data && typeof data === 'object' ? (data.data ?? data) : {}) as any
@@ -140,8 +142,8 @@ function App () {
     } catch {}
   }
 
-  // Ref para el contenedor scrollable y para cada item
-  const itemRefs = useRef<(HTMLDivElement | null)[]>([])
+  // Scroll gestionado internamente por HistoryList
+  // const itemRefs = useRef... eliminado ya que HistoryList maneja su propio scroll
 
   const [files, setFiles] = useState<any[]>([])
   const [filesLoading, setFilesLoading] = useState(false)
@@ -228,7 +230,7 @@ function App () {
   useEffect(() => {
     if ((window as any).electronAPI?.onFileUploaded) {
       const off = (window as any).electronAPI.onFileUploaded(() => {
-         toast.success('Archivo subido')
+         toast.success(t('notifications.file_uploaded'))
          if (filter === 'documents') {
             // Recargar la primera página después de subir un archivo
             setFilesPage(1)
@@ -242,12 +244,12 @@ function App () {
   useEffect(() => {
     if ((window as any).electronAPI?.onFileUploadError) {
       const off = (window as any).electronAPI.onFileUploadError((err: any) => {
-         const msg = err?.error || 'Error al subir archivo'
+         const msg = err?.error || t('notifications.upload_error', { msg: 'Unknown' })
          // Mensaje para el usuario si no hay internet
          if (String(msg).includes('Network') || String(msg).includes('EAI_AGAIN') || String(msg).includes('ENOTFOUND')) {
-            toast.error('No hay conexión a internet para subir el archivo')
+            toast.error(t('notifications.no_internet_upload'))
          } else {
-            toast.error(`Error al subir: ${msg}`)
+            toast.error(t('notifications.upload_error', { msg }))
          }
       })
       return () => { try { off?.() } catch {} }
@@ -415,11 +417,16 @@ function App () {
     if ((window as any).electronAPI?.onClipboardUpdate) {
       const off = (window as any).electronAPI.onClipboardUpdate((data: HistoryItem[]) => {
         setHistory(data)
-        setFilter('all')
+        setFilter('text')
         if (!searchLocked) {
           setSearch('')
           if (Array.isArray(data)) {
-            setDisplayed(data.slice(0, 50))
+            const textOnly = data.filter(d => 
+              !d.value.startsWith('data:image') && 
+              !d.value.startsWith('[LOCAL_IMAGE]:') && 
+              !(d as any).imagePath
+            )
+            setDisplayed(textOnly.slice(0, 50))
           }
         }
         setListLoading(false)
@@ -543,9 +550,9 @@ function App () {
           setSyncPct(pct)
           if (pct === 100) {
             if (msg.toLowerCase().includes('fallida')) {
-              toast.error('Sincronización fallida')
+              toast.error(t('notifications.sync_failed'))
             } else {
-              toast.success('Sincronización completada')
+              toast.success(t('notifications.sync_completed'))
             }
           }
         } catch {}
@@ -571,7 +578,7 @@ function App () {
               setDownloadFileName('')
               setDownloadBytes(0)
               setDownloadTotal(0)
-              toast.error(`Error al descargar: ${error}`)
+              toast.error(t('notifications.download_error_msg', { error }))
             } else {
               setDownloadFileName(fileName)
               setDownloadPct(pct)
@@ -641,6 +648,24 @@ function App () {
   const [itemToDelete, setItemToDelete] = useState<HistoryItem | null>(null)
   const [deletingLoading, setDeletingLoading] = useState<boolean>(false)
 
+  // Screenshot Confirmation State
+  const [_showScreenshotModal, setShowScreenshotModal] = useState(false)
+  const [_screenshotPreview, setScreenshotPreview] = useState<string | null>(null)
+  
+  const { t } = useTranslation()
+
+  useEffect(() => {
+    if ((window as any).electronAPI?.onConfirmScreenshot) {
+      const off = (window as any).electronAPI.onConfirmScreenshot((data: { preview: string }) => {
+        setScreenshotPreview(data.preview)
+        setShowScreenshotModal(true)
+        // Bring window to front handled by main process
+      })
+      return () => { try { off?.() } catch {} }
+    }
+  }, [])
+
+
   if (isQuick) {
     return (
       <>
@@ -654,13 +679,8 @@ function App () {
     )
   }
 
-  // Scroll automático cuando cambia selectedIndex
-  useEffect(() => {
-    const itemEl = itemRefs.current[selectedIndex]
-    if (itemEl && itemEl.scrollIntoView) {
-      itemEl.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'nearest' })
-    }
-  }, [selectedIndex, displayed])
+  // Scroll automático movido a HistoryList para mejor control del DOM
+
 
   useEffect(() => {
     const keyListener = (e: KeyboardEvent) => {
@@ -675,14 +695,14 @@ function App () {
         e.preventDefault()
         if (selectedIndex >= 0 && selectedIndex < displayed.length) {
           const item = displayed[selectedIndex]
-          if (item.value.startsWith('data:image')) {
+          if (item.value.startsWith('data:image') || item.value.startsWith('[LOCAL_IMAGE]:') || !!(item as any).imagePath) {
             ;(window as any).electronAPI?.copyImage?.(item.value)
             setTimeout(() => { ;(window as any).electronAPI.pasteImage() }, 300)
-            toast.success('Imagen copiada al portapapeles')
+            // toast.success(t('notifications.image_copied'))
           } else {
             ;(window as any).electronAPI?.copyText(item.value)
             setTimeout(() => { ;(window as any).electronAPI?.pasteText() }, 100)
-            toast.success('Pegado automáticamente')
+            toast.success(t('notifications.auto_pasted'))
           }
           setTimeout(() => { ;(window as any).electronAPI?.hideWindow?.() }, 500)
         }
@@ -710,6 +730,17 @@ function App () {
     if ((window as any).electronAPI?.onFocusSearch) {
       ;(window as any).electronAPI.onFocusSearch(() => {
         try {
+          // Reset UI state on window show
+          setSettingsOpen(false)
+          setShowLogin(false)
+          setShowRegister(false)
+          setShowUserModal(false)
+          setShowDeviceSwitch(false)
+          setAboutOpen(false)
+          setContextMenu(null)
+          setItemToDelete(null)
+          setSelectedIndex(0)
+
           const el = searchInputRef.current
           el?.focus()
           ;(el as any)?.select?.()
@@ -776,16 +807,16 @@ function App () {
             darkMode={darkMode}
             onClose={() => setSettingsOpen(false)}
             onChangeDevice={() => { setSettingsOpen(false); setShowDeviceSwitch(true) }}
-            onForceUpdate={() => { setSettingsOpen(false); toast('Buscando actualizaciones...'); (window as any).electronAPI?.forceUpdate?.() }}
+            onForceUpdate={() => { setSettingsOpen(false); toast(t('notifications.checking_updates')); (window as any).electronAPI?.forceUpdate?.() }}
             onToggleDark={() => { setSettingsOpen(false); setDarkMode(prev => !prev) }}
-            onClearHistory={() => { setSettingsOpen(false); (window as any).electronAPI?.clearHistory?.(); toast.success('Historial eliminado') }}
+            onClearHistory={() => { setSettingsOpen(false); (window as any).electronAPI?.clearHistory?.(); toast.success(t('notifications.history_cleared')) }}
             onSyncNow={async () => {
               try {
                 setSettingsOpen(false)
                 const dev = await (window as any).electronAPI?.getActiveDevice?.()
                 await (window as any).electronAPI?.switchActiveDevice?.(dev || '')
               } catch {
-                toast.error('Error al iniciar sincronización')
+                toast.error(t('notifications.sync_error'))
               }
             }}
             onOpenAbout={() => { setSettingsOpen(false); setAboutOpen(true) }}
@@ -793,7 +824,7 @@ function App () {
           <div className="px-3 pt-1">
             <input
               type='text'
-              placeholder='Buscar en el historial…'
+              placeholder={t('search_placeholder')}
               value={search}
               onChange={e => setSearch(e.target.value)}
               ref={searchInputRef}
@@ -834,16 +865,16 @@ function App () {
           {filter === 'documents' ? (
             !token ? (
               <div className="flex-1 px-3 py-1 flex flex-col items-center justify-center text-[color:var(--color-muted)] text-xs gap-2 min-h-[200px]">
-                <div>Debes iniciar sesión para acceder a los documentos</div>
+                <div>{t('ui.login_required_docs')}</div>
                 <button 
                   onClick={() => setShowLogin(true)}
                   className="px-4 py-2 rounded-md bg-[color:var(--color-primary)] text-white hover:opacity-80 transition text-sm"
                 >
-                  Iniciar sesión
+                  {t('ui.login_button')}
                 </button>
               </div>
             ) : filesLoading ? (
-               <div className="flex-1 px-3 py-1 flex items-center justify-center text-[color:var(--color-muted)] text-xs">Cargando documentos...</div>
+               <div className="flex-1 px-3 py-1 flex items-center justify-center text-[color:var(--color-muted)] text-xs">{t('ui.loading_docs')}</div>
              ) : (
                <FileList
                   items={files.filter(f => !search || f.originalName?.toLowerCase().includes(search.toLowerCase()))}
@@ -862,15 +893,15 @@ function App () {
                      loadFiles(1, newLimit)
                   }}
                   onDelete={async (item) => {
-                     if (!window.confirm('¿Eliminar archivo?')) return
+                     if (!window.confirm(t('notifications.confirm_delete_file'))) return
                      await (window as any).electronAPI.deleteFile(item.id)
                      loadFiles(filesPage, filesLimit)
-                     toast.success('Archivo eliminado')
+                     toast.success(t('notifications.item_deleted'))
                   }}
                   onDownload={async (item) => {
                      const res = await (window as any).electronAPI.downloadFile(item.id, item.originalName)
-                     if (res.success) toast.success('Descarga completada')
-                     else if (!res.canceled) toast.error('Error al descargar')
+                     if (res.success) toast.success(t('notifications.download_completed'))
+                     else if (!res.canceled) toast.error(t('notifications.download_error'))
                   }}
                />
              )
@@ -880,7 +911,7 @@ function App () {
             search={search}
             selectedIndex={selectedIndex}
             onToggleFavorite={(item) => {
-              if (!token) { toast.error('Debes iniciar sesión'); return }
+              if (!token) { toast.error(t('notifications.login_required')); return }
               ;(window as any).electronAPI?.toggleFavorite?.(item)
               const payload = { query: search, filter }
               setListLoading(true)
@@ -889,14 +920,15 @@ function App () {
                 .finally(() => setListLoading(false))
             }}
             onCopy={(item) => {
-              if (item.value.startsWith('data:image')) {
+              const isImage = item.value.startsWith('data:image') || item.value.startsWith('[LOCAL_IMAGE]:') || !!(item as any).imagePath
+              if (isImage) {
                 ;(window as any).electronAPI?.copyImage?.(item.value)
                 setTimeout(() => { ;(window as any).electronAPI.pasteImage() }, 300)
-                toast.success('Imagen copiada al portapapeles')
+                // toast.success(t('notifications.image_copied'))
               } else {
                 ;(window as any).electronAPI?.copyText(item.value)
                 setTimeout(() => { ;(window as any).electronAPI?.pasteText() }, 100)
-                toast.success('Pegado automáticamente')
+                toast.success(t('notifications.auto_pasted'))
               }
               setTimeout(() => { ;(window as any).electronAPI?.hideWindow?.() }, 500)
             }}
@@ -910,18 +942,18 @@ function App () {
           />
           )}
           {listLoading && (
-            <div className="px-3 py-1 text-[color:var(--color-muted)] text-xs">Cargando…</div>
+            <div className="px-3 py-1 text-[color:var(--color-muted)] text-xs">{t('ui.loading')}</div>
           )}
           {syncing && (
             <div className="fixed top-2 right-2 z-[20000] glass px-3 py-2">
-              <div className="spinner"><span className="ring"></span><span>Sincronizando… {Math.round(syncPct)}%</span></div>
+              <div className="spinner"><span className="ring"></span><span>{t('ui.syncing', { percent: Math.round(syncPct) })}</span></div>
             </div>
           )}
           {downloading && (
             <div className="fixed top-2 right-2 z-[20000] glass px-3 py-2 rounded-lg shadow-lg" style={{ top: syncing ? '70px' : '8px' }}>
               <div className="flex flex-col gap-2 min-w-[200px]">
                 <div className="text-xs font-medium text-[color:var(--color-text)] truncate" title={downloadFileName}>
-                  Descargando: {downloadFileName}
+                  {t('ui.downloading', { file: downloadFileName })}
                 </div>
                 <div className="flex items-center gap-2">
                   <div className="flex-1 h-2 bg-[color:var(--color-bg)] rounded-full overflow-hidden border border-[color:var(--color-border)]">
@@ -944,20 +976,20 @@ function App () {
 
           <Dock
             items={[
-              { label: 'Ajustes', icon: null as any, onClick: () => { if (!token) { toast.error('Debes iniciar sesión'); return } setSettingsOpen(true) } },
+              { label: 'Ajustes', icon: <Cog6ToothIcon className="w-5 h-5" />, onClick: () => { if (!token) { toast.error(t('notifications.login_required')); return } setSettingsOpen(true) } },
               ...(token ? [
-                { label: 'Perfil', icon: null as any, onClick: () => setShowUserModal(true) },
-                { label: 'Cerrar sesión', icon: null as any, onClick: logout }
+                { label: 'Perfil', icon: <UserCircleIcon className="w-5 h-5" />, onClick: () => setShowUserModal(true) },
+                { label: 'Cerrar sesión', icon: <ArrowRightStartOnRectangleIcon className="w-5 h-5" />, onClick: logout }
               ] : [
-                { label: 'Iniciar sesión', icon: null as any, onClick: () => setShowLogin(true) },
-                { label: 'Registrarse', icon: null as any, onClick: () => setShowRegister(true) }
+                { label: 'Iniciar sesión', icon: <ArrowLeftEndOnRectangleIcon className="w-5 h-5" />, onClick: () => setShowLogin(true) },
+                { label: 'Registrarse', icon: <UserPlusIcon className="w-5 h-5" />, onClick: () => setShowRegister(true) }
               ])
             ]}
             userAvatar={userAvatar}
             filter={filter}
             onChangeFilter={(f) => { 
               if (!token && (f === 'favorite' || f === 'documents')) { 
-                toast.error('Debes iniciar sesión para acceder a esta sección'); 
+                toast.error(t('notifications.login_required_section')); 
                 return 
               } 
               setFilter(f) 
@@ -980,7 +1012,7 @@ function App () {
 
           {globalLoading && (
             <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-[20000]">
-              <div className="glass p-4">Procesando...</div>
+              <div className="glass p-4">{t('ui.processing')}</div>
             </div>
           )}
 
@@ -1008,31 +1040,30 @@ function App () {
       )}
 
       <DeleteModal
-        isOpen={!!itemToDelete}
-        isLoading={deletingLoading}
-        onConfirm={async () => {
+            open={!!itemToDelete}
+            loading={deletingLoading}
+            onConfirm={async () => {
           if (itemToDelete && itemToDelete.id) {
             try {
               setDeletingLoading(true)
               const res = await (window as any).electronAPI.deleteHistoryItem(itemToDelete.id)
               if (res?.success) {
-                toast.success('Elemento eliminado')
+                toast.success(t('notifications.item_deleted'))
               } else {
-                toast.error('Error al eliminar')
+                toast.error(t('notifications.delete_error'))
               }
             } catch {
-              toast.error('Error al eliminar')
+              toast.error(t('notifications.delete_error'))
             }
           }
           setItemToDelete(null)
           setDeletingLoading(false)
         }}
-        onCancel={() => setItemToDelete(null)}
+        onClose={() => setItemToDelete(null)}
       />
       <AboutModal
-        isOpen={aboutOpen}
+        open={aboutOpen}
         onClose={() => setAboutOpen(false)}
-        version={appVersion}
       />
     </>
   )

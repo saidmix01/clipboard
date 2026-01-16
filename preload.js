@@ -107,3 +107,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     return () => ipcRenderer.removeListener('token-refreshed', listener)
   }
 })
+
+contextBridge.exposeInMainWorld('copyfy', {
+  getSystemLocale: () => ipcRenderer.invoke('get-system-locale')
+})

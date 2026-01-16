@@ -1,4 +1,4 @@
-import { useRef } from 'react'
+import { useRef, useEffect } from 'react'
 import Card from './Card'
 import type { HistoryItem } from '../types'
 
@@ -15,9 +15,27 @@ type Props = {
 }
 
 export default function HistoryList({ items, search, selectedIndex, onToggleFavorite, onCopy, highlightMatch, canFavorite, canOpenModal, onContextMenu }: Props) {
+  const containerRef = useRef<HTMLDivElement>(null)
   const itemRefs = useRef<(HTMLDivElement | null)[]>([])
+
+  useEffect(() => {
+    if (items.length === 0) return
+    
+    // Si es el primer elemento, aseguramos scroll top absoluto para ver padding y todo
+    if (selectedIndex === 0 && containerRef.current) {
+      containerRef.current.scrollTop = 0
+      return
+    }
+
+    // Para otros elementos, scrollIntoView normal
+    const itemEl = itemRefs.current[selectedIndex]
+    if (itemEl && itemEl.scrollIntoView) {
+      itemEl.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'nearest' })
+    }
+  }, [selectedIndex, items])
+
   return (
-    <div className="flex-1 overflow-auto px-2 py-2 text-[color:var(--color-text)]" style={{ scrollbarWidth: 'thin' }}>
+    <div ref={containerRef} className="flex-1 overflow-auto px-2 py-2 text-[color:var(--color-text)]" style={{ scrollbarWidth: 'thin' }}>
       {items.length === 0 ? (
         <p className="text-center text-xs text-[color:var(--color-muted)]">Sin coincidencias</p>
       ) : (

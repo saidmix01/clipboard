@@ -10,7 +10,8 @@ const {
   Menu,
   shell,
   Notification,
-  powerMonitor
+  powerMonitor,
+  protocol
 } = require('electron')
 const { autoUpdater } = require('electron-updater')
 const log = require('electron-log')
@@ -26,7 +27,7 @@ const os = require('os')
 const { PassThrough } = require('stream')
 const db = require('./db')
 const legacyHistoryPath = path.join(os.homedir(), '.clipboard-history.json')
-const { exec, execFile, spawnSync } = require('child_process')
+const { exec, execFile, spawnSync, fork } = require('child_process')
 const crypto = require('crypto')
 const FormData = require('form-data')
 const { dialog } = require('electron')
@@ -37,6 +38,8 @@ let history = []
 const childWindows = new Set()
 let tray
 let isQuitting = false
+let worker = null
+let activeUploadWindow = null
 
 if (process.platform === 'linux') {
   try { app.setName('copyfy') } catch {}
@@ -597,6 +600,9 @@ function augmentHistoryWithImagePaths (list) {
       if (v.startsWith('data:image')) {
         const p = getImagePathFromDataURL(v)
         if (p) return { ...it, imagePath: p }
+      } else if (v.startsWith('[LOCAL_IMAGE]:')) {
+        const p = v.replace('[LOCAL_IMAGE]:', '')
+        return { ...it, imagePath: p }
       }
       return it
     })
@@ -1053,9 +1059,115 @@ function resetClipboardFilesState () {
 }
 
 app.whenReady().then(async () => {
+  protocol.registerFileProtocol('local-image', (request, callback) => {
+    const url = request.url.replace('local-image://', '')
+    try {
+      return callback(decodeURIComponent(url))
+    } catch (error) {
+      console.error('Failed to register protocol', error)
+    }
+  })
+
   try { require('./autolaunch').configureAutoLaunch() } catch (e) { log.error('Autolaunch setup failed', e) }
   await db.init(app)
+  
   createWindow()
+
+  // Inicializar Worker
+  const workerPath = app.isPackaged
+    ? path.join(process.resourcesPath, 'app.asar.unpacked', 'workers', 'worker.js')
+    : path.join(__dirname, 'workers', 'worker.js')
+
+  try {
+    worker = fork(workerPath)
+    
+    worker.on('error', (err) => log.error('Worker error:', err))
+    worker.on('exit', (code) => {
+      if (!isQuitting) log.info(`Worker exited with code ${code}`)
+    })
+
+    worker.send({ type: 'init', path: app.getPath('userData') })
+  } catch (e) {
+    log.error('Failed to start worker:', e)
+  }
+  
+  worker.on('message', (msg) => {
+    if (msg.type === 'migration-done') {
+      try {
+        const updates = msg.results.map(r => ({ id: r.id, path: `[LOCAL_IMAGE]:${r.path}` }))
+        if (updates.length > 0) {
+           log.info(`Worker: Migración completada. ${updates.length} imágenes.`)
+           db.updateImagesBulk(updates)
+           const deviceName = getCurrentDeviceName()
+           history = db.getAll(deviceName)
+           if (mainWindow?.webContents) {
+             mainWindow.webContents.send('clipboard-update', augmentHistoryWithImagePaths(history))
+           }
+        }
+      } catch (e) {
+        log.error('Error al procesar migration-done del worker:', e)
+      }
+    } else if (msg.type === 'sync-done') {
+      const { syncedIds, conflicts, newItems } = msg
+      try {
+          if (syncedIds && syncedIds.length > 0) {
+             const clientIds = syncedIds.map(s => s.clientId).filter(Boolean)
+             if (clientIds.length > 0) db.markSynced(getCurrentDeviceName(), clientIds)
+             
+             for (const s of syncedIds) {
+                if (s.id && s.clientId) {
+                   db.updateRemoteId(getCurrentDeviceName(), s.clientId, s.id)
+                }
+             }
+          }
+          
+          if (conflicts && conflicts.length > 0) {
+             for (const c of conflicts) {
+                db.updateFromConflict(getCurrentDeviceName(), c)
+             }
+          }
+          
+          if (newItems && newItems.length > 0) {
+             const backendItems = newItems.map(it => ({
+                id: it.id,
+                value: it.value,
+                favorite: it.favorite,
+                updatedAt: it.updatedAt
+             }))
+             db.importItems(getCurrentDeviceName(), backendItems)
+             
+             // Delete not in remote
+             const remoteValues = backendItems.map(it => it.value)
+             db.deleteNotInRemote(getCurrentDeviceName(), remoteValues)
+          }
+          
+          history = db.getAll(getCurrentDeviceName())
+          if (mainWindow?.webContents) {
+            mainWindow.webContents.send('clipboard-update', augmentHistoryWithImagePaths(history))
+            mainWindow.webContents.send('sync-progress', { percentage: 100, message: 'Completado' })
+          }
+          log.info('Worker Sync completed')
+      } catch (e) {
+         log.error('Error processing sync-done:', e)
+      } finally {
+         syncLock = false
+      }
+    }
+  })
+
+  // Migración de imágenes Base64 a archivos (via Worker)
+  setTimeout(() => {
+    try {
+       const deviceName = getCurrentDeviceName()
+       const legacy = db.getLegacyImages(deviceName)
+       if (legacy.length > 0) {
+          log.info(`Enviando ${legacy.length} imágenes al worker para migración...`)
+          worker.send({ type: 'migrate-images', items: legacy })
+       }
+    } catch (e) {
+       log.error('Error iniciando migración en worker:', e)
+    }
+  }, 5000)
   // Ruta del icono: compatible con desarrollo y producción en todas las plataformas
   // En empaquetado, usar app.getAppPath() que funciona correctamente en todas las plataformas
   const iconPath = app.isPackaged
@@ -1257,15 +1369,20 @@ app.whenReady().then(async () => {
                 dataUrl !== lastImageDataUrl
               ) {
                 lastImageDataUrl = dataUrl
+                
+                let savedPath = null
+                try { savedPath = saveClipboardImagePNG(ni) } catch {}
+                const dbValue = savedPath ? `[LOCAL_IMAGE]:${savedPath}` : dataUrl
+
                 if (authToken) {
-                  db.insert(getCurrentDeviceName(), dataUrl)
+                  db.insert(getCurrentDeviceName(), dbValue)
                   Promise.resolve(enforceHistoryLimit(1000)).catch(() => {})
                   history = db.getAll(getCurrentDeviceName())
                   saveClipboardRecord('image', dataUrl, { format: 'dataURL' })
-                    .then(rid => { if(rid) db.updateRemoteIdByValue(getCurrentDeviceName(), dataUrl, rid) })
+                    .then(rid => { if(rid) db.updateRemoteIdByValue(getCurrentDeviceName(), dbValue, rid) })
                     .catch(err => log.error('Immediate save error (image path)', err))
                 } else {
-                  db.insertGuest(getCurrentDeviceName(), dataUrl)
+                  db.insertGuest(getCurrentDeviceName(), dbValue)
                   enforceGuestLimit(1000)
                   history = db.getAllGuest(getCurrentDeviceName())
                 }
@@ -1321,21 +1438,36 @@ app.whenReady().then(async () => {
           return
         }
 
+        if (authToken) {
+          lastImageDataUrl = dataUrl
+          
+          const tempDir = path.join(app.getPath('userData'), 'temp-screenshots')
+          try {
+             if (!fs.existsSync(tempDir)) fs.mkdirSync(tempDir, { recursive: true })
+             const fileName = `screenshot-${Date.now()}.png`
+             const tempPath = path.join(tempDir, fileName)
+             fs.writeFileSync(tempPath, image.toPNG())
+             createScreenshotNotificationWindow(tempPath, dataUrl)
+          } catch(e) {
+             log.error('Failed to handle screenshot', e)
+          }
+          return
+        }
+
+        // Guest logic (Optimized RAM but no confirmation)
         lastImageDataUrl = dataUrl
+        let savedPath = null
         try {
-          const savedPath = saveClipboardImagePNG(image)
+          savedPath = saveClipboardImagePNG(image)
           if (savedPath) { try { log.info('Imagen guardada', { savedPath }) } catch {} }
         } catch {}
-        if (authToken) {
-          db.insert(getCurrentDeviceName(), dataUrl)
-          Promise.resolve(enforceHistoryLimit(1000)).catch(() => {})
-          history = db.getAll(getCurrentDeviceName())
-          saveClipboardRecord('image', dataUrl, { format: 'dataURL' }).catch(err => log.error('Immediate save error (image)', err))
-        } else {
-          db.insertGuest(getCurrentDeviceName(), dataUrl)
-          enforceGuestLimit(1000)
-          history = db.getAllGuest(getCurrentDeviceName())
-        }
+
+        const dbValue = savedPath ? `[LOCAL_IMAGE]:${savedPath}` : dataUrl
+
+        db.insertGuest(getCurrentDeviceName(), dbValue)
+        enforceGuestLimit(1000)
+        history = db.getAllGuest(getCurrentDeviceName())
+        
         mainWindow.webContents.send('clipboard-update', augmentHistoryWithImagePaths(history))
         return
       }
@@ -1474,6 +1606,10 @@ app.on('window-all-closed', () => {
 
 app.on('before-quit', () => {
   isQuitting = true
+  if (worker) {
+    try { worker.kill() } catch (e) { console.error('Error killing worker:', e) }
+    worker = null
+  }
   try { childWindows.forEach(w => { try { w.destroy() } catch {} }) } catch {}
 })
 
@@ -1702,9 +1838,23 @@ ipcMain.handle('delete-history-item', async (_, id) => {
 //copiar imagen
 ipcMain.on('copy-image', (_, dataUrl) => {
   try {
-    const image = nativeImage.createFromDataURL(dataUrl)
-    clipboard.writeImage(image)
-    log.info('Imagen copiada al portapapeles')
+    let image
+    if (dataUrl && dataUrl.startsWith('[LOCAL_IMAGE]:')) {
+      const p = dataUrl.replace('[LOCAL_IMAGE]:', '')
+      if (fs.existsSync(p)) {
+        image = nativeImage.createFromPath(p)
+      }
+    } else {
+      image = nativeImage.createFromDataURL(dataUrl)
+    }
+
+    if (image && !image.isEmpty()) {
+      lastImageDataUrl = image.toDataURL() // ✅ Evitar que el watcher lo detecte como nuevo
+      clipboard.writeImage(image)
+      log.info('Imagen copiada al portapapeles (self)')
+    } else {
+      log.error('Imagen vacía o inválida al intentar copiar')
+    }
   } catch (err) {
     log.error('Error al copiar imagen', err)
   }
@@ -1739,7 +1889,21 @@ ipcMain.on('open-image-viewer', (_, dataUrl) => {
     const mainBounds = mainWindow?.getBounds() || { width: 400, x: wa.x + wa.width - 400, y: wa.y, height: wa.height }
     const viewerWidth = Math.max(300, wa.width - mainBounds.width)
     win.setBounds({ x: wa.x, y: wa.y, width: viewerWidth, height: wa.height })
-    const html = `<!doctype html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1"/><style>body{margin:0;background:#111;display:flex;align-items:center;justify-content:center;height:100vh;color:#ddd;font-family:system-ui}#wrap{position:relative;cursor:crosshair}#img{max-width:95vw;max-height:95vh;border-radius:6px;user-select:none;cursor:crosshair}#sel{position:absolute;border:2px solid #00aaff;background:rgba(0,170,255,0.2);display:none;pointer-events:none}#panel{position:fixed;top:10px;left:10px;background:#222;border:1px solid #333;border-radius:6px;padding:8px;display:flex;gap:8px;align-items:center}button{background:#333;border:1px solid #444;color:#eee;padding:6px 10px;border-radius:4px;cursor:pointer}button:disabled{opacity:.6;cursor:not-allowed}#res{position:fixed;bottom:10px;left:10px;right:10px;background:#1a1a1a;border:1px solid #333;border-radius:6px;padding:10px;max-height:40vh;overflow:auto;white-space:pre-wrap}</style></head><body><div id="panel"><button id="ocr" disabled>OCR selección</button><button id="copy" disabled>Copiar</button><span id="status"></span></div><div id="wrap"><img id="img" src="${dataUrl}"/><div id="sel"></div></div><div id="res" style="display:none"></div><script src="https://unpkg.com/tesseract.js@v4.0.3/dist/tesseract.min.js"></script><script>const img=document.getElementById('img');const sel=document.getElementById('sel');const ocrBtn=document.getElementById('ocr');const copyBtn=document.getElementById('copy');const statusEl=document.getElementById('status');const resEl=document.getElementById('res');let start=null;let rect=null;function px(n){return Math.round(n)+'px'}function setStatus(t){statusEl.textContent=t}function resetSel(){sel.style.display='none';ocrBtn.disabled=true;copyBtn.disabled=true;resEl.style.display='none';resEl.textContent='';rect=null}function within(e){const r=img.getBoundingClientRect();return e.clientX>=r.left&&e.clientX<=r.right&&e.clientY>=r.top&&e.clientY<=r.bottom}window.addEventListener('mousedown',e=>{if(!within(e))return;const r=img.getBoundingClientRect();start={x:e.clientX,y:e.clientY};sel.style.display='block';sel.style.left=px(start.x);sel.style.top=px(start.y);sel.style.width='0px';sel.style.height='0px';setStatus('Seleccionando...')});window.addEventListener('mousemove',e=>{if(!start)return;const x=Math.min(e.clientX,start.x);const y=Math.min(e.clientY,start.y);const w=Math.abs(e.clientX-start.x);const h=Math.abs(e.clientY-start.y);sel.style.left=px(x);sel.style.top=px(y);sel.style.width=px(w);sel.style.height=px(h)});window.addEventListener('mouseup',e=>{if(!start)return;const r=img.getBoundingClientRect();const x=Math.min(e.clientX,start.x);const y=Math.min(e.clientY,start.y);const w=Math.abs(e.clientX-start.x);const h=Math.abs(e.clientY-start.y);start=null;if(w<5||h<5){resetSel();setStatus('');return}rect={x:x-r.left,y:y-r.top,w:w,h:h};ocrBtn.disabled=false;copyBtn.disabled=true;setStatus('Selección lista')});async function cropToCanvas(){const dispW=img.clientWidth;const dispH=img.clientHeight;const natW=img.naturalWidth;const natH=img.naturalHeight;const scaleX=natW/dispW;const scaleY=natH/dispH;const sx=Math.max(0,Math.round(rect.x*scaleX));const sy=Math.max(0,Math.round(rect.y*scaleY));const sw=Math.min(natW-sx,Math.round(rect.w*scaleX));const sh=Math.min(natH-sy,Math.round(rect.h*scaleY));const c=document.createElement('canvas');c.width=sw;c.height=sh;const ctx=c.getContext('2d');ctx.drawImage(img,sx,sy,sw,sh,0,0,sw,sh);return c}async function runOCR(){try{setStatus('Procesando...');const c=await cropToCanvas();const r=await Tesseract.recognize(c,'spa',{logger:m=>{}});resEl.style.display='block';resEl.textContent=r.data.text||'';copyBtn.disabled=!resEl.textContent.trim();setStatus('Listo')}catch(err){resEl.style.display='block';resEl.textContent='Error: '+(err&&err.message||'');copyBtn.disabled=true;setStatus('')}}ocrBtn.addEventListener('click',()=>{if(!rect)return;runOCR()});copyBtn.addEventListener('click',async()=>{try{await navigator.clipboard.writeText(resEl.textContent||'');setStatus('Copiado')}catch(e){setStatus('No se pudo copiar')}});img.addEventListener('load',()=>{resetSel();setStatus('')});</script></body></html>`
+
+    let finalSrc = dataUrl
+    if (typeof dataUrl === 'string' && dataUrl.startsWith('[LOCAL_IMAGE]:')) {
+      try {
+        const p = dataUrl.replace('[LOCAL_IMAGE]:', '')
+        if (fs.existsSync(p)) {
+          const b64 = fs.readFileSync(p).toString('base64')
+          finalSrc = `data:image/png;base64,${b64}`
+        }
+      } catch (e) {
+        log.error('Error cargando imagen local para visor', e)
+      }
+    }
+
+    const html = `<!doctype html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1"/><style>body{margin:0;background:#111;display:flex;align-items:center;justify-content:center;height:100vh;color:#ddd;font-family:system-ui}#wrap{position:relative;cursor:crosshair}#img{max-width:95vw;max-height:95vh;border-radius:6px;user-select:none;cursor:crosshair}#sel{position:absolute;border:2px solid #00aaff;background:rgba(0,170,255,0.2);display:none;pointer-events:none}#panel{position:fixed;top:10px;left:10px;background:#222;border:1px solid #333;border-radius:6px;padding:8px;display:flex;gap:8px;align-items:center}button{background:#333;border:1px solid #444;color:#eee;padding:6px 10px;border-radius:4px;cursor:pointer}button:disabled{opacity:.6;cursor:not-allowed}#res{position:fixed;bottom:10px;left:10px;right:10px;background:#1a1a1a;border:1px solid #333;border-radius:6px;padding:10px;max-height:40vh;overflow:auto;white-space:pre-wrap}</style></head><body><div id="panel"><button id="ocr" disabled>OCR selección</button><button id="copy" disabled>Copiar</button><span id="status"></span></div><div id="wrap"><img id="img" src="${finalSrc}"/><div id="sel"></div></div><div id="res" style="display:none"></div><script src="https://unpkg.com/tesseract.js@v4.0.3/dist/tesseract.min.js"></script><script>const img=document.getElementById('img');const sel=document.getElementById('sel');const ocrBtn=document.getElementById('ocr');const copyBtn=document.getElementById('copy');const statusEl=document.getElementById('status');const resEl=document.getElementById('res');let start=null;let rect=null;function px(n){return Math.round(n)+'px'}function setStatus(t){statusEl.textContent=t}function resetSel(){sel.style.display='none';ocrBtn.disabled=true;copyBtn.disabled=true;resEl.style.display='none';resEl.textContent='';rect=null}function within(e){const r=img.getBoundingClientRect();return e.clientX>=r.left&&e.clientX<=r.right&&e.clientY>=r.top&&e.clientY<=r.bottom}window.addEventListener('mousedown',e=>{if(!within(e))return;const r=img.getBoundingClientRect();start={x:e.clientX,y:e.clientY};sel.style.display='block';sel.style.left=px(start.x);sel.style.top=px(start.y);sel.style.width='0px';sel.style.height='0px';setStatus('Seleccionando...')});window.addEventListener('mousemove',e=>{if(!start)return;const x=Math.min(e.clientX,start.x);const y=Math.min(e.clientY,start.y);const w=Math.abs(e.clientX-start.x);const h=Math.abs(e.clientY-start.y);sel.style.left=px(x);sel.style.top=px(y);sel.style.width=px(w);sel.style.height=px(h)});window.addEventListener('mouseup',e=>{if(!start)return;const r=img.getBoundingClientRect();const x=Math.min(e.clientX,start.x);const y=Math.min(e.clientY,start.y);const w=Math.abs(e.clientX-start.x);const h=Math.abs(e.clientY-start.y);start=null;if(w<5||h<5){resetSel();setStatus('');return}rect={x:x-r.left,y:y-r.top,w:w,h:h};ocrBtn.disabled=false;copyBtn.disabled=true;setStatus('Selección lista')});async function cropToCanvas(){const dispW=img.clientWidth;const dispH=img.clientHeight;const natW=img.naturalWidth;const natH=img.naturalHeight;const scaleX=natW/dispW;const scaleY=natH/dispH;const sx=Math.max(0,Math.round(rect.x*scaleX));const sy=Math.max(0,Math.round(rect.y*scaleY));const sw=Math.min(natW-sx,Math.round(rect.w*scaleX));const sh=Math.min(natH-sy,Math.round(rect.h*scaleY));const c=document.createElement('canvas');c.width=sw;c.height=sh;const ctx=c.getContext('2d');ctx.drawImage(img,sx,sy,sw,sh,0,0,sw,sh);return c}async function runOCR(){try{setStatus('Procesando...');const c=await cropToCanvas();const r=await Tesseract.recognize(c,'spa',{logger:m=>{}});resEl.style.display='block';resEl.textContent=r.data.text||'';copyBtn.disabled=!resEl.textContent.trim();setStatus('Listo')}catch(err){resEl.style.display='block';resEl.textContent='Error: '+(err&&err.message||'');copyBtn.disabled=true;setStatus('')}}ocrBtn.addEventListener('click',()=>{if(!rect)return;runOCR()});copyBtn.addEventListener('click',async()=>{try{await navigator.clipboard.writeText(resEl.textContent||'');setStatus('Copiado')}catch(e){setStatus('No se pudo copiar')}});img.addEventListener('load',()=>{resetSel();setStatus('')});</script></body></html>`
     win.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html))
     win.webContents.on('did-finish-load', () => {
       const __no = null
@@ -1781,7 +1945,18 @@ ipcMain.on('open-code-editor', (_, codeText) => {
     const editorPath = app.isPackaged
       ? path.join(app.getAppPath(), 'viewer', 'code-editor.html')
       : path.join(__dirname, 'viewer', 'code-editor.html')
-    win.loadFile(editorPath)
+    
+    // Obtener idioma
+    let lang = app.getLocale()
+    try {
+       const prefsStr = db.getConfig('preferences')
+       if (prefsStr) {
+          const p = JSON.parse(prefsStr)
+          if (p.language) lang = p.language
+       }
+    } catch {}
+
+    win.loadFile(editorPath, { query: { lang } })
     win.webContents.on('did-finish-load', () => {
       try {
         const b64 = Buffer.from(String(codeText || ''), 'utf-8').toString('base64')
@@ -1870,11 +2045,8 @@ ipcMain.on('toggle-favorite', async (event, payload) => {
     }
     if (!remoteId) {
       try { 
-        log.info('toggle-favorite missing remote_id, syncing')
-        await syncWithServer() 
-        const rec2 = db.getById(id)
-        const remoteId2 = rec2 && rec2.remote_id
-        log.info('toggle-favorite post-sync remote', { localId: id, remoteId: remoteId2, value, favorite: !!newFavorite })
+        log.info('toggle-favorite missing remote_id, triggering background sync')
+        syncClipboardHistory() 
       } catch {}
     }
   } catch (err) {
@@ -1888,6 +2060,46 @@ ipcMain.handle('pasteImage', () => {
 
 ipcMain.handle('get-app-version', () => {
   return app.getVersion()
+})
+
+ipcMain.handle('get-system-locale', () => {
+  return app.getLocale()
+})
+
+ipcMain.on('screenshot-action', async (event, { action, tempPath }) => {
+  try {
+    if (action === 'discard') {
+      try { fs.rmSync(tempPath, { force: true }) } catch {}
+    } else if (action === 'save') {
+      if (!fs.existsSync(tempPath)) return
+      
+      const dir = path.join(app.getPath('userData'), 'clipboard-images')
+      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true })
+      
+      const fileName = path.basename(tempPath)
+      const finalPath = path.join(dir, fileName)
+      
+      try {
+        fs.renameSync(tempPath, finalPath)
+      } catch (e) {
+        fs.copyFileSync(tempPath, finalPath)
+        try { fs.rmSync(tempPath) } catch {}
+      }
+
+      const dbValue = `[LOCAL_IMAGE]:${finalPath}`
+      const deviceName = getCurrentDeviceName()
+
+      db.insert(deviceName, dbValue)
+      Promise.resolve(enforceHistoryLimit(1000)).catch(() => {})
+      history = db.getAll(deviceName)
+      
+      if (mainWindow?.webContents) {
+        mainWindow.webContents.send('clipboard-update', augmentHistoryWithImagePaths(history))
+      }
+    }
+  } catch (e) {
+    log.error('Error handling screenshot action', e)
+  }
 })
 ipcMain.on('open-external-url', (_, url) => {
   try {
@@ -2087,10 +2299,11 @@ async function refreshTokenFromSession (session) {
       log.error('refreshToken es null o undefined en la sesión', { sessionKeys: Object.keys(session || {}) })
       return null
     }
+
+    const requestPayload = { refreshToken: refreshTokenValue }
+    console.log('Sending refresh token payload:', requestPayload)
     
-    const res = await axios.post(url, {
-      refreshToken: refreshTokenValue
-    }, {
+    const res = await axios.post(url, requestPayload, {
       headers: { 'Content-Type': 'application/json' }
     })
 
@@ -2500,7 +2713,119 @@ function askForUpload(filePaths) {
   }
 }
 
-let activeUploadWindow = null
+let activeScreenshotWindow = null
+
+function createScreenshotNotificationWindow(tempPath, dataUrl) {
+  try {
+    if (activeScreenshotWindow && !activeScreenshotWindow.isDestroyed()) {
+      try { activeScreenshotWindow.close() } catch {}
+    }
+
+    const display = screen.getPrimaryDisplay()
+    const { width, height } = display.workAreaSize
+    const { x: screenX, y: screenY } = display.workArea
+    const winWidth = 360
+    const winHeight = 120
+    
+    const x = screenX + width - winWidth - 20
+    const y = screenY + height - winHeight - 20
+    
+    const notifWindow = new BrowserWindow({
+      width: winWidth,
+      height: winHeight,
+      x: Math.max(0, x),
+      y: Math.max(0, y),
+      frame: false,
+      transparent: process.platform !== 'linux',
+      alwaysOnTop: true,
+      skipTaskbar: true,
+      resizable: false,
+      show: false,
+      hasShadow: process.platform === 'darwin',
+      webPreferences: {
+        nodeIntegration: true,
+        contextIsolation: false
+      }
+    })
+
+    activeScreenshotWindow = notifWindow
+
+    const htmlContent = `
+      <!DOCTYPE html>
+      <html>
+      <head>
+      <style>
+      body { margin: 0; padding: 10px 12px; background: #1e1e1e; color: #fff; font-family: system-ui, -apple-system, sans-serif; border-radius: 8px; border: 1px solid #333; box-shadow: 0 4px 12px rgba(0,0,0,0.5); overflow: hidden; display: flex; flex-direction: column; height: 100vh; box-sizing: border-box; }
+      .title { font-weight: 600; font-size: 13px; margin-bottom: 2px; color: #fff; line-height: 1.2; }
+      .message { font-size: 12px; color: #aaa; margin-bottom: 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; line-height: 1.3; }
+      .timeout-container { display: block; margin: 4px 0; }
+      .timeout-bar { width: 100%; height: 3px; background: #333; border-radius: 2px; overflow: hidden; margin-bottom: 2px; }
+      .timeout-fill { height: 100%; background: #ef4444; width: 100%; transition: width 1s linear; }
+      .timeout-text { font-size: 9px; color: #888; text-align: center; line-height: 1.2; }
+      .actions { display: flex; gap: 6px; margin-top: auto; justify-content: flex-end; }
+      button { border: none; padding: 5px 10px; border-radius: 4px; font-size: 11px; cursor: pointer; transition: background 0.2s; font-weight: 500; line-height: 1.2; }
+      .btn-primary { background: #3b82f6; color: white; }
+      .btn-primary:hover { background: #2563eb; }
+      .btn-secondary { background: #333; color: #ccc; }
+      .btn-secondary:hover { background: #444; }
+      .close { position: absolute; top: 6px; right: 6px; background: none; color: #666; font-size: 14px; padding: 0; cursor: pointer; width: 18px; height: 18px; display: flex; align-items: center; justify-content: center; }
+      .close:hover { color: #fff; }
+      </style>
+      </head>
+      <body>
+      <button class="close" onclick="discard()">×</button>
+      <div class="title">Captura detectada</div>
+      <div class="message">¿Guardar esta captura en el historial?</div>
+      
+      <div class="timeout-container">
+        <div class="timeout-bar"><div class="timeout-fill" id="timeoutFill"></div></div>
+        <div class="timeout-text" id="timeoutText">30s restantes</div>
+      </div>
+
+      <div class="actions">
+        <button class="btn-secondary" onclick="discard()">Descartar</button>
+        <button class="btn-primary" onclick="save()">Guardar</button>
+      </div>
+
+      <script>
+        const { ipcRenderer } = require('electron')
+        
+        // Timeout logic
+        let timeLeft = 30
+        const timeoutFill = document.getElementById('timeoutFill')
+        const timeoutText = document.getElementById('timeoutText')
+        
+        const timer = setInterval(() => {
+          timeLeft--
+          timeoutText.textContent = timeLeft + 's restantes'
+          const pct = (timeLeft / 30) * 100
+          timeoutFill.style.width = pct + '%'
+          
+          if (timeLeft <= 0) {
+            clearInterval(timer)
+            discard()
+          }
+        }, 1000)
+
+        function discard() {
+          ipcRenderer.send('screenshot-action', { action: 'discard', tempPath: '${tempPath.replace(/\\/g, '\\\\')}' })
+          window.close()
+        }
+        
+        function save() {
+          ipcRenderer.send('screenshot-action', { action: 'save', tempPath: '${tempPath.replace(/\\/g, '\\\\')}' }) 
+          window.close()
+        }
+      </script>
+      </body>
+      </html>
+    `
+    notifWindow.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(htmlContent))
+    notifWindow.once('ready-to-show', () => notifWindow.show())
+  } catch (e) {
+    log.error('Error creating screenshot window', e)
+  }
+}
 
 function createNotificationWindow(filePaths) {
   try {
@@ -2931,11 +3256,35 @@ async function syncWithServer() {
     let currentSize = 0;
 
     for (const item of dirtyItems) {
+        let type = 'text'
+        let valueToSend = item.value
+
+        if (item.value.startsWith('data:image')) {
+            type = 'image'
+        } else if (item.value.startsWith('[LOCAL_IMAGE]:')) {
+            type = 'image'
+            const localPath = item.value.replace('[LOCAL_IMAGE]:', '')
+            try {
+                if (fs.existsSync(localPath)) {
+                   const ni = nativeImage.createFromPath(localPath)
+                   if (!ni.isEmpty()) {
+                      valueToSend = ni.toDataURL()
+                   } else {
+                      continue
+                   }
+                } else {
+                   continue
+                }
+            } catch (e) {
+               continue
+            }
+        }
+
         const itemChange = {
             id: item.id,
             clientId: item.clientId,
-            type: item.value.startsWith('data:image') ? 'image' : 'text',
-            value: item.value,
+            type: type,
+            value: valueToSend,
             favorite: item.favorite,
             version: item.version,
             updatedAt: item.updatedAt
@@ -3037,50 +3386,33 @@ async function syncClipboardHistory () {
   try {
     if (syncLock) return
     syncLock = true
-    if (!authToken) return
-    const axiosInstance = getAxiosInstance()
+    if (!authToken) {
+       syncLock = false
+       return
+    }
     
-    if (mainWindow?.webContents) { mainWindow.webContents.send('sync-progress', { percentage: 10, message: 'Sincronizando cambios locales' }) }
+    if (mainWindow?.webContents) { mainWindow.webContents.send('sync-progress', { percentage: 10, message: 'Iniciando sincronización en segundo plano' }) }
     
-    // 1. Push local changes
-    await syncWithServer()
+    // Get dirty items to send
+    const dirtyItems = db.getDirtyItems(getCurrentDeviceName())
     
-    if (mainWindow?.webContents) { mainWindow.webContents.send('sync-progress', { percentage: 50, message: 'Obteniendo cambios remotos' }) }
-
-    // 2. Pull remote items (new items)
-    const clientId = activeDeviceName || os.hostname()
-    const res = await axiosInstance.get('/clipboard', { params: { clientId } })
-    const data = res?.data
-    const items = (data && typeof data === 'object' ? (data.data?.items ?? data.items ?? []) : [])
-
-    const backendItems = Array.isArray(items)
-      ? items.map(it => ({
-          id: it && (it.id || (it.item && it.item.id)) || null,
-          value: String((it && (it.value || (it.item && it.item.value))) ?? ''),
-          favorite: !!(it && (it.favorite || (it.item && it.item.favorite)))
-        }))
-      : []
-
-    // Import new items (db.importItems uses INSERT OR IGNORE)
-    if (backendItems.length > 0) {
-      db.importItems(getCurrentDeviceName(), backendItems)
+    // Send to worker
+    const config = { backendUrl: BACKEND_URL, authToken }
+    
+    // If worker is not ready, we can't sync
+    if (!worker || !worker.connected) {
+       log.error('Worker not connected, skipping sync')
+       syncLock = false
+       return
     }
 
-    const remoteValues = backendItems.map(it => it.value)
-    db.deleteNotInRemote(getCurrentDeviceName(), remoteValues)
-
-    history = db.getAll(getCurrentDeviceName())
-    if (mainWindow?.webContents) {
-      mainWindow.webContents.send('clipboard-update', augmentHistoryWithImagePaths(history))
-      mainWindow.webContents.send('sync-progress', { percentage: 100, message: 'Completado' })
-    }
-
-    log.info('syncClipboardHistory completo')
+    worker.send({ type: 'sync', config, items: dirtyItems, device: getCurrentDeviceName() })
+    
+    // Logic continues in worker.on('message', 'sync-done')
+    
   } catch (error) {
     log.error('syncClipboardHistory error', error?.message || error)
     if (mainWindow?.webContents) { mainWindow.webContents.send('sync-progress', { percentage: 100, message: 'Sincronización fallida' }) }
-  }
-  finally {
     syncLock = false
   }
 }

@@ -443,11 +443,11 @@ function searchGuest(device, query, filter) {
   if (q.length > 0) {
     where.push('value LIKE ?')
     params.push('%' + q + '%')
-    where.push("value NOT LIKE 'data:image%'")
+    where.push("(value NOT LIKE 'data:image%' AND value NOT LIKE '[LOCAL_IMAGE]:%')")
   }
   const f = String(filter || 'all')
-  if (f === 'image') where.push("value LIKE 'data:image%'")
-  else if (f === 'text') where.push("value NOT LIKE 'data:image%'")
+  if (f === 'image') where.push("(value LIKE 'data:image%' OR value LIKE '[LOCAL_IMAGE]:%')")
+  else if (f === 'text') where.push("(value NOT LIKE 'data:image%' AND value NOT LIKE '[LOCAL_IMAGE]:%')")
   where.push('is_deleted=0')
   const sql = `SELECT value, favorite FROM guest_history WHERE ${where.join(' AND ')} ORDER BY created_at DESC, id DESC`
   const stmt = db.prepare(sql)
@@ -464,8 +464,8 @@ function searchGuest(device, query, filter) {
 function getRecentGuest(device, filter, limit) {
   const f = String(filter || 'all')
   const where = ['device=?']
-  if (f === 'image') where.push("value LIKE 'data:image%'")
-  else if (f === 'text') where.push("value NOT LIKE 'data:image%'")
+  if (f === 'image') where.push("(value LIKE 'data:image%' OR value LIKE '[LOCAL_IMAGE]:%')")
+  else if (f === 'text') where.push("(value NOT LIKE 'data:image%' AND value NOT LIKE '[LOCAL_IMAGE]:%')")
   const n = Math.max(1, Math.min(1000, Number(limit || 50)))
   where.push('is_deleted=0')
   const sql = `SELECT value, favorite FROM guest_history WHERE ${where.join(' AND ')} ORDER BY created_at DESC, id DESC LIMIT ${n}`
@@ -486,11 +486,11 @@ function search(device, query, filter) {
   if (q.length > 0) {
     where.push('value LIKE ?')
     params.push('%' + q + '%')
-    where.push("value NOT LIKE 'data:image%'")
+    where.push("(value NOT LIKE 'data:image%' AND value NOT LIKE '[LOCAL_IMAGE]:%')")
   }
   const f = String(filter || 'all')
-  if (f === 'image') where.push("value LIKE 'data:image%'")
-  else if (f === 'text') where.push("value NOT LIKE 'data:image%'")
+  if (f === 'image') where.push("(value LIKE 'data:image%' OR value LIKE '[LOCAL_IMAGE]:%')")
+  else if (f === 'text') where.push("(value NOT LIKE 'data:image%' AND value NOT LIKE '[LOCAL_IMAGE]:%')")
   else if (f === 'favorite') where.push('favorite=1')
   where.push('is_deleted=0')
   const sql = `SELECT value, favorite FROM history WHERE ${where.join(' AND ')} ORDER BY created_at DESC, id DESC`
@@ -523,8 +523,8 @@ function sanitize(name) {
 function getRecent(device, filter, limit) {
   const f = String(filter || 'all')
   const where = ['device=?']
-  if (f === 'image') where.push("value LIKE 'data:image%'")
-  else if (f === 'text') where.push("value NOT LIKE 'data:image%'")
+  if (f === 'image') where.push("(value LIKE 'data:image%' OR value LIKE '[LOCAL_IMAGE]:%')")
+  else if (f === 'text') where.push("(value NOT LIKE 'data:image%' AND value NOT LIKE '[LOCAL_IMAGE]:%')")
   else if (f === 'favorite') where.push('favorite=1')
   const n = Math.max(1, Math.min(1000, Number(limit || 50)))
   where.push('is_deleted=0')
@@ -720,4 +720,47 @@ function getAllConfig() {
   }
 }
 
-module.exports = { init, getAll, insert, setFavorite, clear, importItems, search, getRecent, getByValues, getNotIn, trimToLimit, insertGuest, getAllGuest, clearGuest, trimGuestToLimit, searchGuest, getRecentGuest, deleteById, getById, updateRemoteIdByValue, getDirtyItems, markSynced, updateFromConflict, updateRemoteId, countActive, countGuestActive, deleteNotInRemote, getConfig, setConfig, removeConfig, getAllConfig }
+function getLegacyImages(device) {
+  try {
+    const stmt = db.prepare("SELECT id, value FROM history WHERE device=? AND value LIKE 'data:image%' AND is_deleted=0")
+    stmt.bind([device])
+    const rows = []
+    while (stmt.step()) {
+      const r = stmt.getAsObject()
+      rows.push({ id: r.id, value: r.value })
+    }
+    stmt.free()
+    return rows
+  } catch (e) {
+    return []
+  }
+}
+
+function updateValue(id, newValue) {
+  try {
+    const stmt = db.prepare("UPDATE history SET value=? WHERE id=?")
+    stmt.bind([newValue, id])
+    stmt.step()
+    stmt.free()
+    persist()
+  } catch (e) {}
+}
+
+function updateImagesBulk(updates) {
+  try {
+    const stmt = db.prepare("UPDATE history SET value=? WHERE id=?")
+    db.run("BEGIN TRANSACTION")
+    for (const u of updates) {
+       stmt.bind([u.path, u.id])
+       stmt.step()
+       stmt.reset()
+    }
+    db.run("COMMIT")
+    stmt.free()
+    persist()
+  } catch (e) {
+    console.error('updateImagesBulk failed:', e)
+  }
+}
+
+module.exports = { init, getAll, insert, setFavorite, clear, importItems, search, getRecent, getByValues, getNotIn, trimToLimit, insertGuest, getAllGuest, clearGuest, trimGuestToLimit, searchGuest, getRecentGuest, deleteById, getById, updateRemoteIdByValue, getDirtyItems, markSynced, updateFromConflict, updateRemoteId, countActive, countGuestActive, deleteNotInRemote, getConfig, setConfig, removeConfig, getAllConfig, getLegacyImages, updateValue, updateImagesBulk }

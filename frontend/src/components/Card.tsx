@@ -4,6 +4,7 @@ import 'highlight.js/styles/github.css'
 import { StarIcon as StarOutline } from '@heroicons/react/24/outline'
 import { StarIcon as StarSolid } from '@heroicons/react/24/solid'
 import type { HistoryItem } from '../types'
+import { useTranslation } from 'react-i18next'
 
 function isCodeSnippet(text: string): boolean {
   const trimmed = text.trim()
@@ -41,9 +42,18 @@ type Props = {
 }
 
 export default function Card({ item, selected, onCopy, onToggleFavorite, highlightMatch, search, canFavorite = true, canOpenModal = true, onContextMenu }: Props) {
+  const { t } = useTranslation()
   const [expanded, setExpanded] = useState(false)
-  const isImage = item.value.startsWith('data:image')
-  const isCode = isCodeSnippet(item.value)
+  const isImage = item.value.startsWith('data:image') || !!(item as any).imagePath || item.value.startsWith('[LOCAL_IMAGE]:')
+  const isCode = !isImage && isCodeSnippet(item.value)
+
+  // Resolve image source
+  let imageSrc = item.value
+  if ((item as any).imagePath) {
+     imageSrc = `local-image://${String((item as any).imagePath)}`
+  } else if (item.value.startsWith('[LOCAL_IMAGE]:')) {
+     imageSrc = `local-image://${item.value.replace('[LOCAL_IMAGE]:', '')}`
+  }
 
   return (
     <div
@@ -55,7 +65,7 @@ export default function Card({ item, selected, onCopy, onToggleFavorite, highlig
       {canFavorite && (
         <button
           onClick={(e) => { e.stopPropagation(); onToggleFavorite() }}
-          title="Marcar como favorito"
+          title={t('favorite')}
           className="absolute top-1 right-1 p-1 rounded-md hover:bg-[color:var(--color-bg)]"
           style={{ color: item.favorite ? 'var(--color-accent)' : 'gray' }}
         >
@@ -66,7 +76,7 @@ export default function Card({ item, selected, onCopy, onToggleFavorite, highlig
       <div>
         {isImage ? (
           <img
-            src={item.value}
+            src={imageSrc}
             alt="imagen"
             className="max-w-full rounded-[10px]"
             style={{ maxHeight: expanded ? undefined : 120, objectFit: 'cover' }}
@@ -82,7 +92,7 @@ export default function Card({ item, selected, onCopy, onToggleFavorite, highlig
         )}
       </div>
 
-      {item.value.length > 300 && (
+      {(item.value.length > 300 || isImage) && (
         <div
           className="-mx-2 -mb-2 mt-2 text-center text-xs py-1 border-t border-[color:var(--color-border)] bg-[color:var(--color-surface)]"
           onClick={(e) => {
@@ -92,7 +102,7 @@ export default function Card({ item, selected, onCopy, onToggleFavorite, highlig
             setExpanded(!expanded)
           }}
         >
-          {expanded ? '▲ Ver menos' : '▼ Ver más'}
+          {expanded ? `▲ ${t('see_less')}` : `▼ ${t('see_more')}`}
         </div>
       )}
     </div>

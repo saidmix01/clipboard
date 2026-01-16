@@ -6,16 +6,37 @@ const fs = require('fs')
 const log = require('electron-log')
 
 function configureAutoLaunch() {
-  // Evitar configurar autostart en desarrollo
-  if (!app.isPackaged) return 
+  log.info('Configurando AutoLaunch...')
+
+  // Evitar configurar autostart en desarrollo salvo que se fuerce
+  if (!app.isPackaged && !process.env.FORCE_AUTOLAUNCH) {
+    log.info('AutoLaunch omitido en desarrollo (app no empaquetada)')
+    return 
+  }
 
   // Windows & macOS
   if (process.platform === 'win32' || process.platform === 'darwin') {
-    app.setLoginItemSettings({
-      openAtLogin: true,
-      path: process.execPath
-    })
-    log.info('AutoLaunch configurado para Win/Mac')
+    try {
+      const currentSettings = app.getLoginItemSettings()
+      log.info('Estado previo del LoginItem:', currentSettings)
+
+      app.setLoginItemSettings({
+        openAtLogin: true,
+        path: process.execPath,
+        args: [] // Asegurar sin argumentos extraños
+      })
+      
+      const newSettings = app.getLoginItemSettings()
+      log.info('Nuevo estado del LoginItem:', newSettings)
+
+      if (newSettings.openAtLogin) {
+        log.info('AutoLaunch configurado correctamente para Win/Mac')
+      } else {
+        log.warn('AutoLaunch: openAtLogin es false tras configurar. Puede requerir permisos o aprobación del usuario.')
+      }
+    } catch (error) {
+      log.error('Error al configurar AutoLaunch:', error)
+    }
   } 
   // Linux
   else if (process.platform === 'linux') {

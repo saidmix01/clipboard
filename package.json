@@ -1,6 +1,6 @@
 {
   "name": "copyfy",
-  "version": "1.2.4",
+  "version": "1.2.5",
   "main": "main.js",
   "scripts": {
     "dev": "concurrently \"npm run dev --prefix frontend\" \"wait-on http://localhost:5173 && electron .\"",
@@ -19,7 +19,7 @@
       "displayName": "CopyFy++",
       "backgroundColor": "#464646"
     },
-    "buildVersion": "1.2.4.0",
+    "buildVersion": "1.2.5.0",
     "publish": [
       {
         "provider": "github",
@@ -44,7 +44,8 @@
     "asarUnpack": [
       "helpers/paste.exe",
       "helpers/paste-image.exe",
-      "node_modules/sql.js/dist/sql-wasm.wasm"
+      "node_modules/sql.js/dist/sql-wasm.wasm",
+      "workers/**/*"
     ],
     "directories": {
       "buildResources": "build"
