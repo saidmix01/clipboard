@@ -972,7 +972,7 @@ function createWindow () {
         : path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
-      devTools: !app.isPackaged
+      devTools: true // !app.isPackaged
     }
   })
 
@@ -981,6 +981,7 @@ function createWindow () {
     // En producción, usar app.getAppPath() que funciona correctamente en todas las plataformas
     const indexPath = path.join(app.getAppPath(), 'frontend', 'dist', 'index.html')
     mainWindow.loadFile(indexPath)
+    mainWindow.webContents.openDevTools({ mode: 'detach' })
   } else {
     // En desarrollo, usar el servidor de Vite
     mainWindow.loadURL('http://localhost:5173')
@@ -1074,12 +1075,22 @@ app.whenReady().then(async () => {
   createWindow()
 
   // Inicializar Worker
+  // Usamos el worker empaquetado (bundled) tanto en dev como en prod para consistencia
   const workerPath = app.isPackaged
-    ? path.join(process.resourcesPath, 'app.asar.unpacked', 'workers', 'worker.js')
-    : path.join(__dirname, 'workers', 'worker.js')
+    ? path.join(process.resourcesPath, 'app.asar.unpacked', 'workers', 'dist', 'worker.js')
+    : path.join(__dirname, 'workers', 'dist', 'worker.js')
 
   try {
-    worker = fork(workerPath)
+    worker = fork(workerPath, [], {
+      stdio: ['ignore', 'pipe', 'pipe', 'ipc']
+    })
+    
+    if (worker.stdout) {
+      worker.stdout.on('data', (data) => log.info(`[Worker]: ${data.toString().trim()}`))
+    }
+    if (worker.stderr) {
+      worker.stderr.on('data', (data) => log.error(`[Worker Error]: ${data.toString().trim()}`))
+    }
     
     worker.on('error', (err) => log.error('Worker error:', err))
     worker.on('exit', (code) => {

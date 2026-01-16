@@ -6,7 +6,8 @@
     "dev": "concurrently \"npm run dev --prefix frontend\" \"wait-on http://localhost:5173 && electron .\"",
     "build": "npm run build --prefix frontend",
     "start": "electron .",
-    "dist": "electron-builder"
+    "dist": "npm run build:worker && electron-builder",
+    "build:worker": "frontend\\node_modules\\.bin\\esbuild workers/worker.js --bundle --platform=node --outfile=workers/dist/worker.js --external:electron --external:fs --external:path --external:crypto"
   },
   "build": {
     "appId": "SAIDMIX.CopyFy",
@@ -39,13 +40,14 @@
       "public/**/*",
       "helpers/**/*",
       "package.json",
-      "node_modules/sql.js/dist/sql-wasm.wasm"
+      "node_modules/sql.js/dist/sql-wasm.wasm",
+      "workers/dist/worker.js"
     ],
     "asarUnpack": [
       "helpers/paste.exe",
       "helpers/paste-image.exe",
       "node_modules/sql.js/dist/sql-wasm.wasm",
-      "workers/**/*"
+      "workers/dist/worker.js"
     ],
     "directories": {
       "buildResources": "build"

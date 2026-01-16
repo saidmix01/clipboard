@@ -1,12 +1,44 @@
 const fs = require('fs');
 const path = require('path');
+
+// Logging helper to send logs to parent process via stdout/stderr which we capture
+const log = {
+    info: (...args) => console.log(args.map(a => typeof a === 'object' ? JSON.stringify(a) : a).join(' ')),
+    error: (...args) => console.error(args.map(a => typeof a === 'object' ? JSON.stringify(a) : a).join(' '))
+};
+
+log.info('Worker process started');
+log.info('Worker env:', process.env);
+log.info('Worker module paths:', module.paths);
+
+// Fix module resolution for unpacked worker in production
+if (process.env.APP_RESOURCES_PATH) {
+  const asarNodeModules = path.join(process.env.APP_RESOURCES_PATH, 'app.asar', 'node_modules');
+  log.info('Checking asar node_modules:', asarNodeModules);
+  if (!module.paths.includes(asarNodeModules)) {
+    module.paths.push(asarNodeModules);
+    log.info('Added asar node_modules to module.paths');
+  }
+}
+
+let axios;
+try {
+    axios = require('axios');
+    log.info('Axios loaded successfully');
+} catch (e) {
+    log.error('Failed to load axios:', e.message);
+    log.error('Stack:', e.stack);
+}
+
 const crypto = require('crypto');
-const axios = require('axios');
+// const axios = require('axios'); // Moved inside try-catch
 
 let userDataPath = '';
 let imageHistoryDir = '';
 
 process.on('message', async (msg) => {
+  log.info('Worker received message type:', msg.type);
+  
   if (msg.type === 'init') {
     userDataPath = msg.path;
     imageHistoryDir = path.join(userDataPath, 'clipboard-images');
@@ -17,7 +49,14 @@ process.on('message', async (msg) => {
   } else if (msg.type === 'migrate-images') {
     await handleMigration(msg.items);
   } else if (msg.type === 'sync') {
-    await handleSync(msg.config, msg.items, msg.device);
+    log.info('Starting sync in worker');
+    try {
+        await handleSync(msg.config, msg.items, msg.device);
+    } catch (e) {
+        log.error('Error in handleSync:', e);
+        // Ensure we send something back so main process doesn't hang
+        process.send({ type: 'sync-done', syncedIds: [], conflicts: [], newItems: [] });
+    }
   }
 });
 
@@ -67,6 +106,10 @@ function updateManifest(fileName, hash) {
 }
 
 async function handleSync(config, localItems, deviceName) {
+  if (!axios) {
+      log.error('Axios not loaded, cannot sync');
+      throw new Error('Axios not loaded');
+  }
   const { backendUrl, authToken } = config;
   const axiosInstance = axios.create({
     baseURL: backendUrl,
