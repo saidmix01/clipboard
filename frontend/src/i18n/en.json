@@ -72,6 +72,7 @@
     "register_button": "Register",
     "registering": "Registering...",
     "cancel": "Cancel",
+    "back": "Back",
     "error_all_fields": "Complete all fields",
     "error_password_length": "Password must be at least 8 characters",
     "error_connection": "Connection error",
@@ -90,6 +91,7 @@
     "no_file_selected": "No file selected",
     "update": "Update",
     "close": "Close",
+    "back": "Back",
     "error_update": "Could not update information",
     "error_load": "Could not load user"
   },
@@ -100,6 +102,7 @@
     "status_syncing": "Syncing...",
     "apply": "Apply",
     "cancel": "Cancel",
+    "back": "Back",
     "error_load_devices": "Could not load devices",
     "error_load_history": "Could not load device history"
   },
@@ -107,7 +110,8 @@
     "title": "About Copyfy++",
     "version": "Version",
     "whats_new": "What's New",
-    "github": "GitHub"
+    "github": "GitHub",
+    "back": "Back"
   },
   "delete": {
     "title": "Delete item?",

@@ -14,7 +14,13 @@ const {
   protocol
 } = require('electron')
 const { autoUpdater } = require('electron-updater')
-const log = require('electron-log')
+const electronLog = require('electron-log')
+const log = {
+  info: () => {},
+  error: () => {},
+  warn: () => {},
+  debug: () => {}
+}
 const path = require('path')
 
 if (process.platform === 'win32') {
@@ -73,9 +79,12 @@ if (!gotTheLock) {
       if (mainWindow.isMinimized()) mainWindow.restore()
       if (!mainWindow.isVisible()) mainWindow.show()
       mainWindow.focus()
-      // En Linux, mover al frente puede requerir métodos adicionales
+      // En Linux, mover al frente y asegurar always on top puede requerir métodos adicionales
       if (process.platform === 'linux') {
-        mainWindow.moveTop()
+        try {
+          mainWindow.setAlwaysOnTop(true)
+          mainWindow.moveTop()
+        } catch {}
       }
     }
   })
@@ -624,7 +633,7 @@ function normalizeHistory (raw) {
   )
 }
 
-autoUpdater.logger = log
+autoUpdater.logger = electronLog
 autoUpdater.logger.transports.file.level = 'info'
 
 // No dependemos de JSON legacy para cargar historial. Todo se gestiona con SQLite.
@@ -1013,9 +1022,23 @@ function createWindow () {
       const prefs = prefsStr ? JSON.parse(prefsStr) : {}
       if (!prefs.startMinimized) {
         mainWindow.show()
+        // Asegurar que la ventana esté siempre encima en Linux desde el inicio
+        if (process.platform === 'linux') {
+          try {
+            mainWindow.setAlwaysOnTop(true)
+            mainWindow.moveTop()
+          } catch {}
+        }
       }
     } catch {
       mainWindow.show()
+      // Asegurar que la ventana esté siempre encima en Linux desde el inicio
+      if (process.platform === 'linux') {
+        try {
+          mainWindow.setAlwaysOnTop(true)
+          mainWindow.moveTop()
+        } catch {}
+      }
     }
     if (mainWindow && !mainWindow.isVisible()) {
       setTimeout(() => {
@@ -1043,7 +1066,41 @@ function createWindow () {
     event.preventDefault()
     mainWindow.hide()
   })
+
+  // Optimización de memoria: liberar RAM cuando la ventana se oculta
+  mainWindow.on('hide', () => {
+    try {
+      // Habilitar throttling de fondo para reducir uso de CPU/RAM
+      mainWindow.webContents.setBackgroundThrottling(true)
+      // Limpiar cachés del navegador para liberar memoria
+      mainWindow.webContents.session.clearCache().catch(() => {})
+      // Limpiar almacenamiento en memoria del navegador
+      mainWindow.webContents.session.clearStorageData({
+        storages: ['cache', 'cookies', 'filesystem']
+      }).catch(() => {})
+      // Notificar al frontend que la ventana está oculta
+      mainWindow.webContents.send('window-visibility-changed', { visible: false })
+    } catch (err) {
+      log.error('Error en optimización de memoria al ocultar:', err)
+    }
+  })
+
   mainWindow.on('show', () => {
+    try {
+      // Deshabilitar throttling cuando la ventana es visible
+      mainWindow.webContents.setBackgroundThrottling(false)
+      // Notificar al frontend que la ventana está visible
+      mainWindow.webContents.send('window-visibility-changed', { visible: true })
+    } catch (err) {
+      log.error('Error al mostrar ventana:', err)
+    }
+    // Asegurar que la ventana esté siempre encima, especialmente en Linux
+    if (process.platform === 'linux') {
+      try {
+        mainWindow.setAlwaysOnTop(true)
+        mainWindow.moveTop()
+      } catch {}
+    }
     setTimeout(() => {
       try { mainWindow.focus() } catch {}
       try { mainWindow.webContents.focus() } catch {}
@@ -1069,7 +1126,7 @@ app.whenReady().then(async () => {
     try {
       return callback(decodeURIComponent(url))
     } catch (error) {
-      console.error('Failed to register protocol', error)
+      // Failed to register protocol
     }
   })
 
@@ -1119,6 +1176,10 @@ app.whenReady().then(async () => {
     log.error('Failed to start worker:', e)
   }
   
+  // Promesas pendientes para operaciones del worker
+  const pendingWorkerOps = new Map()
+  let workerOpId = 0
+
   worker.on('message', (msg) => {
     if (msg.type === 'migration-done') {
       try {
@@ -1179,6 +1240,28 @@ app.whenReady().then(async () => {
          log.error('Error processing sync-done:', e)
       } finally {
          syncLock = false
+      }
+    } else if (msg.type === 'register-device-done') {
+      const { opId, deviceId, error } = msg
+      const pending = pendingWorkerOps.get(opId)
+      if (pending) {
+        pendingWorkerOps.delete(opId)
+        if (error) {
+          pending.reject(new Error(error))
+        } else {
+          pending.resolve(deviceId)
+        }
+      }
+    } else if (msg.type === 'refresh-token-done') {
+      const { opId, token, refreshToken, error } = msg
+      const pending = pendingWorkerOps.get(opId)
+      if (pending) {
+        pendingWorkerOps.delete(opId)
+        if (error) {
+          pending.reject(new Error(error))
+        } else {
+          pending.resolve({ token, refreshToken })
+        }
       }
     }
   })
@@ -1260,7 +1343,6 @@ app.whenReady().then(async () => {
   // Cargar historial una sola vez al inicio (optimización)
   try {
     history = authToken ? db.getAll(getCurrentDeviceName()) : db.getAllGuest(getCurrentDeviceName())
-    log.info('Historial cargado desde DB', { count: history.length })
   } catch (err) {
     log.error('Error al leer historial (device)', err)
     history = []
@@ -1655,7 +1737,6 @@ app.whenReady().then(async () => {
   // El frontend (React) se encargará de cargar la sesión y refrescar el token
   // Una vez que el frontend establezca el token vía 'set-auth-token', 
   // entonces se ejecutarán las funciones que requieren autenticación (incluyendo syncClipboardHistory)
-  log.info('Iniciando aplicación - esperando que el frontend cargue y refresque la sesión')
 
   // Iniciar sincronización periódica (se ejecutará solo si hay authToken)
   setInterval(() => {
@@ -1675,7 +1756,7 @@ app.on('window-all-closed', () => {
 app.on('before-quit', () => {
   isQuitting = true
   if (worker) {
-    try { worker.kill() } catch (e) { console.error('Error killing worker:', e) }
+    try { worker.kill() } catch (e) { }
     worker = null
   }
   try { childWindows.forEach(w => { try { w.destroy() } catch {} }) } catch {}
@@ -2369,7 +2450,6 @@ async function refreshTokenFromSession (session) {
     }
 
     const requestPayload = { refreshToken: refreshTokenValue }
-    console.log('Sending refresh token payload:', requestPayload)
     
     const res = await axios.post(url, requestPayload, {
       headers: { 'Content-Type': 'application/json' }
@@ -2742,15 +2822,66 @@ async function fetchBackendClipboard () {
 async function ensureDeviceRegistered () {
   try {
     if (deviceId) return deviceId
-    const axiosInstance = getAxiosInstance()
-    const hostname = os.hostname()
-    const osName = process.platform === 'win32' ? 'Windows' : (process.platform === 'darwin' ? 'macOS' : 'Linux')
-    const payload = { clientId: hostname, name: hostname, metadata: { os: osName, appVersion: app.getVersion() } }
-    const res = await axiosInstance.post('/devices', payload)
-    const data = res?.data
-    const obj = (data && typeof data === 'object' ? (data.data ?? data) : {})
-    deviceId = obj?.id || obj?.device?.id || null
-    return deviceId
+    // Si el worker no está disponible, usar método directo como fallback
+    if (!worker) {
+      log.warn('Worker not available, using direct device registration')
+      const axiosInstance = getAxiosInstance()
+      const hostname = os.hostname()
+      const osName = process.platform === 'win32' ? 'Windows' : (process.platform === 'darwin' ? 'macOS' : 'Linux')
+      const payload = { clientId: hostname, name: hostname, metadata: { os: osName, appVersion: app.getVersion() } }
+      const res = await axiosInstance.post('/devices', payload)
+      const data = res?.data
+      const obj = (data && typeof data === 'object' ? (data.data ?? data) : {})
+      deviceId = obj?.id || obj?.device?.id || null
+      return deviceId
+    }
+    
+    // Usar worker para registro de dispositivo (no bloquea el hilo principal)
+    return new Promise((resolve, reject) => {
+      const opId = ++workerOpId
+      const timeout = setTimeout(() => {
+        pendingWorkerOps.delete(opId)
+        log.warn('Device registration timeout, using fallback')
+        // Fallback a método directo si el worker tarda mucho
+        const axiosInstance = getAxiosInstance()
+        const hostname = os.hostname()
+        const osName = process.platform === 'win32' ? 'Windows' : (process.platform === 'darwin' ? 'macOS' : 'Linux')
+        const payload = { clientId: hostname, name: hostname, metadata: { os: osName, appVersion: app.getVersion() } }
+        axiosInstance.post('/devices', payload).then(res => {
+          const data = res?.data
+          const obj = (data && typeof data === 'object' ? (data.data ?? data) : {})
+          deviceId = obj?.id || obj?.device?.id || null
+          resolve(deviceId)
+        }).catch(reject)
+      }, 5000)
+      
+      pendingWorkerOps.set(opId, {
+        resolve: (result) => {
+          clearTimeout(timeout)
+          deviceId = result
+          resolve(result)
+        },
+        reject: (error) => {
+          clearTimeout(timeout)
+          log.error('ensureDeviceRegistered error', error?.message || error)
+          resolve(null) // Resolver con null en lugar de rechazar para no romper el flujo
+        }
+      })
+      
+      const hostname = os.hostname()
+      const osName = process.platform === 'win32' ? 'Windows' : (process.platform === 'darwin' ? 'macOS' : 'Linux')
+      const config = {
+        backendUrl: BACKEND_URL,
+        authToken: authToken
+      }
+      const deviceInfo = {
+        hostname,
+        osName,
+        appVersion: app.getVersion()
+      }
+      
+      worker.send({ type: 'register-device', opId, config, deviceInfo })
+    })
   } catch (error) {
     log.error('ensureDeviceRegistered error', error?.message || error)
     return null
@@ -2889,7 +3020,16 @@ function createScreenshotNotificationWindow(tempPath, dataUrl) {
       </html>
     `
     notifWindow.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(htmlContent))
-    notifWindow.once('ready-to-show', () => notifWindow.show())
+    notifWindow.once('ready-to-show', () => {
+      notifWindow.show()
+      // Asegurar que la ventana esté siempre encima, especialmente en Linux
+      if (process.platform === 'linux') {
+        try {
+          notifWindow.setAlwaysOnTop(true)
+          notifWindow.moveTop()
+        } catch {}
+      }
+    })
   } catch (e) {
     log.error('Error creating screenshot window', e)
   }
@@ -3095,7 +3235,16 @@ function createNotificationWindow(filePaths) {
     const htmlContent = htmlContentParts.join('\n')
 
     notifWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(htmlContent)}`)
-    notifWindow.once('ready-to-show', () => notifWindow.show())
+    notifWindow.once('ready-to-show', () => {
+      notifWindow.show()
+      // Asegurar que la ventana esté siempre encima, especialmente en Linux
+      if (process.platform === 'linux') {
+        try {
+          notifWindow.setAlwaysOnTop(true)
+          notifWindow.moveTop()
+        } catch {}
+      }
+    })
     
     notifWindow.on('closed', () => {
       if (activeUploadWindow === notifWindow) {
@@ -3681,11 +3830,24 @@ ipcMain.handle('search-history', async (_, payload) => {
   try {
     const q = (payload && typeof payload === 'object') ? String(payload.query || '') : ''
     const f = (payload && typeof payload === 'object') ? String(payload.filter || 'all') : 'all'
-    if (!authToken) {
-      if (f === 'favorite') return []
-      return augmentHistoryWithImagePaths(db.searchGuest(getCurrentDeviceName(), q, f))
+    const page = (payload && typeof payload === 'object') ? Math.max(0, Number(payload.page || 0)) : 0
+    const limit = (payload && typeof payload === 'object') ? Math.max(1, Math.min(100, Number(payload.limit || 20))) : 20
+    
+    // Si hay búsqueda activa, usar función paginada
+    if (q.trim().length > 0) {
+      if (!authToken) {
+        if (f === 'favorite') return []
+        return augmentHistoryWithImagePaths(db.searchGuestPaginated(getCurrentDeviceName(), q, f, page, limit))
+      }
+      return augmentHistoryWithImagePaths(db.searchPaginated(getCurrentDeviceName(), q, f, page, limit))
+    } else {
+      // Sin búsqueda, usar función normal (limitada a 50 items como antes)
+      if (!authToken) {
+        if (f === 'favorite') return []
+        return augmentHistoryWithImagePaths(db.searchGuest(getCurrentDeviceName(), q, f))
+      }
+      return augmentHistoryWithImagePaths(db.search(getCurrentDeviceName(), q, f))
     }
-    return augmentHistoryWithImagePaths(db.search(getCurrentDeviceName(), q, f))
   } catch {
     return []
   }

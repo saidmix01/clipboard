@@ -28,9 +28,6 @@ for (const esbuildPath of possiblePaths) {
 }
 
 if (!esbuild) {
-  console.error('Error: esbuild no encontrado.');
-  console.error('Intenta ejecutar: npm install --prefix frontend');
-  console.error('O instalar globalmente: npm install -g esbuild');
   process.exit(1);
 }
 
@@ -45,8 +42,7 @@ esbuild.build({
   format: 'cjs',
   target: 'node18'
 }).then(() => {
-  console.log('✓ Worker compilado exitosamente en workers/dist/worker.js');
+  // Worker compilado exitosamente
 }).catch((err) => {
-  console.error('Error al compilar worker:', err);
   process.exit(1);
 });

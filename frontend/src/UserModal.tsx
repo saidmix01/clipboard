@@ -2,10 +2,12 @@ import { useEffect, useState, useRef } from 'react'
 import { API_BASE } from './config'
 import DetailsModal from './components/DetailsModal'
 import { useTranslation } from 'react-i18next'
+import { ChevronLeftIcon } from '@heroicons/react/24/outline'
 
 type UserModalProps = {
   isOpen: boolean
   onClose: () => void
+  onBack?: () => void
 }
 
 type Session = {
@@ -16,7 +18,7 @@ type Session = {
   user?: any
 }
 
-export default function UserModal({ isOpen, onClose }: UserModalProps) {
+export default function UserModal({ isOpen, onClose, onBack }: UserModalProps) {
   const { t } = useTranslation()
   const [session, setSession] = useState<Session | null>(null)
   const [user, setUser] = useState<any>(null)
@@ -156,10 +158,24 @@ export default function UserModal({ isOpen, onClose }: UserModalProps) {
 
   
 
+  const MouseOver = (e: React.MouseEvent<HTMLButtonElement>) => {
+    e.currentTarget.style.backgroundColor = 'var(--color-primary)'
+    e.currentTarget.style.color = '#ffffff'
+  }
+  const MouseOut = (e: React.MouseEvent<HTMLButtonElement>) => {
+    e.currentTarget.style.backgroundColor = 'transparent'
+    e.currentTarget.style.color = 'var(--color-text)'
+  }
+
   return (
     <DetailsModal open={isOpen} onClose={onClose}>
       <div className="space-y-3">
-        <h3 className="m-0">{t('user.title')}</h3>
+        <div className="flex items-center gap-2 mb-2">
+          <button onClick={() => { if (onBack) onBack(); else onClose(); }} className="p-1 rounded-full hover:text-white transition-colors" onMouseEnter={MouseOver} onMouseLeave={MouseOut} title={t('user.back')}>
+            <ChevronLeftIcon className="w-5 h-5" />
+          </button>
+          <h3 className="m-0">{t('user.title')}</h3>
+        </div>
         {!session ? (
           <p className="mt-1 text-[color:var(--color-muted)]">{t('user.not_authenticated')}</p>
         ) : (

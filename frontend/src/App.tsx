@@ -35,6 +35,11 @@ function App () {
   const [filter, setFilter] = useState<FilterType>('text')
   const [displayed, setDisplayed] = useState<HistoryItem[]>([])
   const [listLoading, setListLoading] = useState<boolean>(false)
+  const [searchPage, setSearchPage] = useState<number>(0)
+  const [hasMore, setHasMore] = useState<boolean>(false)
+  const [isLoadingMore, setIsLoadingMore] = useState<boolean>(false)
+  const searchAbortControllerRef = useRef<AbortController | null>(null)
+  const MAX_ITEMS_IN_MEMORY = 100 // Límite duro de items en RAM
   const [syncing, setSyncing] = useState<boolean>(false)
   const [syncPct, setSyncPct] = useState<number>(0)
   const [downloading, setDownloading] = useState<boolean>(false)
@@ -54,6 +59,44 @@ function App () {
   const [globalLoading, setGlobalLoading] = useState(false)
   const [userAvatar, setUserAvatar] = useState<string | null>(null)
 
+  // Función para cargar más resultados (infinite scroll)
+  const loadMoreResults = useCallback(() => {
+    const q = search.trim()
+    if (q.length === 0 || !hasMore || isLoadingMore || listLoading) return
+
+    setIsLoadingMore(true)
+    const currentPage = searchPage
+    const payload = { query: q, filter: 'text', page: currentPage, limit: 20 }
+    
+    Promise.resolve((window as any).electronAPI?.searchHistory?.(payload))
+      .then((res: HistoryItem[]) => {
+        if (Array.isArray(res) && res.length > 0) {
+          // Verificar si ya alcanzamos el límite de memoria
+          const currentTotal = displayed.length
+          const remaining = MAX_ITEMS_IN_MEMORY - currentTotal
+          
+          if (remaining > 0) {
+            // Agregar solo los que quepan en memoria
+            const newItems = res.slice(0, remaining)
+            setDisplayed(prev => [...prev, ...newItems])
+            setHasMore(res.length === 20 && (currentTotal + newItems.length) < MAX_ITEMS_IN_MEMORY)
+            setSearchPage(currentPage + 1)
+          } else {
+            // Ya alcanzamos el límite
+            setHasMore(false)
+          }
+        } else {
+          setHasMore(false)
+        }
+      })
+      .catch((err: any) => {
+        setHasMore(false)
+      })
+      .finally(() => {
+        setIsLoadingMore(false)
+      })
+  }, [search, hasMore, isLoadingMore, listLoading, searchPage, displayed.length])
+
   const logout = async () => {
     setToken(null)
     try {
@@ -71,28 +114,15 @@ function App () {
     try {
       const sessionStr = await (window as any).electronAPI?.getConfig?.('session')
       if (!sessionStr) {
-        console.warn('refreshAuthToken: No hay sesión guardada')
         return false
       }
       const sess = JSON.parse(sessionStr)
       const rt = sess?.refreshToken
       if (!rt || rt === null || rt === undefined) {
-        console.warn('refreshAuthToken: No hay refreshToken en la sesión', {
-          hasSession: !!sess,
-          sessionKeys: sess ? Object.keys(sess) : [],
-          refreshTokenValue: rt
-        })
         return false
       }
-      
-      console.log('refreshAuthToken: Intentando refrescar token', {
-        hasRefreshToken: !!rt,
-        refreshTokenType: typeof rt,
-        refreshTokenLength: String(rt).length
-      })
 
       const requestPayload = { refreshToken: rt }
-      console.log('refreshAuthToken: Sending payload:', requestPayload)
       
       const res = await fetch(`${API_BASE}/auth/refresh`, {
         method: 'POST',
@@ -109,20 +139,10 @@ function App () {
         const newSession = { ...sess, token: newToken, refreshToken: newRefresh || rt }
         await (window as any).electronAPI?.setConfig?.('session', JSON.stringify(newSession))
         await (window as any).electronAPI?.saveSession?.(newSession)
-        console.log('refreshAuthToken: Token refrescado exitosamente')
         return true
-      } else {
-        console.warn('refreshAuthToken: Respuesta inválida', {
-          ok: res.ok,
-          okFlag,
-          hasToken: !!newToken,
-          status: res.status,
-          data
-        })
       }
       return false
     } catch (error) {
-      console.error('refreshAuthToken: Error al refrescar token', error)
       return false
     }
   }
@@ -352,7 +372,6 @@ function App () {
   // Listener para cuando el token se refresca desde el main process
   useEffect(() => {
     const off = (window as any).electronAPI?.onTokenRefreshed?.((newToken: string) => {
-      console.log('Token refrescado desde main process')
       handleLoginSuccess(newToken)
     })
     return () => {
@@ -465,6 +484,52 @@ function App () {
     document.addEventListener('mousedown', handleClickOutside)
     return () => {
       document.removeEventListener('mousedown', handleClickOutside)
+    }
+  }, [])
+
+  // Optimización de memoria: reducir carga cuando la ventana está oculta
+  useEffect(() => {
+    const handleVisibilityChange = (event: any) => {
+      const { visible } = event || {}
+      if (!visible) {
+        // Cuando la ventana se oculta, optimizar memoria
+        // Limpiar imágenes grandes del DOM que no estén visibles
+        try {
+          const images = document.querySelectorAll('img')
+          images.forEach((img: HTMLImageElement) => {
+            // Guardar el src original si no está guardado
+            if (img.dataset.srcOriginal === undefined && img.src) {
+              img.dataset.srcOriginal = img.src
+            }
+            // Para imágenes muy grandes (más de 1MB aproximado), usar placeholder
+            if (img.dataset.lazyLoad !== 'false') {
+              img.src = 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMTAwIiBoZWlnaHQ9IjEwMCIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48L3N2Zz4='
+            }
+          })
+        } catch (err) {
+          console.error('Error optimizando imágenes:', err)
+        }
+      } else {
+        // Cuando la ventana se muestra, restaurar imágenes
+        try {
+          const images = document.querySelectorAll('img[data-src-original]')
+          images.forEach((img: HTMLImageElement) => {
+            const originalSrc = img.dataset.srcOriginal
+            if (originalSrc && img.src !== originalSrc) {
+              img.src = originalSrc
+            }
+          })
+        } catch (err) {
+          console.error('Error restaurando imágenes:', err)
+        }
+      }
+    }
+
+    // Escuchar eventos de Electron
+    const electronAPI = (window as any).electronAPI
+    if (electronAPI?.onWindowVisibilityChanged) {
+      const off = electronAPI.onWindowVisibilityChanged(handleVisibilityChange)
+      return () => { try { off?.() } catch {} }
     }
   }, [])
 
@@ -779,22 +844,98 @@ function App () {
       return () => { try { off?.() } catch {} }
     }
   }, [])
+  // Efecto con debounce para búsqueda paginada
   useEffect(() => {
+    // Cancelar búsqueda anterior si existe
+    if (searchAbortControllerRef.current) {
+      searchAbortControllerRef.current.abort()
+      searchAbortControllerRef.current = null
+    }
+
     const q = search.trim()
-    if (!token && filter === 'favorite') { setDisplayed([]); return }
-    setListLoading(true)
+    
+    // Si no hay token y filter es favorite, limpiar y salir
+    if (!token && filter === 'favorite') { 
+      setDisplayed([])
+      setSearchPage(0)
+      setHasMore(false)
+      return 
+    }
+
+    // Si se limpia la búsqueda, resetear estado
     if (q.length === 0) {
+      setDisplayed([])
+      setSearchPage(0)
+      setHasMore(false)
+      setListLoading(true)
       const payload = { filter, limit: 50 }
       Promise.resolve((window as any).electronAPI?.listRecent?.(payload))
-        .then((res: HistoryItem[]) => { if (Array.isArray(res)) setDisplayed(res) })
+        .then((res: HistoryItem[]) => { 
+          if (Array.isArray(res)) {
+            // Limitar a MAX_ITEMS_IN_MEMORY
+            setDisplayed(res.slice(0, MAX_ITEMS_IN_MEMORY))
+          }
+        })
         .finally(() => setListLoading(false))
-    } else {
-      const payload = { query: q, filter: 'text' }
-      Promise.resolve((window as any).electronAPI?.searchHistory?.(payload))
-        .then((res: HistoryItem[]) => { if (Array.isArray(res)) setDisplayed(res) })
-        .finally(() => setListLoading(false))
+      return
     }
-  }, [search, filter])
+
+    // Búsqueda con debounce (400ms)
+    const debounceTimer = setTimeout(() => {
+      // Resetear página y limpiar resultados anteriores al iniciar nueva búsqueda
+      setSearchPage(0)
+      setDisplayed([])
+      setListLoading(true)
+      setHasMore(false)
+
+      // Crear nuevo AbortController para esta búsqueda
+      const abortController = new AbortController()
+      searchAbortControllerRef.current = abortController
+
+      const payload = { query: q, filter: 'text', page: 0, limit: 20 }
+      const searchPromise = Promise.resolve((window as any).electronAPI?.searchHistory?.(payload))
+      
+      searchPromise
+        .then((res: HistoryItem[]) => {
+          // Verificar si la búsqueda fue cancelada
+          if (abortController.signal.aborted) return
+          
+          if (Array.isArray(res)) {
+            // Si retornó 20 items, asumir que puede haber más
+            setHasMore(res.length === 20)
+            // Limitar a MAX_ITEMS_IN_MEMORY
+            setDisplayed(res.slice(0, MAX_ITEMS_IN_MEMORY))
+            setSearchPage(1) // Siguiente página sería 1
+          } else {
+            setHasMore(false)
+            setDisplayed([])
+          }
+        })
+        .catch((err: any) => {
+          // Ignorar errores de cancelación
+          if (err?.name === 'AbortError' || abortController.signal.aborted) return
+          setDisplayed([])
+          setHasMore(false)
+        })
+        .finally(() => {
+          if (!abortController.signal.aborted) {
+            setListLoading(false)
+          }
+          if (searchAbortControllerRef.current === abortController) {
+            searchAbortControllerRef.current = null
+          }
+        })
+    }, 400) // Debounce de 400ms
+
+    return () => {
+      clearTimeout(debounceTimer)
+      // Cancelar búsqueda pendiente si el componente se desmonta o cambian las dependencias
+      if (searchAbortControllerRef.current) {
+        searchAbortControllerRef.current.abort()
+        searchAbortControllerRef.current = null
+      }
+    }
+  }, [search, filter, token])
 
   return (
     <>
@@ -858,6 +999,7 @@ function App () {
               onApplied={(newHistory: HistoryItem[]) => {
                 if (Array.isArray(newHistory)) setHistory(newHistory)
               }}
+              onBack={() => { setShowDeviceSwitch(false); setSettingsOpen(true) }}
             />
 
           {/* filtros ahora en Dock */}
@@ -910,14 +1052,35 @@ function App () {
             items={displayed}
             search={search}
             selectedIndex={selectedIndex}
+            hasMore={hasMore}
+            onLoadMore={loadMoreResults}
+            isLoadingMore={isLoadingMore}
             onToggleFavorite={(item) => {
               if (!token) { toast.error(t('notifications.login_required')); return }
               ;(window as any).electronAPI?.toggleFavorite?.(item)
-              const payload = { query: search, filter }
-              setListLoading(true)
-              Promise.resolve((window as any).electronAPI?.searchHistory?.(payload))
-                .then((res: HistoryItem[]) => { if (Array.isArray(res)) setDisplayed(res) })
-                .finally(() => setListLoading(false))
+              // Recargar la búsqueda actual después de toggle favorite
+              const q = search.trim()
+              if (q.length > 0) {
+                const payload = { query: q, filter: 'text', page: 0, limit: 20 }
+                setListLoading(true)
+                Promise.resolve((window as any).electronAPI?.searchHistory?.(payload))
+                  .then((res: HistoryItem[]) => { 
+                    if (Array.isArray(res)) {
+                      setHasMore(res.length === 20)
+                      setDisplayed(res.slice(0, MAX_ITEMS_IN_MEMORY))
+                      setSearchPage(1)
+                    }
+                  })
+                  .finally(() => setListLoading(false))
+              } else {
+                const payload = { filter, limit: 50 }
+                setListLoading(true)
+                Promise.resolve((window as any).electronAPI?.listRecent?.(payload))
+                  .then((res: HistoryItem[]) => { 
+                    if (Array.isArray(res)) setDisplayed(res.slice(0, MAX_ITEMS_IN_MEMORY))
+                  })
+                  .finally(() => setListLoading(false))
+              }
             }}
             onCopy={(item) => {
               const isImage = item.value.startsWith('data:image') || item.value.startsWith('[LOCAL_IMAGE]:') || !!(item as any).imagePath
@@ -932,13 +1095,12 @@ function App () {
               }
               setTimeout(() => { ;(window as any).electronAPI?.hideWindow?.() }, 500)
             }}
+            onDelete={(item) => {
+              setItemToDelete(item)
+            }}
             highlightMatch={highlightMatch}
             canFavorite={!!token}
             canOpenModal={!!token}
-            onContextMenu={(e, item) => {
-              e.preventDefault()
-              setContextMenu({ x: e.clientX, y: e.clientY, item })
-            }}
           />
           )}
           {listLoading && (
@@ -1064,6 +1226,7 @@ function App () {
       <AboutModal
         open={aboutOpen}
         onClose={() => setAboutOpen(false)}
+        onBack={() => { setAboutOpen(false); setSettingsOpen(true) }}
       />
     </>
   )

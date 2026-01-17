@@ -3,14 +3,16 @@ const { app } = require('electron')
 const path = require('path')
 const os = require('os')
 const fs = require('fs')
-const log = require('electron-log')
+const electronLog = require('electron-log')
+const log = {
+  info: () => {},
+  error: () => {},
+  warn: () => {}
+}
 
 function configureAutoLaunch() {
-  log.info('Configurando AutoLaunch...')
-
   // Evitar configurar autostart en desarrollo salvo que se fuerce
   if (!app.isPackaged && !process.env.FORCE_AUTOLAUNCH) {
-    log.info('AutoLaunch omitido en desarrollo (app no empaquetada)')
     return 
   }
 

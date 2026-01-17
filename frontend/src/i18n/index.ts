@@ -34,7 +34,7 @@ export const initI18n = async () => {
                 userPref = prefs.language;
             }
         } catch (e) {
-            console.warn('Failed to get preferences for language:', e);
+            // Failed to get preferences for language
         }
     }
 
@@ -44,18 +44,17 @@ export const initI18n = async () => {
       // 2. Check system locale
       try {
           const systemLocale = await window.copyfy.getSystemLocale();
-          console.log('System locale detected:', systemLocale);
           if (systemLocale && systemLocale.toLowerCase().startsWith('es')) {
             language = 'es';
           } else {
             language = 'en';
           }
       } catch (e) {
-          console.warn('Failed to get system locale:', e);
+          // Failed to get system locale
       }
     }
   } catch (error) {
-    console.error('Error detecting language:', error);
+    // Error detecting language
   }
 
   await i18n

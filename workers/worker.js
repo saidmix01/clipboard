@@ -3,13 +3,11 @@ const path = require('path');
 
 // Logging helper to send logs to parent process via stdout/stderr which we capture
 const log = {
-    info: (...args) => console.log(args.map(a => typeof a === 'object' ? JSON.stringify(a) : a).join(' ')),
-    error: (...args) => console.error(args.map(a => typeof a === 'object' ? JSON.stringify(a) : a).join(' '))
+    info: () => {},
+    error: () => {}
 };
 
-log.info('Worker process started');
-log.info('Worker env:', process.env);
-log.info('Worker module paths:', module.paths);
+// Worker process started
 
 // Axios debería estar incluido en el bundle de esbuild, pero mantenemos este fallback
 // Fix module resolution for unpacked worker in production (solo si axios no está en el bundle)
@@ -68,6 +66,22 @@ process.on('message', async (msg) => {
         // Ensure we send something back so main process doesn't hang
         process.send({ type: 'sync-done', syncedIds: [], conflicts: [], newItems: [] });
     }
+  } else if (msg.type === 'register-device') {
+    log.info('Starting device registration in worker');
+    try {
+        await handleRegisterDevice(msg.config, msg.deviceInfo, msg.opId);
+    } catch (e) {
+        log.error('Error in handleRegisterDevice:', e);
+        process.send({ type: 'register-device-done', opId: msg.opId, deviceId: null, error: e.message });
+    }
+  } else if (msg.type === 'refresh-token') {
+    log.info('Starting token refresh in worker');
+    try {
+        await handleRefreshToken(msg.config, msg.refreshToken, msg.opId);
+    } catch (e) {
+        log.error('Error in handleRefreshToken:', e);
+        process.send({ type: 'refresh-token-done', opId: msg.opId, token: null, refreshToken: null, error: e.message });
+    }
   }
 });
 
@@ -94,7 +108,7 @@ async function handleMigration(items) {
 
       results.push({ id: item.id, path: filePath });
     } catch (error) {
-      console.error(`[Worker] Error migrating item ${item.id}:`, error);
+      // Error migrating item
     }
   }
   process.send({ type: 'migration-done', results });
@@ -210,8 +224,7 @@ async function handleSync(config, localItems, deviceName) {
              }
           }
         } catch (e) {
-           // Basic error logging
-           console.error('Batch sync error:', e.message);
+           // Batch sync error
         }
      }
    }
@@ -228,4 +241,67 @@ async function handleSync(config, localItems, deviceName) {
   }
 
   process.send({ type: 'sync-done', syncedIds, conflicts, newItems });
+}
+
+async function handleRegisterDevice(config, deviceInfo, opId) {
+  if (!axios) {
+      log.error('Axios not loaded, cannot register device');
+      throw new Error('Axios not loaded');
+  }
+  const { backendUrl, authToken } = config;
+  const axiosInstance = axios.create({
+    baseURL: backendUrl,
+    headers: authToken ? { Authorization: `Bearer ${authToken}` } : {},
+    maxContentLength: Infinity,
+    maxBodyLength: Infinity
+  });
+
+  try {
+    const { hostname, osName, appVersion } = deviceInfo;
+    const payload = { 
+      clientId: hostname, 
+      name: hostname, 
+      metadata: { os: osName, appVersion } 
+    };
+    const res = await axiosInstance.post('/devices', payload);
+    const data = res?.data;
+    const obj = (data && typeof data === 'object' ? (data.data ?? data) : {});
+    const deviceId = obj?.id || obj?.device?.id || null;
+    process.send({ type: 'register-device-done', opId, deviceId, error: null });
+  } catch (error) {
+    log.error('Device registration error:', error?.message || error);
+    process.send({ type: 'register-device-done', opId, deviceId: null, error: error?.message || 'Unknown error' });
+  }
+}
+
+async function handleRefreshToken(config, refreshTokenValue, opId) {
+  if (!axios) {
+      log.error('Axios not loaded, cannot refresh token');
+      throw new Error('Axios not loaded');
+  }
+  const { backendUrl } = config;
+  
+  try {
+    const url = `${backendUrl}/auth/refresh`;
+    const requestPayload = { refreshToken: refreshTokenValue };
+    
+    const res = await axios.post(url, requestPayload, {
+      headers: { 'Content-Type': 'application/json' }
+    });
+
+    const data = res?.data;
+    const payload = (data && typeof data === 'object' ? (data.data ?? data) : {});
+    const okFlag = (data && typeof data === 'object') ? (data.success ?? data.status ?? res.status === 200) : res.status === 200;
+    const newToken = payload?.token;
+    const newRefreshToken = payload?.refreshToken || refreshTokenValue;
+
+    if (okFlag && newToken) {
+      process.send({ type: 'refresh-token-done', opId, token: newToken, refreshToken: newRefreshToken, error: null });
+    } else {
+      throw new Error('Invalid response from refresh endpoint');
+    }
+  } catch (error) {
+    log.error('Token refresh error:', error?.message || error);
+    process.send({ type: 'refresh-token-done', opId, token: null, refreshToken: null, error: error?.message || 'Unknown error' });
+  }
 }

@@ -72,6 +72,7 @@
     "register_button": "Registrarse",
     "registering": "Registrando...",
     "cancel": "Cancelar",
+    "back": "Atrás",
     "error_all_fields": "Completa todos los campos",
     "error_password_length": "La contraseña debe tener al menos 8 caracteres",
     "error_connection": "Error de conexión",
@@ -90,6 +91,7 @@
     "no_file_selected": "Ningún archivo seleccionado",
     "update": "Actualizar",
     "close": "Cerrar",
+    "back": "Atrás",
     "error_update": "No se pudo actualizar la información",
     "error_load": "No se pudo cargar el usuario"
   },
@@ -100,6 +102,7 @@
     "status_syncing": "Sincronizando...",
     "apply": "Aplicar",
     "cancel": "Cancelar",
+    "back": "Atrás",
     "error_load_devices": "No se pudieron cargar los dispositivos",
     "error_load_history": "No se pudo cargar el historial del dispositivo"
   },
@@ -107,7 +110,8 @@
     "title": "Acerca de Copyfy++",
     "version": "Versión",
     "whats_new": "Novedades",
-    "github": "GitHub"
+    "github": "GitHub",
+    "back": "Atrás"
   },
   "delete": {
     "title": "¿Eliminar elemento?",

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, memo } from 'react'
 import hljs from 'highlight.js'
 import 'highlight.js/styles/github.css'
-import { StarIcon as StarOutline } from '@heroicons/react/24/outline'
+import { StarIcon as StarOutline, TrashIcon, EyeIcon } from '@heroicons/react/24/outline'
 import { StarIcon as StarSolid } from '@heroicons/react/24/solid'
 import type { HistoryItem } from '../types'
 import { useTranslation } from 'react-i18next'
@@ -35,6 +35,7 @@ type Props = {
   selected: boolean
   onCopy: () => void
   onToggleFavorite: () => void
+  onDelete?: () => void
   highlightMatch: (text: string, query: string) => React.ReactNode[] | string
   search: string
   canFavorite?: boolean
@@ -42,7 +43,7 @@ type Props = {
   onContextMenu?: (e: React.MouseEvent) => void
 }
 
-function Card({ item, selected, onCopy, onToggleFavorite, highlightMatch, search, canFavorite = true, canOpenModal = true, onContextMenu }: Props) {
+function Card({ item, selected, onCopy, onToggleFavorite, onDelete, highlightMatch, search, canFavorite = true, canOpenModal = true, onContextMenu }: Props) {
   const { t } = useTranslation()
   const [expanded, setExpanded] = useState(false)
   const isImage = item.value.startsWith('data:image') || !!(item as any).imagePath || item.value.startsWith('[LOCAL_IMAGE]:') || !!item.previewPath || !!item.originalPath
@@ -83,17 +84,6 @@ function Card({ item, selected, onCopy, onToggleFavorite, highlightMatch, search
       onClick={onCopy}
       onContextMenu={onContextMenu}
     >
-      {canFavorite && (
-        <button
-          onClick={(e) => { e.stopPropagation(); onToggleFavorite() }}
-          title={t('favorite')}
-          className="absolute top-1 right-1 p-1 rounded-md hover:bg-[color:var(--color-bg)]"
-          style={{ color: item.favorite ? 'var(--color-accent)' : 'gray' }}
-        >
-          {item.favorite ? <StarSolid className="w-5 h-5" /> : <StarOutline className="w-5 h-5" />}
-        </button>
-      )}
-
       <div>
         {isImage ? (
           // Usar LazyImage si hay paths en disco, sino usar img legacy para data URLs
@@ -125,19 +115,47 @@ function Card({ item, selected, onCopy, onToggleFavorite, highlightMatch, search
         )}
       </div>
 
-      {(item.value.length > 300 || isImage) && (
-        <div
-          className="-mx-2 -mb-2 mt-2 text-center text-xs py-1 border-t border-[color:var(--color-border)] bg-[color:var(--color-surface)]"
-          onClick={(e) => {
-            e.stopPropagation()
-            if (canOpenModal && isImage) { (window as any).electronAPI?.openImageViewer?.(item.value); return }
-            if (canOpenModal) { (window as any).electronAPI?.openCodeEditor?.(item.value); return }
-            setExpanded(!expanded)
-          }}
-        >
-          {expanded ? `▲ ${t('see_less')}` : `▼ ${t('see_more')}`}
+      <div
+        className="-mx-2 -mb-2 mt-2 flex items-center justify-between text-xs py-1 px-2 border-t border-[color:var(--color-border)] bg-[color:var(--color-surface)]"
+      >
+        {(item.value.length > 300 || isImage) && (
+          <button
+            className="p-1 rounded-md hover:bg-[color:var(--color-bg)] transition-colors"
+            title={expanded ? t('see_less') : t('see_more')}
+            onClick={(e) => {
+              e.stopPropagation()
+              if (canOpenModal && isImage) { (window as any).electronAPI?.openImageViewer?.(item.value); return }
+              if (canOpenModal) { (window as any).electronAPI?.openCodeEditor?.(item.value); return }
+              setExpanded(!expanded)
+            }}
+            style={{ color: 'var(--color-text)' }}
+          >
+            <EyeIcon className="w-4 h-4" />
+          </button>
+        )}
+        <div className="flex items-center gap-2 ml-auto">
+          {onDelete && (
+            <button
+              onClick={(e) => { e.stopPropagation(); onDelete() }}
+              title={t('delete.title')}
+              className="p-1 rounded-md hover:bg-[color:var(--color-bg)] transition-colors"
+              style={{ color: '#ef4444' }}
+            >
+              <TrashIcon className="w-4 h-4" />
+            </button>
+          )}
+          {canFavorite && (
+            <button
+              onClick={(e) => { e.stopPropagation(); onToggleFavorite() }}
+              title={t('favorite')}
+              className="p-1 rounded-md hover:bg-[color:var(--color-bg)] transition-colors"
+              style={{ color: item.favorite ? 'var(--color-accent)' : 'gray' }}
+            >
+              {item.favorite ? <StarSolid className="w-4 h-4" /> : <StarOutline className="w-4 h-4" />}
+            </button>
+          )}
         </div>
-      )}
+      </div>
     </div>
   )
 }
