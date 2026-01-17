@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react'
 import { motion } from 'framer-motion'
 import Portal from './Portal'
+import { useTranslation } from 'react-i18next'
 
 type Props = {
   open: boolean
@@ -15,6 +16,7 @@ export default function SearchQuickSwitcher({
   onQueryChange,
   onClose
 }: Props) {
+  const { t } = useTranslation()
   const inputRef = useRef<HTMLInputElement | null>(null)
   useEffect(() => {
     const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
@@ -46,7 +48,7 @@ export default function SearchQuickSwitcher({
               onQueryChange(v)
               try { ;(window as any).electronAPI?.setSearchQuery?.(v) } catch {}
             }}
-            placeholder="Buscar…"
+            placeholder={t('quick_search_placeholder')}
             className="w-full px-4 py-3 bg-transparent text-[color:var(--color-text)] outline-none focus:bg-[color:var(--color-surface)]"
           />
         </div>

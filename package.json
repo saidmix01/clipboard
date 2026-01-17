@@ -1,12 +1,13 @@
 {
   "name": "copyfy",
-  "version": "1.2.4",
+  "version": "1.2.5",
   "main": "main.js",
   "scripts": {
     "dev": "concurrently \"npm run dev --prefix frontend\" \"wait-on http://localhost:5173 && electron .\"",
     "build": "npm run build --prefix frontend",
     "start": "electron .",
-    "dist": "electron-builder"
+    "dist": "npm run build:worker && electron-builder",
+    "build:worker": "node build-worker.js"
   },
   "build": {
     "appId": "SAIDMIX.CopyFy",
@@ -19,7 +20,7 @@
       "displayName": "CopyFy++",
       "backgroundColor": "#464646"
     },
-    "buildVersion": "1.2.4.0",
+    "buildVersion": "1.2.5.0",
     "publish": [
       {
         "provider": "github",
@@ -39,12 +40,14 @@
       "public/**/*",
       "helpers/**/*",
       "package.json",
-      "node_modules/sql.js/dist/sql-wasm.wasm"
+      "node_modules/sql.js/dist/sql-wasm.wasm",
+      "workers/dist/worker.js"
     ],
     "asarUnpack": [
       "helpers/paste.exe",
       "helpers/paste-image.exe",
-      "node_modules/sql.js/dist/sql-wasm.wasm"
+      "node_modules/sql.js/dist/sql-wasm.wasm",
+      "workers/dist/worker.js"
     ],
     "directories": {
       "buildResources": "build"

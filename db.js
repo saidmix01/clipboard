@@ -88,7 +88,7 @@ async function init(app) {
              try { db.run("UPDATE history SET updated_at = strftime('%Y-%m-%d %H:%M:%f', 'now') WHERE updated_at IS NULL") } catch {}
           }
         } catch (e) {
-          console.error(`Migration failed for ${m.col}:`, e.message)
+          // Migration failed
         }
       }
     }
@@ -112,17 +112,16 @@ async function init(app) {
 
       for (const cm of criticalMigrations) {
         if (!finalColumns.has(cm.col)) {
-           console.warn(`Columna crítica faltante detectada tardíamente: ${cm.col}. Intentando reparación de emergencia.`)
            try { 
              db.run(cm.sql) 
              if (cm.col === 'updated_at') {
                 try { db.run("UPDATE history SET updated_at = strftime('%Y-%m-%d %H:%M:%f', 'now') WHERE updated_at IS NULL") } catch {}
              }
-           } catch(e) { console.error(`Fallo reparación emergencia ${cm.col}:`, e.message) }
+           } catch(e) { }
         }
       }
     } catch(e) {
-      console.error('Error en verificación final de esquema:', e)
+      // Error en verificación final de esquema
     }
 
     // Create indices after migrations to ensure columns exist
@@ -134,7 +133,7 @@ async function init(app) {
       CREATE INDEX IF NOT EXISTS idx_history_device_deleted ON history(device, is_deleted);
     `)
   } catch (e) {
-    console.error('Migration check failed:', e)
+    // Migration check failed
   }
   
   try { db.run("ALTER TABLE guest_history ADD COLUMN remote_id TEXT") } catch (e) { /* ignore if exists */ }
@@ -147,7 +146,7 @@ async function init(app) {
     if (tableInfo.length > 0 && tableInfo[0].values) {
       const cols = tableInfo[0].values.map(v => v[1])
     }
-  } catch (e) { console.error('Schema verification failed:', e) }
+  } catch (e) { }
 
   // Ensure all items have a client_item_id
   try {
@@ -158,7 +157,7 @@ async function init(app) {
       }
     }
   } catch (e) {
-    console.error('Failed to backfill client_item_id:', e.message)
+    // Failed to backfill client_item_id
   }
 
   persist()
@@ -186,7 +185,6 @@ function getAll(device) {
     return rows
   } catch (e) {
     if (e.message && e.message.includes('no such column')) {
-      console.warn('getAll: Schema mismatch detected, falling back to legacy query')
       try {
         const stmt = db.prepare('SELECT id, value, favorite, remote_id FROM history WHERE device=? ORDER BY created_at DESC, id DESC')
         const rows = []
@@ -207,11 +205,9 @@ function getAll(device) {
         stmt.free()
         return rows
       } catch (e2) {
-        console.error('getAll legacy fallback failed:', e2)
         return []
       }
     }
-    console.error('getAll failed:', e)
     return []
   }
 }
@@ -286,7 +282,6 @@ function getDirtyItems(device) {
     stmt.free()
     return rows
   } catch (e) {
-    console.error('getDirtyItems failed (possible schema mismatch, restart app):', e.message)
     return []
   }
 }
@@ -336,7 +331,6 @@ function updateFromConflict(device, serverItem) {
     stmt.free()
     persist()
   } catch (e) {
-    console.error('updateFromConflict failed:', e.message)
     // Try fallback without is_synced/version if schema is old
     try {
       const stmt = db.prepare(`
@@ -356,7 +350,7 @@ function updateFromConflict(device, serverItem) {
       stmt.free()
       persist()
     } catch (e2) {
-      console.error('updateFromConflict fallback failed:', e2.message)
+      // updateFromConflict fallback failed
     }
   }
 }
@@ -443,11 +437,11 @@ function searchGuest(device, query, filter) {
   if (q.length > 0) {
     where.push('value LIKE ?')
     params.push('%' + q + '%')
-    where.push("value NOT LIKE 'data:image%'")
+    where.push("(value NOT LIKE 'data:image%' AND value NOT LIKE '[LOCAL_IMAGE]:%')")
   }
   const f = String(filter || 'all')
-  if (f === 'image') where.push("value LIKE 'data:image%'")
-  else if (f === 'text') where.push("value NOT LIKE 'data:image%'")
+  if (f === 'image') where.push("(value LIKE 'data:image%' OR value LIKE '[LOCAL_IMAGE]:%')")
+  else if (f === 'text') where.push("(value NOT LIKE 'data:image%' AND value NOT LIKE '[LOCAL_IMAGE]:%')")
   where.push('is_deleted=0')
   const sql = `SELECT value, favorite FROM guest_history WHERE ${where.join(' AND ')} ORDER BY created_at DESC, id DESC`
   const stmt = db.prepare(sql)
@@ -461,11 +455,47 @@ function searchGuest(device, query, filter) {
   return out
 }
 
+// Función de búsqueda paginada para guest - retorna items paginados con value completo
+function searchGuestPaginated(device, query, filter, page = 0, limit = 20) {
+  const where = ['device=?']
+  const params = [device]
+  const q = String(query || '').trim()
+  if (q.length > 0) {
+    where.push('value LIKE ?')
+    params.push('%' + q + '%')
+    where.push("(value NOT LIKE 'data:image%' AND value NOT LIKE '[LOCAL_IMAGE]:%')")
+  }
+  const f = String(filter || 'all')
+  if (f === 'image') where.push("(value LIKE 'data:image%' OR value LIKE '[LOCAL_IMAGE]:%')")
+  else if (f === 'text') where.push("(value NOT LIKE 'data:image%' AND value NOT LIKE '[LOCAL_IMAGE]:%')")
+  where.push('is_deleted=0')
+  
+  const offset = Math.max(0, Number(page || 0)) * Math.max(1, Math.min(100, Number(limit || 20)))
+  const pageLimit = Math.max(1, Math.min(100, Number(limit || 20)))
+  
+  // Retornar items con value completo pero paginado (solo 20 items por página)
+  const sql = `SELECT id, value, favorite, created_at FROM guest_history WHERE ${where.join(' AND ')} ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?`
+  const stmt = db.prepare(sql)
+  stmt.bind([...params, pageLimit, offset])
+  const out = []
+  while (stmt.step()) {
+    const r = stmt.getAsObject()
+    out.push({
+      id: String(r.id),
+      value: String(r.value),
+      favorite: !!r.favorite,
+      created_at: String(r.created_at || '')
+    })
+  }
+  stmt.free()
+  return out
+}
+
 function getRecentGuest(device, filter, limit) {
   const f = String(filter || 'all')
   const where = ['device=?']
-  if (f === 'image') where.push("value LIKE 'data:image%'")
-  else if (f === 'text') where.push("value NOT LIKE 'data:image%'")
+  if (f === 'image') where.push("(value LIKE 'data:image%' OR value LIKE '[LOCAL_IMAGE]:%')")
+  else if (f === 'text') where.push("(value NOT LIKE 'data:image%' AND value NOT LIKE '[LOCAL_IMAGE]:%')")
   const n = Math.max(1, Math.min(1000, Number(limit || 50)))
   where.push('is_deleted=0')
   const sql = `SELECT value, favorite FROM guest_history WHERE ${where.join(' AND ')} ORDER BY created_at DESC, id DESC LIMIT ${n}`
@@ -486,11 +516,11 @@ function search(device, query, filter) {
   if (q.length > 0) {
     where.push('value LIKE ?')
     params.push('%' + q + '%')
-    where.push("value NOT LIKE 'data:image%'")
+    where.push("(value NOT LIKE 'data:image%' AND value NOT LIKE '[LOCAL_IMAGE]:%')")
   }
   const f = String(filter || 'all')
-  if (f === 'image') where.push("value LIKE 'data:image%'")
-  else if (f === 'text') where.push("value NOT LIKE 'data:image%'")
+  if (f === 'image') where.push("(value LIKE 'data:image%' OR value LIKE '[LOCAL_IMAGE]:%')")
+  else if (f === 'text') where.push("(value NOT LIKE 'data:image%' AND value NOT LIKE '[LOCAL_IMAGE]:%')")
   else if (f === 'favorite') where.push('favorite=1')
   where.push('is_deleted=0')
   const sql = `SELECT value, favorite FROM history WHERE ${where.join(' AND ')} ORDER BY created_at DESC, id DESC`
@@ -505,13 +535,50 @@ function search(device, query, filter) {
   return out
 }
 
+// Función de búsqueda paginada para usuarios autenticados - retorna items paginados con value completo
+function searchPaginated(device, query, filter, page = 0, limit = 20) {
+  const where = ['device=?']
+  const params = [device]
+  const q = String(query || '').trim()
+  if (q.length > 0) {
+    where.push('value LIKE ?')
+    params.push('%' + q + '%')
+    where.push("(value NOT LIKE 'data:image%' AND value NOT LIKE '[LOCAL_IMAGE]:%')")
+  }
+  const f = String(filter || 'all')
+  if (f === 'image') where.push("(value LIKE 'data:image%' OR value LIKE '[LOCAL_IMAGE]:%')")
+  else if (f === 'text') where.push("(value NOT LIKE 'data:image%' AND value NOT LIKE '[LOCAL_IMAGE]:%')")
+  else if (f === 'favorite') where.push('favorite=1')
+  where.push('is_deleted=0')
+  
+  const offset = Math.max(0, Number(page || 0)) * Math.max(1, Math.min(100, Number(limit || 20)))
+  const pageLimit = Math.max(1, Math.min(100, Number(limit || 20)))
+  
+  // Retornar items con value completo pero paginado (solo 20 items por página)
+  const sql = `SELECT id, value, favorite, created_at FROM history WHERE ${where.join(' AND ')} ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?`
+  const stmt = db.prepare(sql)
+  stmt.bind([...params, pageLimit, offset])
+  const out = []
+  while (stmt.step()) {
+    const r = stmt.getAsObject()
+    out.push({
+      id: String(r.id),
+      value: String(r.value),
+      favorite: !!r.favorite,
+      created_at: String(r.created_at || '')
+    })
+  }
+  stmt.free()
+  return out
+}
+
 function persist() {
   if (!dbFilePath || !db) return
   try {
     const data = db.export()
     fs.writeFileSync(dbFilePath, Buffer.from(data))
   } catch (e) {
-    console.error('Persist error:', e)
+    // Persist error
   }
 }
 
@@ -523,8 +590,8 @@ function sanitize(name) {
 function getRecent(device, filter, limit) {
   const f = String(filter || 'all')
   const where = ['device=?']
-  if (f === 'image') where.push("value LIKE 'data:image%'")
-  else if (f === 'text') where.push("value NOT LIKE 'data:image%'")
+  if (f === 'image') where.push("(value LIKE 'data:image%' OR value LIKE '[LOCAL_IMAGE]:%')")
+  else if (f === 'text') where.push("(value NOT LIKE 'data:image%' AND value NOT LIKE '[LOCAL_IMAGE]:%')")
   else if (f === 'favorite') where.push('favorite=1')
   const n = Math.max(1, Math.min(1000, Number(limit || 50)))
   where.push('is_deleted=0')
@@ -671,7 +738,6 @@ function getConfig(key) {
     stmt.free()
     return result
   } catch (e) {
-    console.error('getConfig failed:', e)
     return null
   }
 }
@@ -685,7 +751,6 @@ function setConfig(key, value) {
     persist()
     return true
   } catch (e) {
-    console.error('setConfig failed:', e)
     return false
   }
 }
@@ -699,7 +764,6 @@ function removeConfig(key) {
     persist()
     return true
   } catch (e) {
-    console.error('removeConfig failed:', e)
     return false
   }
 }
@@ -715,9 +779,51 @@ function getAllConfig() {
     stmt.free()
     return result
   } catch (e) {
-    console.error('getAllConfig failed:', e)
     return {}
   }
 }
 
-module.exports = { init, getAll, insert, setFavorite, clear, importItems, search, getRecent, getByValues, getNotIn, trimToLimit, insertGuest, getAllGuest, clearGuest, trimGuestToLimit, searchGuest, getRecentGuest, deleteById, getById, updateRemoteIdByValue, getDirtyItems, markSynced, updateFromConflict, updateRemoteId, countActive, countGuestActive, deleteNotInRemote, getConfig, setConfig, removeConfig, getAllConfig }
+function getLegacyImages(device) {
+  try {
+    const stmt = db.prepare("SELECT id, value FROM history WHERE device=? AND value LIKE 'data:image%' AND is_deleted=0")
+    stmt.bind([device])
+    const rows = []
+    while (stmt.step()) {
+      const r = stmt.getAsObject()
+      rows.push({ id: r.id, value: r.value })
+    }
+    stmt.free()
+    return rows
+  } catch (e) {
+    return []
+  }
+}
+
+function updateValue(id, newValue) {
+  try {
+    const stmt = db.prepare("UPDATE history SET value=? WHERE id=?")
+    stmt.bind([newValue, id])
+    stmt.step()
+    stmt.free()
+    persist()
+  } catch (e) {}
+}
+
+function updateImagesBulk(updates) {
+  try {
+    const stmt = db.prepare("UPDATE history SET value=? WHERE id=?")
+    db.run("BEGIN TRANSACTION")
+    for (const u of updates) {
+       stmt.bind([u.path, u.id])
+       stmt.step()
+       stmt.reset()
+    }
+    db.run("COMMIT")
+    stmt.free()
+    persist()
+  } catch (e) {
+    // updateImagesBulk failed
+  }
+}
+
+module.exports = { init, getAll, insert, setFavorite, clear, importItems, search, searchPaginated, getRecent, getByValues, getNotIn, trimToLimit, insertGuest, getAllGuest, clearGuest, trimGuestToLimit, searchGuest, searchGuestPaginated, getRecentGuest, deleteById, getById, updateRemoteIdByValue, getDirtyItems, markSynced, updateFromConflict, updateRemoteId, countActive, countGuestActive, deleteNotInRemote, getConfig, setConfig, removeConfig, getAllConfig, getLegacyImages, updateValue, updateImagesBulk }

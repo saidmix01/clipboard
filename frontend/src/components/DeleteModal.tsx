@@ -1,63 +1,32 @@
-import { motion, AnimatePresence } from 'framer-motion'
+import DetailsModal from './DetailsModal'
+import { useTranslation } from 'react-i18next'
 
 type Props = {
-  isOpen: boolean
+  open: boolean
+  onClose: () => void
   onConfirm: () => void
-  onCancel: () => void
-  isLoading?: boolean
+  loading: boolean
 }
 
-export default function DeleteModal({ isOpen, onConfirm, onCancel, isLoading = false }: Props) {
+export default function DeleteModal({ open, onClose, onConfirm, loading }: Props) {
+  const { t } = useTranslation()
+
   return (
-    <AnimatePresence>
-      {isOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center">
-          {/* Backdrop */}
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            className="absolute inset-0 bg-black/50 backdrop-blur-sm"
-            onClick={onCancel}
-          />
-          
-          {/* Modal Content */}
-          <motion.div
-            initial={{ scale: 0.95, opacity: 0 }}
-            animate={{ scale: 1, opacity: 1 }}
-            exit={{ scale: 0.95, opacity: 0 }}
-            className="relative bg-[color:var(--color-surface)] border border-[color:var(--color-border)] rounded-xl p-6 shadow-2xl w-[90%] max-w-sm"
-          >
-            <h3 className="text-lg font-semibold text-[color:var(--color-text)] mb-2">
-              ¿Eliminar elemento?
-            </h3>
-            <p className="text-sm text-[color:var(--color-muted)] mb-6">
-              Esta acción no se puede deshacer. El elemento se eliminará permanentemente de tu historial.
-            </p>
-            
-            <div className="flex justify-end gap-3">
-              <button
-                onClick={onCancel}
-                className="px-4 py-2 text-sm rounded-lg bg-[color:var(--color-bg)] text-[color:var(--color-text)] hover:opacity-80 transition-opacity disabled:opacity-60"
-                disabled={isLoading}
-              >
-                Cancelar
-              </button>
-              <button
-                onClick={onConfirm}
-                className="px-4 py-2 text-sm rounded-lg bg-red-600 text-white hover:bg-red-700 transition-colors shadow-sm disabled:opacity-60"
-                disabled={isLoading}
-              >
-                {isLoading ? (
-                  <span className="spinner"><span className="ring"></span><span>Eliminando…</span></span>
-                ) : (
-                  'Eliminar'
-                )}
-              </button>
-            </div>
-          </motion.div>
+    <DetailsModal open={open} onClose={onClose}>
+      <div className="space-y-4">
+        <h3 className="m-0 text-[color:var(--color-text)]">{t('delete.title')}</h3>
+        <p className="text-[color:var(--color-muted)] text-sm">
+          {t('delete.message')}
+        </p>
+        <div className="flex gap-2 justify-end">
+          <button onClick={onClose} className="px-3 py-2 rounded-md border border-[color:var(--color-border)] text-[color:var(--color-text)]">
+            {t('delete.cancel')}
+          </button>
+          <button onClick={onConfirm} disabled={loading} className="px-3 py-2 rounded-md bg-[color:var(--color-accent)] text-white disabled:opacity-50">
+            {loading ? t('delete.deleting') : t('delete.delete')}
+          </button>
         </div>
-      )}
-    </AnimatePresence>
+      </div>
+    </DetailsModal>
   )
 }

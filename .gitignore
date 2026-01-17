@@ -4,3 +4,4 @@ dist/
 env
 how_compile.md
 cert.pfx
+workers/dist/

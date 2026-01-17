@@ -6,9 +6,45 @@ const gutter = document.getElementById('gutter')
 const btnClose = document.getElementById('close')
 const btnCopy = document.getElementById('copy')
 const statusEl = document.getElementById('status')
+const titleEl = document.getElementById('title')
+const hintEl = document.getElementById('hint')
+
+const translations = {
+  es: {
+    title: 'Editor avanzado',
+    copy: 'Copiar',
+    loading: 'Cargando…',
+    ready: 'Listo',
+    hint: 'Esc para cerrar · Ctrl/Cmd+C para copiar'
+  },
+  en: {
+    title: 'Advanced Editor',
+    copy: 'Copy',
+    loading: 'Loading...',
+    ready: 'Ready',
+    hint: 'Esc to close · Ctrl/Cmd+C to copy'
+  }
+}
+
+// Detectar idioma
+const params = new URLSearchParams(window.location.search)
+const lang = params.get('lang') || 'en'
+const t = translations[lang.startsWith('es') ? 'es' : 'en']
+
+// Aplicar traducciones iniciales
+if (titleEl) titleEl.textContent = t.title
+if (btnCopy) btnCopy.textContent = t.copy
+if (statusEl) statusEl.textContent = t.loading
+if (hintEl) hintEl.textContent = t.hint
 
 function getText () { return editor ? String(editor.textContent || '') : '' }
-function setText (t) { if (editor) { editor.textContent = String(t || ''); updateLines(); if (statusEl) statusEl.textContent = 'Listo' } }
+function setText (t_val) { 
+  if (editor) { 
+    editor.textContent = String(t_val || '')
+    updateLines()
+    if (statusEl) statusEl.textContent = t.ready 
+  } 
+}
 function updateLines () { if (!gutter || !editor) return; const lines = getText().split('\n'); gutter.textContent = lines.map((_, i) => String(i + 1)).join('\n'); gutter.scrollTop = editor.scrollTop }
 function handleKey (e) { if (e.key === 'Tab') { e.preventDefault(); document.execCommand('insertText', false, '  ') } }
 function syncFromEditor () { if (!gutter || !editor) return; const st = editor.scrollTop; if (gutter.scrollTop !== st) gutter.scrollTop = st }

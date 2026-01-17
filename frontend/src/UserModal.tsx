@@ -1,10 +1,13 @@
 import { useEffect, useState, useRef } from 'react'
 import { API_BASE } from './config'
 import DetailsModal from './components/DetailsModal'
+import { useTranslation } from 'react-i18next'
+import { ChevronLeftIcon } from '@heroicons/react/24/outline'
 
 type UserModalProps = {
   isOpen: boolean
   onClose: () => void
+  onBack?: () => void
 }
 
 type Session = {
@@ -15,7 +18,8 @@ type Session = {
   user?: any
 }
 
-export default function UserModal({ isOpen, onClose }: UserModalProps) {
+export default function UserModal({ isOpen, onClose, onBack }: UserModalProps) {
+  const { t } = useTranslation()
   const [session, setSession] = useState<Session | null>(null)
   const [user, setUser] = useState<any>(null)
   const [nameDraft, setNameDraft] = useState('')
@@ -78,7 +82,7 @@ export default function UserModal({ isOpen, onClose }: UserModalProps) {
       setNewPassword('')
       setConfirmPassword('')
     } catch (e: any) {
-      setError('No se pudo actualizar la información')
+      setError(t('user.error_update'))
     } finally {
       setLoading(false)
     }
@@ -118,7 +122,7 @@ export default function UserModal({ isOpen, onClose }: UserModalProps) {
           setNameDraft(u.name || '')
         }
       } catch (e: any) {
-        setError('No se pudo cargar el usuario')
+        setError(t('user.error_load'))
       }
     })()
   }, [isOpen])
@@ -154,25 +158,39 @@ export default function UserModal({ isOpen, onClose }: UserModalProps) {
 
   
 
+  const MouseOver = (e: React.MouseEvent<HTMLButtonElement>) => {
+    e.currentTarget.style.backgroundColor = 'var(--color-primary)'
+    e.currentTarget.style.color = '#ffffff'
+  }
+  const MouseOut = (e: React.MouseEvent<HTMLButtonElement>) => {
+    e.currentTarget.style.backgroundColor = 'transparent'
+    e.currentTarget.style.color = 'var(--color-text)'
+  }
+
   return (
     <DetailsModal open={isOpen} onClose={onClose}>
       <div className="space-y-3">
-        <h3 className="m-0">Datos del usuario</h3>
+        <div className="flex items-center gap-2 mb-2">
+          <button onClick={() => { if (onBack) onBack(); else onClose(); }} className="p-1 rounded-full hover:text-white transition-colors" onMouseEnter={MouseOver} onMouseLeave={MouseOut} title={t('user.back')}>
+            <ChevronLeftIcon className="w-5 h-5" />
+          </button>
+          <h3 className="m-0">{t('user.title')}</h3>
+        </div>
         {!session ? (
-          <p className="mt-1 text-[color:var(--color-muted)]">No autenticado</p>
+          <p className="mt-1 text-[color:var(--color-muted)]">{t('user.not_authenticated')}</p>
         ) : (
           <div className="grid gap-3">
             <div>
-              <div className="text-sm opacity-80 mb-1">Nombre</div>
+              <div className="text-sm opacity-80 mb-1">{t('user.name_label')}</div>
               <input value={nameDraft} onChange={e => setNameDraft(e.target.value)} className="w-4/5 mx-auto block px-3 py-2 rounded-md border border-[color:var(--color-border)] bg-transparent text-[color:var(--color-text)] outline-none focus:ring-2 focus:ring-[color:var(--color-primary)]" />
             </div>
             <div>
-              <div className="text-sm opacity-80 mb-1">Contraseña</div>
-              <input type="password" placeholder="Nueva contraseña" value={newPassword} onChange={e => setNewPassword(e.target.value)} className="w-4/5 mx-auto block mb-2 px-3 py-2 rounded-md border border-[color:var(--color-border)] bg-transparent text-[color:var(--color-text)] outline-none focus:ring-2 focus:ring-[color:var(--color-primary)]" />
-              <input type="password" placeholder="Confirmar contraseña" value={confirmPassword} onChange={e => setConfirmPassword(e.target.value)} className="w-4/5 mx-auto block px-3 py-2 rounded-md border border-[color:var(--color-border)] bg-transparent text-[color:var(--color-text)] outline-none focus:ring-2 focus:ring-[color:var(--color-primary)]" />
+              <div className="text-sm opacity-80 mb-1">{t('user.password_label')}</div>
+              <input type="password" placeholder={t('user.new_password_placeholder')} value={newPassword} onChange={e => setNewPassword(e.target.value)} className="w-4/5 mx-auto block mb-2 px-3 py-2 rounded-md border border-[color:var(--color-border)] bg-transparent text-[color:var(--color-text)] outline-none focus:ring-2 focus:ring-[color:var(--color-primary)]" />
+              <input type="password" placeholder={t('user.confirm_password_placeholder')} value={confirmPassword} onChange={e => setConfirmPassword(e.target.value)} className="w-4/5 mx-auto block px-3 py-2 rounded-md border border-[color:var(--color-border)] bg-transparent text-[color:var(--color-text)] outline-none focus:ring-2 focus:ring-[color:var(--color-primary)]" />
             </div>
             <div>
-              <div className="text-sm opacity-80 mb-1">Avatar</div>
+              <div className="text-sm opacity-80 mb-1">{t('user.avatar_label')}</div>
               <div className="flex items-center gap-3">
                 <div className="w-24 h-24 rounded-full overflow-hidden border" style={{ borderColor: 'var(--color-border)', boxShadow: 'var(--shadow-soft)' }}>
                   {preview && !avatarError ? (
@@ -182,9 +200,9 @@ export default function UserModal({ isOpen, onClose }: UserModalProps) {
                   )}
                 </div>
                 <div className="flex flex-col gap-2 flex-1">
-                  <div className="text-center cursor-pointer px-3 py-2 rounded-md border border-dashed" style={{ borderColor: 'var(--color-border)' }} onClick={() => fileInputRef.current?.click()}>Elegir imagen</div>
+                  <div className="text-center cursor-pointer px-3 py-2 rounded-md border border-dashed" style={{ borderColor: 'var(--color-border)' }} onClick={() => fileInputRef.current?.click()}>{t('user.choose_image')}</div>
                   <input ref={fileInputRef} type="file" accept="image/*" onChange={e => setAvatarFile(e.target.files?.[0] || null)} className="hidden" />
-                  <div className="text-xs opacity-70">{avatarFile?.name || 'Ningún archivo seleccionado'}</div>
+                  <div className="text-xs opacity-70">{avatarFile?.name || t('user.no_file_selected')}</div>
                 </div>
               </div>
             </div>
@@ -193,8 +211,8 @@ export default function UserModal({ isOpen, onClose }: UserModalProps) {
         <div className="flex gap-2 mt-2 items-center justify-between">
           {error && <span className="text-sm" style={{ color: 'var(--color-accent)' }}>{error}</span>}
           <div className="flex gap-2">
-            <button onClick={updateAll} className="px-3 py-2 rounded-md border border-[color:var(--color-border)] text-[color:var(--color-text)]" disabled={loading || (!nameDraft && !avatarFile && !(newPassword && newPassword === confirmPassword && newPassword.length >= 8))}>Actualizar</button>
-            <button onClick={onClose} className="px-3 py-2 rounded-md border border-[color:var(--color-border)] text-[color:var(--color-text)]">Cerrar</button>
+            <button onClick={updateAll} className="px-3 py-2 rounded-md border border-[color:var(--color-border)] text-[color:var(--color-text)]" disabled={loading || (!nameDraft && !avatarFile && !(newPassword && newPassword === confirmPassword && newPassword.length >= 8))}>{t('user.update')}</button>
+            <button onClick={onClose} className="px-3 py-2 rounded-md border border-[color:var(--color-border)] text-[color:var(--color-text)]">{t('user.close')}</button>
           </div>
         </div>
       </div>

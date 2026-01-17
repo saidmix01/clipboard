@@ -105,5 +105,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
     const listener = (_, token) => cb(token)
     ipcRenderer.on('token-refreshed', listener)
     return () => ipcRenderer.removeListener('token-refreshed', listener)
+  },
+  onWindowVisibilityChanged: (callback) => {
+    const listener = (_, data) => callback(data)
+    ipcRenderer.on('window-visibility-changed', listener)
+    return () => ipcRenderer.removeListener('window-visibility-changed', listener)
   }
+})
+
+contextBridge.exposeInMainWorld('copyfy', {
+  getSystemLocale: () => ipcRenderer.invoke('get-system-locale')
 })

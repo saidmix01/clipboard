@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import DetailsModal from './DetailsModal'
-import { ComputerDesktopIcon, ArrowPathIcon, MoonIcon, SunIcon, TrashIcon, CloudArrowDownIcon, InformationCircleIcon, Cog6ToothIcon, ChevronLeftIcon } from '@heroicons/react/24/outline'
+import { ComputerDesktopIcon, ArrowPathIcon, MoonIcon, SunIcon, TrashIcon, CloudArrowDownIcon, InformationCircleIcon, Cog6ToothIcon, ChevronLeftIcon, GlobeAltIcon } from '@heroicons/react/24/outline'
+import { useTranslation } from 'react-i18next'
 
 type Props = {
   open: boolean
@@ -15,6 +16,7 @@ type Props = {
 }
 
 export default function SettingsMenu({ open, darkMode, onClose, onChangeDevice, onForceUpdate, onToggleDark, onClearHistory, onSyncNow, onOpenAbout }: Props) {
+  const { t, i18n } = useTranslation()
   const [view, setView] = useState<'main' | 'general'>('main')
   const [startMinimized, setStartMinimized] = useState(false)
   const [shortcutModifier, setShortcutModifier] = useState('Alt')
@@ -174,6 +176,13 @@ export default function SettingsMenu({ open, darkMode, onClose, onChangeDevice, 
     } catch {}
   }
 
+  const changeLanguage = async (lang: string) => {
+    i18n.changeLanguage(lang)
+    try {
+      await (window as any).electronAPI?.setPreferences?.({ language: lang })
+    } catch {}
+  }
+
   const menuBtnClass = `flex items-center gap-2 px-3 py-2 rounded-md text-left transition-colors duration-200 hover:text-white`
   
 
@@ -193,35 +202,31 @@ export default function SettingsMenu({ open, darkMode, onClose, onChangeDevice, 
       <div className="p-1">
         {view === 'main' ? (
           <>
-            <h3 className="m-0 text-[color:var(--color-text)]">Ajustes</h3>
+            <h3 className="m-0 text-[color:var(--color-text)]">{t('settings.title')}</h3>
             <div className="flex flex-col mt-2">
               <button className={menuBtnClass} onMouseEnter={MouseOver} onMouseLeave={MouseOut} onClick={() => setView('general')}>
                 <Cog6ToothIcon className="w-5 h-5" />
-                <span>Configuración general</span>
+                <span>{t('settings.general')}</span>
               </button>
               <button className={menuBtnClass} onMouseEnter={MouseOver} onMouseLeave={MouseOut} onClick={onSyncNow}>
                 <CloudArrowDownIcon className="w-5 h-5" />
-                <span>Sincronizar ahora</span>
+                <span>{t('settings.sync_now')}</span>
               </button>
               <button className={menuBtnClass} onMouseEnter={MouseOver} onMouseLeave={MouseOut} onClick={onChangeDevice}>
                 <ComputerDesktopIcon className="w-5 h-5" />
-                <span>Cambiar dispositivo</span>
+                <span>{t('settings.change_device')}</span>
               </button>
               <button className={menuBtnClass} onMouseEnter={MouseOver} onMouseLeave={MouseOut} onClick={onForceUpdate}>
                 <ArrowPathIcon className="w-5 h-5" />
-                <span>Buscar actualizaciones</span>
-              </button>
-              <button className={menuBtnClass} onMouseEnter={MouseOver} onMouseLeave={MouseOut} onClick={onToggleDark}>
-                {darkMode ? <SunIcon className="w-5 h-5" /> : <MoonIcon className="w-5 h-5" />}
-                <span>{darkMode ? 'Modo claro' : 'Modo oscuro'}</span>
+                <span>{t('settings.check_updates')}</span>
               </button>
               <button className={menuBtnClass} onMouseEnter={MouseOver} onMouseLeave={MouseOut} onClick={onClearHistory}>
                 <TrashIcon className="w-5 h-5" />
-                <span>Borrar historial</span>
+                <span>{t('settings.clear_history')}</span>
               </button>
               <button className={menuBtnClass} onMouseEnter={MouseOver} onMouseLeave={MouseOut} onClick={onOpenAbout}>
                 <InformationCircleIcon className="w-5 h-5" />
-                <span>Acerca de</span>
+                <span>{t('settings.about')}</span>
               </button>
             </div>
           </>
@@ -231,13 +236,13 @@ export default function SettingsMenu({ open, darkMode, onClose, onChangeDevice, 
                <button onClick={() => setView('main')} className="p-1 rounded-full hover:text-white" onMouseEnter={MouseOver} onMouseLeave={MouseOut}>
                  <ChevronLeftIcon className="w-5 h-5" />
                </button>
-               <h3 className="m-0 text-[color:var(--color-text)]">Configuración general</h3>
+               <h3 className="m-0 text-[color:var(--color-text)]">{t('settings.general')}</h3>
              </div>
              <div className="flex flex-col gap-6 px-2">
                {/* Inicio minimizado */}
                <div className="flex flex-col gap-2">
                  <div className="flex items-center justify-between">
-                   <span className="text-[color:var(--color-text)]">Iniciar minimizada</span>
+                   <span className="text-[color:var(--color-text)]">{t('settings.start_minimized')}</span>
                    <button 
                      onClick={toggleStartMinimized}
                      className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors`}
@@ -247,13 +252,13 @@ export default function SettingsMenu({ open, darkMode, onClose, onChangeDevice, 
                    </button>
                  </div>
                  <p className="text-xs text-[color:var(--color-muted)]">
-                   Si está activado, la aplicación se iniciará en la bandeja del sistema sin mostrar la ventana principal.
+                   {t('settings.start_minimized_desc')}
                  </p>
                </div>
 
                {/* Atajo de teclado */}
                <div className="flex flex-col gap-2">
-                 <span className="text-[color:var(--color-text)]">Atajo para mostrar/ocultar</span>
+                 <span className="text-[color:var(--color-text)]">{t('settings.shortcut_toggle')}</span>
                  <div className="flex items-center gap-2">
                    <button 
                      className={`px-3 py-1.5 rounded border ${recording === 'modifier' ? 'bg-[color:var(--color-primary)] text-white' : 'border-[color:var(--color-border)] bg-[color:var(--color-surface)] text-[color:var(--color-text)]'}`}
@@ -272,26 +277,58 @@ export default function SettingsMenu({ open, darkMode, onClose, onChangeDevice, 
                    </button>
                  </div>
                  <p className="text-xs text-[color:var(--color-muted)]">
-                   Haz clic en el botón y presiona la nueva tecla. Esc para cancelar.
+                   {t('settings.shortcut_desc')}
                  </p>
+               </div>
+
+               {/* Idioma */}
+               <div className="flex flex-col gap-2">
+                  <span className="text-[color:var(--color-text)]">{t('settings.language')}</span>
+                  <div className="flex items-center gap-2">
+                    <button 
+                      className={`flex items-center gap-2 px-3 py-1.5 rounded border ${i18n.language.startsWith('en') ? 'bg-[color:var(--color-primary)] text-white' : 'border-[color:var(--color-border)] bg-[color:var(--color-surface)] text-[color:var(--color-text)]'}`}
+                      style={i18n.language.startsWith('en') ? { backgroundColor: 'var(--color-primary)', borderColor: 'var(--color-primary)', color: '#fff' } : {}}
+                      onClick={() => changeLanguage('en')}
+                    >
+                      <GlobeAltIcon className="w-4 h-4" />
+                      {t('settings.lang_en')}
+                    </button>
+                    <button 
+                      className={`flex items-center gap-2 px-3 py-1.5 rounded border ${i18n.language.startsWith('es') ? 'bg-[color:var(--color-primary)] text-white' : 'border-[color:var(--color-border)] bg-[color:var(--color-surface)] text-[color:var(--color-text)]'}`}
+                      style={i18n.language.startsWith('es') ? { backgroundColor: 'var(--color-primary)', borderColor: 'var(--color-primary)', color: '#fff' } : {}}
+                      onClick={() => changeLanguage('es')}
+                    >
+                      <GlobeAltIcon className="w-4 h-4" />
+                      {t('settings.lang_es')}
+                    </button>
+                  </div>
                </div>
 
                {/* Personalización de colores */}
                <div className="flex flex-col gap-3">
                  <div className="flex items-center justify-between">
-                   <span className="text-[color:var(--color-text)]">Personalización</span>
-                   <button 
-                     onClick={resetColors} 
-                     className="px-2 py-1 text-xs rounded border border-[color:var(--color-border)] hover:bg-[color:var(--color-surface)] transition-colors text-[color:var(--color-text)]"
-                     title="Restaurar colores por defecto"
-                   >
-                     Resetear colores
-                   </button>
+                   <span className="text-[color:var(--color-text)]">{t('settings.customization')}</span>
+                   <div className="flex items-center gap-2">
+                    <button 
+                        onClick={onToggleDark}
+                        className="p-1 rounded hover:bg-[color:var(--color-bg)] text-[color:var(--color-text)]"
+                        title={darkMode ? t('settings.light_mode') : t('settings.dark_mode')}
+                      >
+                        {darkMode ? <SunIcon className="w-5 h-5" /> : <MoonIcon className="w-5 h-5" />}
+                      </button>
+                     <button 
+                       onClick={resetColors} 
+                       className="px-2 py-1 text-xs rounded border border-[color:var(--color-border)] hover:bg-[color:var(--color-surface)] transition-colors text-[color:var(--color-text)]"
+                       title={t('settings.reset_colors')}
+                     >
+                       {t('settings.reset_colors')}
+                     </button>
+                   </div>
                  </div>
                  
                  <div className="grid grid-cols-2 gap-4">
                    <div className="flex flex-col gap-1">
-                     <label className="text-xs text-[color:var(--color-muted)]">Primario</label>
+                     <label className="text-xs text-[color:var(--color-muted)]">{t('settings.primary')}</label>
                      <div className="flex items-center gap-2">
                        <input 
                          type="color" 
@@ -303,7 +340,7 @@ export default function SettingsMenu({ open, darkMode, onClose, onChangeDevice, 
                      </div>
                    </div>
                    <div className="flex flex-col gap-1">
-                     <label className="text-xs text-[color:var(--color-muted)]">Secundario</label>
+                     <label className="text-xs text-[color:var(--color-muted)]">{t('settings.secondary')}</label>
                      <div className="flex items-center gap-2">
                        <input 
                          type="color" 
@@ -315,7 +352,7 @@ export default function SettingsMenu({ open, darkMode, onClose, onChangeDevice, 
                      </div>
                    </div>
                    <div className="flex flex-col gap-1">
-                     <label className="text-xs text-[color:var(--color-muted)]">Fondo (App)</label>
+                     <label className="text-xs text-[color:var(--color-muted)]">{t('settings.bg_app')}</label>
                      <div className="flex items-center gap-2">
                        <input 
                          type="color" 
@@ -327,7 +364,7 @@ export default function SettingsMenu({ open, darkMode, onClose, onChangeDevice, 
                      </div>
                    </div>
                    <div className="flex flex-col gap-1">
-                     <label className="text-xs text-[color:var(--color-muted)]">Fondo (Base)</label>
+                     <label className="text-xs text-[color:var(--color-muted)]">{t('settings.bg_base')}</label>
                      <div className="flex items-center gap-2">
                        <input 
                          type="color" 
@@ -339,7 +376,7 @@ export default function SettingsMenu({ open, darkMode, onClose, onChangeDevice, 
                      </div>
                    </div>
                    <div className="flex flex-col gap-1">
-                     <label className="text-xs text-[color:var(--color-muted)]">Texto</label>
+                     <label className="text-xs text-[color:var(--color-muted)]">{t('settings.text')}</label>
                      <div className="flex items-center gap-2">
                        <input 
                          type="color" 
@@ -351,7 +388,7 @@ export default function SettingsMenu({ open, darkMode, onClose, onChangeDevice, 
                      </div>
                    </div>
                    <div className="flex flex-col gap-1">
-                     <label className="text-xs text-[color:var(--color-muted)]">Tamaño fuente</label>
+                     <label className="text-xs text-[color:var(--color-muted)]">{t('settings.font_size')}</label>
                      <div className="flex items-center gap-2 h-8">
                        <button 
                          onClick={() => handleFontSizeChange(-1)} 
