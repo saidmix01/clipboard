@@ -11,23 +11,34 @@ log.info('Worker process started');
 log.info('Worker env:', process.env);
 log.info('Worker module paths:', module.paths);
 
-// Fix module resolution for unpacked worker in production
-if (process.env.APP_RESOURCES_PATH) {
-  const asarNodeModules = path.join(process.env.APP_RESOURCES_PATH, 'app.asar', 'node_modules');
-  log.info('Checking asar node_modules:', asarNodeModules);
-  if (!module.paths.includes(asarNodeModules)) {
-    module.paths.push(asarNodeModules);
-    log.info('Added asar node_modules to module.paths');
-  }
-}
-
+// Axios debería estar incluido en el bundle de esbuild, pero mantenemos este fallback
+// Fix module resolution for unpacked worker in production (solo si axios no está en el bundle)
 let axios;
 try {
+    // Intentar requerir axios (debería estar en el bundle)
     axios = require('axios');
-    log.info('Axios loaded successfully');
+    log.info('Axios loaded successfully from bundle');
 } catch (e) {
-    log.error('Failed to load axios:', e.message);
-    log.error('Stack:', e.stack);
+    // Fallback: intentar resolver desde node_modules si no está en el bundle
+    if (process.env.APP_RESOURCES_PATH) {
+      try {
+        const asarNodeModules = path.join(process.env.APP_RESOURCES_PATH, 'app.asar', 'node_modules');
+        const axiosPath = path.join(asarNodeModules, 'axios');
+        if (fs.existsSync(axiosPath)) {
+          axios = require(axiosPath);
+          log.info('Axios loaded from app.asar/node_modules');
+        } else {
+          throw new Error('Axios not found in app.asar/node_modules');
+        }
+      } catch (fallbackErr) {
+        log.error('Failed to load axios from bundle and fallback:', e.message);
+        log.error('Stack:', e.stack);
+        // Axios es crítico para sync, pero no deberíamos fallar aquí si está en el bundle
+      }
+    } else {
+      log.error('Failed to load axios:', e.message);
+      log.error('Stack:', e.stack);
+    }
 }
 
 const crypto = require('crypto');

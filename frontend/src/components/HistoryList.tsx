@@ -39,21 +39,26 @@ export default function HistoryList({ items, search, selectedIndex, onToggleFavo
       {items.length === 0 ? (
         <p className="text-center text-xs text-[color:var(--color-muted)]">Sin coincidencias</p>
       ) : (
-        items.map((item, idx) => (
-          <div key={idx} ref={el => { itemRefs.current[idx] = el }}>
-            <Card
-              item={item}
-              search={search}
-              selected={idx === selectedIndex}
-              onToggleFavorite={() => onToggleFavorite(item)}
-              onCopy={() => onCopy(item)}
-              highlightMatch={highlightMatch}
-              canFavorite={!!canFavorite}
-              canOpenModal={!!canOpenModal}
-              onContextMenu={(e) => onContextMenu?.(e, item)}
-            />
-          </div>
-        ))
+        items.map((item, idx) => {
+          // Usar id si está disponible, sino usar índice como fallback
+          // Para claves estables que eviten re-renders innecesarios
+          const stableKey = item.id || `${item.value.slice(0, 50)}-${idx}`
+          return (
+            <div key={stableKey} ref={el => { itemRefs.current[idx] = el }}>
+              <Card
+                item={item}
+                search={search}
+                selected={idx === selectedIndex}
+                onToggleFavorite={() => onToggleFavorite(item)}
+                onCopy={() => onCopy(item)}
+                highlightMatch={highlightMatch}
+                canFavorite={!!canFavorite}
+                canOpenModal={!!canOpenModal}
+                onContextMenu={(e) => onContextMenu?.(e, item)}
+              />
+            </div>
+          )
+        })
       )}
     </div>
   )

@@ -52,10 +52,14 @@ if (process.platform === 'linux') {
   // Solo forzar X11 si hay problemas específicos con Wayland
   const isWayland = process.env.XDG_SESSION_TYPE === 'wayland' || process.env.WAYLAND_DISPLAY
   if (!isWayland) {
-    // Si no es Wayland, usar X11 explícitamente
+    // Si no es Wayland, usar X11 explícitamente (más compatible con atajos globales)
     try { app.commandLine.appendSwitch('ozone-platform', 'x11') } catch {}
+    log.info('Linux: Usando X11 (más compatible con atajos globales)')
+  } else {
+    // Si es Wayland, advertir sobre posibles problemas con atajos globales
+    log.warn('Linux: Detectado Wayland. Los atajos globales pueden requerir permisos adicionales.')
+    log.warn('Si los atajos no funcionan, considera usar X11 o configurar permisos para atajos globales en Wayland.')
   }
-  // Si es Wayland, dejar que Electron use el default (Wayland)
 }
 
 const gotTheLock = app.requestSingleInstanceLock()
@@ -1023,6 +1027,7 @@ function createWindow () {
       // Si inicia minimizada, aseguramos que esté oculta pero lista
       mainWindow.hide() 
     }
+    
   })
 
   // Evitar cierre completo
@@ -1079,9 +1084,22 @@ app.whenReady().then(async () => {
     ? path.join(process.resourcesPath, 'app.asar.unpacked', 'workers', 'dist', 'worker.js')
     : path.join(__dirname, 'workers', 'dist', 'worker.js')
 
+  // Verificar que el worker exista en desarrollo
+  if (!app.isPackaged && !fs.existsSync(workerPath)) {
+    log.error('Worker no encontrado en desarrollo. Ejecuta: npm run build:worker')
+    log.error('Ruta esperada:', workerPath)
+  }
+
   try {
+    // Establecer APP_RESOURCES_PATH para el worker en producción (Linux/macOS/Windows)
+    const workerEnv = { ...process.env }
+    if (app.isPackaged && process.resourcesPath) {
+      workerEnv.APP_RESOURCES_PATH = process.resourcesPath
+    }
+
     worker = fork(workerPath, [], {
-      stdio: ['ignore', 'pipe', 'pipe', 'ipc']
+      stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
+      env: workerEnv
     })
     
     if (worker.stdout) {
@@ -1569,24 +1587,64 @@ app.whenReady().then(async () => {
 
       const accelerator = `${modifier}+${key}`
       try {
+        // En Linux, especialmente en Wayland, puede haber problemas con atajos globales
+        // Intentar registrar el atajo
         const ret = globalShortcut.register(accelerator, toggleShow)
         if (ret) {
-          log.info(`Shortcut registrado: ${accelerator}`)
+          log.info(`Shortcut registrado exitosamente: ${accelerator}`, {
+            platform: process.platform,
+            isPackaged: app.isPackaged,
+            sessionType: process.env.XDG_SESSION_TYPE,
+            wayland: !!process.env.WAYLAND_DISPLAY
+          })
         } else {
-          log.warn(`Fallo al registrar shortcut: ${accelerator}`)
+          log.warn(`Fallo al registrar shortcut: ${accelerator}. Intentando fallback...`, {
+            platform: process.platform,
+            isPackaged: app.isPackaged,
+            sessionType: process.env.XDG_SESSION_TYPE
+          })
           // Fallback safe defaults if custom fails
-          if (process.platform === 'darwin') globalShortcut.register('Command+Option+X', toggleShow)
-          else globalShortcut.register('Alt+X', toggleShow)
+          const fallbackAccelerator = process.platform === 'darwin' ? 'Command+Option+X' : 'Alt+X'
+          const fallbackRet = globalShortcut.register(fallbackAccelerator, toggleShow)
+          if (fallbackRet) {
+            log.info(`Shortcut fallback registrado: ${fallbackAccelerator}`)
+          } else {
+            log.error(`Fallo al registrar shortcut fallback: ${fallbackAccelerator}`)
+            // En Linux, si falla, puede ser un problema de permisos o Wayland
+            if (process.platform === 'linux') {
+              log.error('ATENCIÓN: Los atajos globales pueden no funcionar en Wayland sin configuración adicional.')
+              log.error('Solución: Usa X11 o configura permisos para atajos globales en Wayland.')
+            }
+          }
         }
       } catch (e) {
         log.error('Error registrando shortcut', e)
+        if (process.platform === 'linux') {
+          log.error('En Linux, los atajos globales pueden requerir permisos especiales o usar X11 en lugar de Wayland.')
+        }
       }
     } catch (e) {
       log.error('Error reading preferences for shortcuts', e)
     }
   }
 
-  updateGlobalShortcuts()
+  // Registrar atajos después de que la ventana esté completamente lista
+  // Esto es especialmente importante en Linux compilado donde los atajos pueden fallar
+  // si se registran demasiado pronto
+  if (mainWindow) {
+    mainWindow.once('ready-to-show', () => {
+      // Esperar un poco más para asegurar que la app esté completamente inicializada
+      setTimeout(() => {
+        updateGlobalShortcuts()
+      }, 1500)
+    })
+  } else {
+    // Si mainWindow aún no existe, esperar un poco y registrar
+    setTimeout(() => {
+      updateGlobalShortcuts()
+    }, 3000)
+  }
+  
   app.on('update-shortcuts', updateGlobalShortcuts)
 
   // Quick switcher desactivado

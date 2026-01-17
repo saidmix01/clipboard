@@ -7,7 +7,7 @@
     "build": "npm run build --prefix frontend",
     "start": "electron .",
     "dist": "npm run build:worker && electron-builder",
-    "build:worker": "frontend\\node_modules\\.bin\\esbuild workers/worker.js --bundle --platform=node --outfile=workers/dist/worker.js --external:electron --external:fs --external:path --external:crypto"
+    "build:worker": "node build-worker.js"
   },
   "build": {
     "appId": "SAIDMIX.CopyFy",

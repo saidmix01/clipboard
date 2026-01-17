@@ -1,10 +1,11 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, memo } from 'react'
 import hljs from 'highlight.js'
 import 'highlight.js/styles/github.css'
 import { StarIcon as StarOutline } from '@heroicons/react/24/outline'
 import { StarIcon as StarSolid } from '@heroicons/react/24/solid'
 import type { HistoryItem } from '../types'
 import { useTranslation } from 'react-i18next'
+import LazyImage from './LazyImage'
 
 function isCodeSnippet(text: string): boolean {
   const trimmed = text.trim()
@@ -41,18 +42,38 @@ type Props = {
   onContextMenu?: (e: React.MouseEvent) => void
 }
 
-export default function Card({ item, selected, onCopy, onToggleFavorite, highlightMatch, search, canFavorite = true, canOpenModal = true, onContextMenu }: Props) {
+function Card({ item, selected, onCopy, onToggleFavorite, highlightMatch, search, canFavorite = true, canOpenModal = true, onContextMenu }: Props) {
   const { t } = useTranslation()
   const [expanded, setExpanded] = useState(false)
-  const isImage = item.value.startsWith('data:image') || !!(item as any).imagePath || item.value.startsWith('[LOCAL_IMAGE]:')
+  const isImage = item.value.startsWith('data:image') || !!(item as any).imagePath || item.value.startsWith('[LOCAL_IMAGE]:') || !!item.previewPath || !!item.originalPath
   const isCode = !isImage && isCodeSnippet(item.value)
 
-  // Resolve image source
-  let imageSrc = item.value
-  if ((item as any).imagePath) {
-     imageSrc = `local-image://${String((item as any).imagePath)}`
-  } else if (item.value.startsWith('[LOCAL_IMAGE]:')) {
-     imageSrc = `local-image://${item.value.replace('[LOCAL_IMAGE]:', '')}`
+  // Resolve image paths
+  // Prioridad: previewPath > imagePath > originalPath > value (data URL o [LOCAL_IMAGE]:)
+  let previewPath: string | undefined = item.previewPath
+  let originalPath: string | undefined = item.originalPath
+  let imagePath: string | undefined = item.imagePath
+
+  // Si no hay previewPath/originalPath pero hay imagePath, usarlo como originalPath
+  if (!originalPath && imagePath) {
+    originalPath = imagePath
+  }
+
+  // Si el value es [LOCAL_IMAGE]:path, extraer el path
+  if (item.value.startsWith('[LOCAL_IMAGE]:')) {
+    const extractedPath = item.value.replace('[LOCAL_IMAGE]:', '')
+    if (!originalPath) originalPath = extractedPath
+    if (!imagePath) imagePath = extractedPath
+  }
+
+  // Para data URLs antiguas, mantener compatibilidad pero preferir paths
+  let legacyImageSrc: string | null = null
+  if (item.value.startsWith('data:image') && !previewPath && !originalPath && !imagePath) {
+    legacyImageSrc = item.value
+  } else if ((item as any).imagePath && !previewPath && !originalPath) {
+    legacyImageSrc = `local-image://${String((item as any).imagePath)}`
+  } else if (item.value.startsWith('[LOCAL_IMAGE]:') && !previewPath && !originalPath) {
+    legacyImageSrc = `local-image://${item.value.replace('[LOCAL_IMAGE]:', '')}`
   }
 
   return (
@@ -75,12 +96,24 @@ export default function Card({ item, selected, onCopy, onToggleFavorite, highlig
 
       <div>
         {isImage ? (
-          <img
-            src={imageSrc}
-            alt="imagen"
-            className="max-w-full rounded-[10px]"
-            style={{ maxHeight: expanded ? undefined : 120, objectFit: 'cover' }}
-          />
+          // Usar LazyImage si hay paths en disco, sino usar img legacy para data URLs
+          (previewPath || originalPath || imagePath) ? (
+            <LazyImage
+              previewPath={previewPath}
+              originalPath={originalPath}
+              imagePath={imagePath}
+              alt="imagen"
+              className="max-w-full rounded-[10px]"
+              style={{ maxHeight: expanded ? undefined : 120, objectFit: 'cover' }}
+            />
+          ) : legacyImageSrc ? (
+            <img
+              src={legacyImageSrc}
+              alt="imagen"
+              className="max-w-full rounded-[10px]"
+              style={{ maxHeight: expanded ? undefined : 120, objectFit: 'cover' }}
+            />
+          ) : null
         ) : isCode ? (
           <div style={{ maxHeight: expanded ? undefined : 120, overflow: 'hidden' }}>
             <CodeBlock code={item.value} />
@@ -108,3 +141,19 @@ export default function Card({ item, selected, onCopy, onToggleFavorite, highlig
     </div>
   )
 }
+
+// Memoizar Card para evitar re-renders innecesarios
+// Usar item.id como clave estable si está disponible
+export default memo(Card, (prevProps, nextProps) => {
+  // Comparación personalizada para optimizar re-renders
+  return (
+    prevProps.item.id === nextProps.item.id &&
+    prevProps.item.favorite === nextProps.item.favorite &&
+    prevProps.selected === nextProps.selected &&
+    prevProps.search === nextProps.search &&
+    prevProps.item.value === nextProps.item.value &&
+    prevProps.item.previewPath === nextProps.item.previewPath &&
+    prevProps.item.originalPath === nextProps.item.originalPath &&
+    prevProps.item.imagePath === nextProps.item.imagePath
+  )
+})
