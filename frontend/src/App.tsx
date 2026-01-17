@@ -89,7 +89,7 @@ function App () {
           setHasMore(false)
         }
       })
-      .catch((err: any) => {
+      .catch(() => {
         setHasMore(false)
       })
       .finally(() => {
@@ -496,7 +496,8 @@ function App () {
         // Limpiar imágenes grandes del DOM que no estén visibles
         try {
           const images = document.querySelectorAll('img')
-          images.forEach((img: HTMLImageElement) => {
+          images.forEach((element) => {
+            const img = element as HTMLImageElement
             // Guardar el src original si no está guardado
             if (img.dataset.srcOriginal === undefined && img.src) {
               img.dataset.srcOriginal = img.src
@@ -513,7 +514,8 @@ function App () {
         // Cuando la ventana se muestra, restaurar imágenes
         try {
           const images = document.querySelectorAll('img[data-src-original]')
-          images.forEach((img: HTMLImageElement) => {
+          images.forEach((element) => {
+            const img = element as HTMLImageElement
             const originalSrc = img.dataset.srcOriginal
             if (originalSrc && img.src !== originalSrc) {
               img.src = originalSrc
