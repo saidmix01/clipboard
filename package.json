@@ -6,8 +6,7 @@
     "dev": "concurrently \"npm run dev --prefix frontend\" \"wait-on http://localhost:5173 && electron .\"",
     "build": "npm run build --prefix frontend",
     "start": "electron .",
-    "dist": "npm run build:worker && electron-builder",
-    "build:worker": "node build-worker.js"
+    "dist": "electron-builder"
   },
   "build": {
     "appId": "SAIDMIX.CopyFy",
@@ -36,18 +35,18 @@
       "db.js",
       "preload.js",
       "config.js",
+      "sync-daemon.js",
       "viewer/**/*",
       "public/**/*",
       "helpers/**/*",
       "package.json",
-      "node_modules/sql.js/dist/sql-wasm.wasm",
-      "workers/dist/worker.js"
+      "node_modules/sql.js/dist/sql-wasm.wasm"
     ],
     "asarUnpack": [
       "helpers/paste.exe",
       "helpers/paste-image.exe",
       "node_modules/sql.js/dist/sql-wasm.wasm",
-      "workers/dist/worker.js"
+      "sync-daemon.js"
     ],
     "directories": {
       "buildResources": "build"

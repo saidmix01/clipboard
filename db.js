@@ -60,6 +60,15 @@ async function init(app) {
       value TEXT NOT NULL,
       updated_at DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%f', 'now'))
     );
+    CREATE TABLE IF NOT EXISTS devices (
+      id TEXT PRIMARY KEY,
+      userId TEXT NOT NULL,
+      clientId TEXT NOT NULL,
+      name TEXT NOT NULL,
+      createdAt TEXT NOT NULL,
+      lastSyncAt TEXT,
+      migrated INTEGER NOT NULL DEFAULT 0
+    );
     CREATE UNIQUE INDEX IF NOT EXISTS idx_guest_device_value ON guest_history(device, value);
     CREATE INDEX IF NOT EXISTS idx_guest_device_created ON guest_history(device, created_at DESC);
   `)
@@ -76,7 +85,11 @@ async function init(app) {
       { col: 'version', sql: "ALTER TABLE history ADD COLUMN version INTEGER DEFAULT 1" },
       { col: 'is_synced', sql: "ALTER TABLE history ADD COLUMN is_synced INTEGER DEFAULT 0" },
       { col: 'client_item_id', sql: "ALTER TABLE history ADD COLUMN client_item_id TEXT" },
-      { col: 'is_deleted', sql: "ALTER TABLE history ADD COLUMN is_deleted INTEGER DEFAULT 0" }
+      { col: 'is_deleted', sql: "ALTER TABLE history ADD COLUMN is_deleted INTEGER DEFAULT 0" },
+      { col: 'pending', sql: "ALTER TABLE history ADD COLUMN pending INTEGER DEFAULT 1" },
+      { col: 'device_id', sql: "ALTER TABLE history ADD COLUMN device_id TEXT" },
+      { col: 'uuid', sql: "ALTER TABLE history ADD COLUMN uuid TEXT" },
+      { col: 'type', sql: "ALTER TABLE history ADD COLUMN type TEXT DEFAULT 'text'" }
     ]
 
     for (const m of migrations) {
@@ -93,6 +106,38 @@ async function init(app) {
       }
     }
 
+    // Migrations for devices table
+    try {
+      const devicesTableInfo = db.exec("PRAGMA table_info(devices)")
+      const devicesExistingColumns = new Set()
+      if (devicesTableInfo.length > 0 && devicesTableInfo[0].values) {
+        devicesTableInfo[0].values.forEach(v => devicesExistingColumns.add(v[1]))
+      }
+
+      const devicesMigrations = [
+        { col: 'userId', sql: "ALTER TABLE devices ADD COLUMN userId TEXT" },
+        { col: 'clientId', sql: "ALTER TABLE devices ADD COLUMN clientId TEXT" },
+        { col: 'name', sql: "ALTER TABLE devices ADD COLUMN name TEXT" },
+        { col: 'createdAt', sql: "ALTER TABLE devices ADD COLUMN createdAt TEXT" },
+        { col: 'lastSyncAt', sql: "ALTER TABLE devices ADD COLUMN lastSyncAt TEXT" },
+        { col: 'migrated', sql: "ALTER TABLE devices ADD COLUMN migrated INTEGER NOT NULL DEFAULT 0" }
+      ]
+
+      for (const m of devicesMigrations) {
+        if (!devicesExistingColumns.has(m.col)) {
+          try {
+            db.run(m.sql)
+            console.log(`[DB] Added column '${m.col}' to devices table`)
+          } catch (e) {
+            console.error(`[DB] Failed to add column '${m.col}' to devices table:`, e)
+          }
+        }
+      }
+    } catch (e) {
+      // Table might not exist yet, that's okay
+      console.log('[DB] Could not check devices table structure (might not exist yet):', e?.message)
+    }
+
     // Verificación final de columnas críticas y reparación de emergencia
     try {
       const finalTableInfo = db.exec("PRAGMA table_info(history)")
@@ -107,7 +152,11 @@ async function init(app) {
         { col: 'version', sql: "ALTER TABLE history ADD COLUMN version INTEGER DEFAULT 1" },
         { col: 'remote_id', sql: "ALTER TABLE history ADD COLUMN remote_id TEXT" },
         { col: 'client_item_id', sql: "ALTER TABLE history ADD COLUMN client_item_id TEXT" },
-        { col: 'is_deleted', sql: "ALTER TABLE history ADD COLUMN is_deleted INTEGER DEFAULT 0" }
+        { col: 'is_deleted', sql: "ALTER TABLE history ADD COLUMN is_deleted INTEGER DEFAULT 0" },
+        { col: 'pending', sql: "ALTER TABLE history ADD COLUMN pending INTEGER DEFAULT 1" },
+        { col: 'device_id', sql: "ALTER TABLE history ADD COLUMN device_id TEXT" },
+        { col: 'uuid', sql: "ALTER TABLE history ADD COLUMN uuid TEXT" },
+        { col: 'type', sql: "ALTER TABLE history ADD COLUMN type TEXT DEFAULT 'text'" }
       ]
 
       for (const cm of criticalMigrations) {
@@ -212,7 +261,29 @@ function getAll(device) {
   }
 }
 
-function insert(device, value, remoteId = null) {
+function insert(device, value, remoteId = null, type = 'text', deviceId = null) {
+  // Generate local UUID for the item
+  const uuid = crypto.randomUUID()
+  
+  // Determine item type based on value if not provided
+  let itemType = type
+  if (!itemType) {
+    if (value.startsWith('data:image') || value.startsWith('[LOCAL_IMAGE]:')) {
+      itemType = 'image'
+    } else {
+      itemType = 'text'
+    }
+  }
+  
+  // Get device_id from devices table if not provided
+  let finalDeviceId = deviceId
+  if (!finalDeviceId) {
+    const savedDevice = getDevice()
+    if (savedDevice && savedDevice.id) {
+      finalDeviceId = savedDevice.id
+    }
+  }
+  
   // If exists, update timestamp and version. If new, insert.
   const existing = db.prepare('SELECT id, version, client_item_id FROM history WHERE device=? AND value=?')
   existing.bind([device, value])
@@ -221,24 +292,69 @@ function insert(device, value, remoteId = null) {
     const newVer = (r.version || 0) + 1
     let stmt
     try {
-        stmt = db.prepare('UPDATE history SET created_at=strftime(\'%Y-%m-%d %H:%M:%f\', \'now\'), updated_at=strftime(\'%Y-%m-%d %H:%M:%f\', \'now\'), version=?, is_synced=0, remote_id=coalesce(?, remote_id) WHERE id=?')
-        stmt.bind([newVer, remoteId, r.id])
+        // Update existing: mark as pending again (needs to be pushed to server), update timestamp
+        stmt = db.prepare('UPDATE history SET created_at=strftime(\'%Y-%m-%d %H:%M:%f\', \'now\'), updated_at=strftime(\'%Y-%m-%d %H:%M:%f\', \'now\'), version=?, pending=1, remote_id=coalesce(?, remote_id), device_id=coalesce(?, device_id), type=? WHERE id=?')
+        stmt.bind([newVer, remoteId, finalDeviceId, itemType, r.id])
+        console.log('[DB] Updated existing item and set pending=1, id:', r.id, 'device:', device)
     } catch (e) {
         // Fallback for legacy schema
-        stmt = db.prepare('UPDATE history SET created_at=strftime(\'%Y-%m-%d %H:%M:%f\', \'now\'), remote_id=coalesce(?, remote_id) WHERE id=?')
-        stmt.bind([remoteId, r.id])
+        try {
+          stmt = db.prepare('UPDATE history SET created_at=strftime(\'%Y-%m-%d %H:%M:%f\', \'now\'), pending=1, remote_id=coalesce(?, remote_id), device_id=coalesce(?, device_id), type=? WHERE id=?')
+          stmt.bind([remoteId, finalDeviceId, itemType, r.id])
+          console.log('[DB] Updated existing item and set pending=1 (fallback), id:', r.id, 'device:', device)
+        } catch (e2) {
+          stmt = db.prepare('UPDATE history SET created_at=strftime(\'%Y-%m-%d %H:%M:%f\', \'now\'), remote_id=coalesce(?, remote_id) WHERE id=?')
+          stmt.bind([remoteId, r.id])
+          stmt.step()
+          stmt.free()
+          // Try to update pending if column exists
+          try {
+            const updatePending = db.prepare('UPDATE history SET pending=1 WHERE id=?')
+            updatePending.bind([r.id])
+            updatePending.step()
+            updatePending.free()
+            console.log('[DB] Updated existing item and set pending=1 (legacy fallback), id:', r.id)
+          } catch (e3) {
+            console.warn('[DB] Could not set pending=1 (column may not exist), id:', r.id)
+          }
+          persist()
+          return
+        }
     }
     stmt.step()
     stmt.free()
   } else {
     let stmt
     try {
-        stmt = db.prepare('INSERT INTO history(value, favorite, device, created_at, updated_at, remote_id, client_item_id, version, is_synced) VALUES(?, ?, ?, strftime(\'%Y-%m-%d %H:%M:%f\', \'now\'), strftime(\'%Y-%m-%d %H:%M:%f\', \'now\'), ?, ?, 1, 0)')
-        stmt.bind([value, 0, device, remoteId, crypto.randomUUID()])
+        // Insert new: pending=1, generate UUID, include device_id and type
+        stmt = db.prepare('INSERT INTO history(value, favorite, device, created_at, updated_at, remote_id, client_item_id, version, is_synced, pending, device_id, uuid, type) VALUES(?, ?, ?, strftime(\'%Y-%m-%d %H:%M:%f\', \'now\'), strftime(\'%Y-%m-%d %H:%M:%f\', \'now\'), ?, ?, 1, 0, 1, ?, ?, ?)')
+        stmt.bind([value, 0, device, remoteId, uuid, finalDeviceId, uuid, itemType])
+        console.log('[DB] Inserted new item with pending=1, uuid:', uuid, 'device:', device)
     } catch(e) {
-        // Fallback
-        stmt = db.prepare('INSERT INTO history(value, favorite, device, created_at, remote_id) VALUES(?, ?, ?, strftime(\'%Y-%m-%d %H:%M:%f\', \'now\'), ?)')
-        stmt.bind([value, 0, device, remoteId])
+        // Fallback - try with pending column
+        try {
+          stmt = db.prepare('INSERT INTO history(value, favorite, device, created_at, updated_at, remote_id, client_item_id, version, is_synced, pending) VALUES(?, ?, ?, strftime(\'%Y-%m-%d %H:%M:%f\', \'now\'), strftime(\'%Y-%m-%d %H:%M:%f\', \'now\'), ?, ?, 1, 0, 1)')
+          stmt.bind([value, 0, device, remoteId, uuid])
+          console.log('[DB] Inserted new item with pending=1 (fallback), uuid:', uuid, 'device:', device)
+        } catch(e2) {
+          // Legacy fallback - try to add pending after insert
+          stmt = db.prepare('INSERT INTO history(value, favorite, device, created_at, remote_id) VALUES(?, ?, ?, strftime(\'%Y-%m-%d %H:%M:%f\', \'now\'), ?)')
+          stmt.bind([value, 0, device, remoteId])
+          stmt.step()
+          stmt.free()
+          // Try to update pending if column exists
+          try {
+            const updatePending = db.prepare('UPDATE history SET pending=1 WHERE device=? AND value=? AND remote_id=?')
+            updatePending.bind([device, value, remoteId])
+            updatePending.step()
+            updatePending.free()
+            console.log('[DB] Inserted new item and set pending=1 (legacy fallback), device:', device)
+          } catch (e3) {
+            console.warn('[DB] Could not set pending=1 (column may not exist), device:', device)
+          }
+          persist()
+          return
+        }
     }
     stmt.step()
     stmt.free()
@@ -253,8 +369,22 @@ function setFavorite(device, value, fav) {
   if (existing.step()) {
     const r = existing.getAsObject()
     const newVer = (r.version || 0) + 1
-    const stmt = db.prepare('UPDATE history SET favorite=?, updated_at=strftime(\'%Y-%m-%d %H:%M:%f\', \'now\'), version=?, is_synced=0 WHERE id=?')
-    stmt.bind([fav ? 1 : 0, newVer, r.id])
+    let stmt
+    try {
+      // Mark as pending when favorite changes (needs to be pushed to server)
+      stmt = db.prepare('UPDATE history SET favorite=?, updated_at=strftime(\'%Y-%m-%d %H:%M:%f\', \'now\'), version=?, is_synced=0, pending=1 WHERE id=?')
+      stmt.bind([fav ? 1 : 0, newVer, r.id])
+    } catch (e) {
+      // Fallback if pending column doesn't exist
+      try {
+        stmt = db.prepare('UPDATE history SET favorite=?, updated_at=strftime(\'%Y-%m-%d %H:%M:%f\', \'now\'), version=?, is_synced=0 WHERE id=?')
+        stmt.bind([fav ? 1 : 0, newVer, r.id])
+      } catch (e2) {
+        // Legacy fallback
+        stmt = db.prepare('UPDATE history SET favorite=?, is_synced=0 WHERE id=?')
+        stmt.bind([fav ? 1 : 0, r.id])
+      }
+    }
     stmt.step()
     stmt.free()
   }
@@ -299,6 +429,13 @@ function markSynced(device, clientItemIds) {
 function clear(device) {
   const stmt = db.prepare('DELETE FROM history WHERE device=?')
   stmt.bind([device])
+  stmt.step()
+  stmt.free()
+  persist()
+}
+
+function clearAll() {
+  const stmt = db.prepare('DELETE FROM history')
   stmt.step()
   stmt.free()
   persist()
@@ -826,4 +963,468 @@ function updateImagesBulk(updates) {
   }
 }
 
-module.exports = { init, getAll, insert, setFavorite, clear, importItems, search, searchPaginated, getRecent, getByValues, getNotIn, trimToLimit, insertGuest, getAllGuest, clearGuest, trimGuestToLimit, searchGuest, searchGuestPaginated, getRecentGuest, deleteById, getById, updateRemoteIdByValue, getDirtyItems, markSynced, updateFromConflict, updateRemoteId, countActive, countGuestActive, deleteNotInRemote, getConfig, setConfig, removeConfig, getAllConfig, getLegacyImages, updateValue, updateImagesBulk }
+// Device management functions
+function saveDevice(deviceInfo) {
+  try {
+    // deviceInfo: { id, userId, clientId, name, createdAt, lastSyncAt }
+    console.log('[DB] saveDevice called with:', deviceInfo)
+    
+    // First, check the actual table structure
+    let hasSnakeCase = false
+    try {
+      const tableInfo = db.exec("PRAGMA table_info(devices)")
+      if (tableInfo.length > 0 && tableInfo[0].values) {
+        const columns = tableInfo[0].values.map(v => ({ name: v[1], type: v[2], notnull: v[3] }))
+        console.log('[DB] Actual devices table columns:', columns)
+        hasSnakeCase = tableInfo[0].values.some(v => v[1] === 'user_id')
+      }
+    } catch (e) {
+      console.warn('[DB] Could not check table structure:', e?.message)
+    }
+    
+    // Ensure we don't save 'null' strings - convert undefined/null to null or empty string appropriately
+    // Required fields (userId, clientId, name, createdAt) must have values, not null
+    const cleanDeviceInfo = {
+      id: deviceInfo.id ? String(deviceInfo.id) : null,
+      userId: deviceInfo.userId && deviceInfo.userId !== 'null' && deviceInfo.userId !== 'undefined' ? String(deviceInfo.userId) : (deviceInfo.userId === '' ? '' : ''),
+      clientId: deviceInfo.clientId && deviceInfo.clientId !== 'null' && deviceInfo.clientId !== 'undefined' ? String(deviceInfo.clientId) : (deviceInfo.clientId === '' ? '' : ''),
+      name: deviceInfo.name && deviceInfo.name !== 'null' && deviceInfo.name !== 'undefined' ? String(deviceInfo.name) : (deviceInfo.name === '' ? '' : ''),
+      createdAt: deviceInfo.createdAt && deviceInfo.createdAt !== 'null' && deviceInfo.createdAt !== 'undefined' ? String(deviceInfo.createdAt) : (deviceInfo.createdAt === '' ? '' : new Date().toISOString()),
+      lastSyncAt: deviceInfo.lastSyncAt && deviceInfo.lastSyncAt !== 'null' && deviceInfo.lastSyncAt !== 'undefined' && deviceInfo.lastSyncAt !== '' ? String(deviceInfo.lastSyncAt) : null
+    }
+    
+    console.log('[DB] Cleaned device info:', cleanDeviceInfo)
+    console.log('[DB] Binding values:', {
+      id: cleanDeviceInfo.id,
+      userId: cleanDeviceInfo.userId,
+      userIdType: typeof cleanDeviceInfo.userId,
+      userIdLength: cleanDeviceInfo.userId ? cleanDeviceInfo.userId.length : 0,
+      clientId: cleanDeviceInfo.clientId,
+      name: cleanDeviceInfo.name,
+      createdAt: cleanDeviceInfo.createdAt
+    })
+    
+    // Preservar el estado de migrated si existe, o usar el valor proporcionado
+    const migrated = deviceInfo.migrated !== undefined ? (deviceInfo.migrated ? 1 : 0) : null
+    
+    // Table has BOTH user_id (snake_case, NOT NULL) and userId (camelCase, nullable)
+    // We need to use user_id and client_id for the required columns
+    let stmt
+    if (hasSnakeCase) {
+      // Use snake_case columns (user_id, client_id) for required fields
+      console.log('[DB] Using snake_case columns (user_id, client_id)')
+      // Si migrated es null, obtener el valor actual de la DB
+      let currentMigrated = 0
+      if (migrated === null && cleanDeviceInfo.id) {
+        try {
+          const checkStmt = db.prepare('SELECT migrated FROM devices WHERE id=?')
+          checkStmt.bind([cleanDeviceInfo.id])
+          if (checkStmt.step()) {
+            const r = checkStmt.getAsObject()
+            currentMigrated = r.migrated ? (r.migrated === 1 ? 1 : 0) : 0
+          }
+          checkStmt.free()
+        } catch (e) {
+          // Ignore
+        }
+      }
+      const finalMigrated = migrated !== null ? migrated : currentMigrated
+      stmt = db.prepare('INSERT OR REPLACE INTO devices(id, user_id, client_id, name, created_at, userId, clientId, createdAt, lastSyncAt, migrated) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+      stmt.bind([
+        cleanDeviceInfo.id,
+        cleanDeviceInfo.userId || '',  // user_id - NOT NULL
+        cleanDeviceInfo.clientId || '', // client_id
+        cleanDeviceInfo.name || '',     // name - NOT NULL
+        cleanDeviceInfo.createdAt || new Date().toISOString(), // created_at - NOT NULL
+        cleanDeviceInfo.userId || '',   // userId (camelCase, nullable)
+        cleanDeviceInfo.clientId || '', // clientId (camelCase, nullable)
+        cleanDeviceInfo.createdAt || new Date().toISOString(), // createdAt (camelCase, nullable)
+        cleanDeviceInfo.lastSyncAt,     // lastSyncAt
+        finalMigrated                    // migrated
+      ])
+    } else {
+      // Use camelCase columns only
+      console.log('[DB] Using camelCase columns only')
+      // Si migrated es null, obtener el valor actual de la DB
+      let currentMigrated = 0
+      if (migrated === null && cleanDeviceInfo.id) {
+        try {
+          const checkStmt = db.prepare('SELECT migrated FROM devices WHERE id=?')
+          checkStmt.bind([cleanDeviceInfo.id])
+          if (checkStmt.step()) {
+            const r = checkStmt.getAsObject()
+            currentMigrated = r.migrated ? (r.migrated === 1 ? 1 : 0) : 0
+          }
+          checkStmt.free()
+        } catch (e) {
+          // Ignore
+        }
+      }
+      const finalMigrated = migrated !== null ? migrated : currentMigrated
+      stmt = db.prepare('INSERT OR REPLACE INTO devices(id, userId, clientId, name, createdAt, lastSyncAt, migrated) VALUES(?, ?, ?, ?, ?, ?, ?)')
+      stmt.bind([
+        cleanDeviceInfo.id,
+        cleanDeviceInfo.userId,
+        cleanDeviceInfo.clientId,
+        cleanDeviceInfo.name,
+        cleanDeviceInfo.createdAt,
+        cleanDeviceInfo.lastSyncAt,
+        finalMigrated
+      ])
+    }
+    stmt.step()
+    stmt.free()
+    persist()
+    console.log('[DB] Device saved successfully:', { id: cleanDeviceInfo.id, userId: cleanDeviceInfo.userId, clientId: cleanDeviceInfo.clientId })
+    return true
+  } catch (e) {
+    console.error('[DB] Error saving device:', e)
+    return false
+  }
+}
+
+function getDevice() {
+  try {
+    // First check if snake_case columns exist (user_id, client_id, created_at)
+    let hasSnakeCase = false
+    try {
+      const tableInfo = db.exec("PRAGMA table_info(devices)")
+      if (tableInfo.length > 0 && tableInfo[0].values) {
+        hasSnakeCase = tableInfo[0].values.some(v => v[1] === 'user_id')
+      }
+    } catch (e) {
+      // Ignore
+    }
+    
+    let stmt
+    let result = null
+    
+    if (hasSnakeCase) {
+      // Read from snake_case columns - prefer device with non-null user_id, otherwise get first one
+      // Order by user_id DESC to get non-null first, then by created_at DESC for the most recent
+      stmt = db.prepare(`
+        SELECT id, user_id, client_id, name, created_at, userId, clientId, createdAt, lastSyncAt 
+        FROM devices 
+        ORDER BY 
+          CASE WHEN user_id IS NOT NULL AND user_id != '' THEN 1 ELSE 0 END DESC,
+          created_at DESC
+        LIMIT 1
+      `)
+    } else {
+      // Read from camelCase columns - prefer device with non-null userId, otherwise get first one
+      stmt = db.prepare(`
+        SELECT id, userId, clientId, name, createdAt, lastSyncAt 
+        FROM devices 
+        ORDER BY 
+          CASE WHEN userId IS NOT NULL AND userId != '' THEN 1 ELSE 0 END DESC,
+          createdAt DESC
+        LIMIT 1
+      `)
+    }
+    
+    if (stmt.step()) {
+      const r = stmt.getAsObject()
+      // Handle null values correctly - don't convert null to string 'null'
+      // Prefer snake_case values, fallback to camelCase if snake_case is null/empty
+      result = {
+        id: r.id ? String(r.id) : null,
+        userId: (hasSnakeCase && r.user_id) 
+          ? (r.user_id !== 'null' && String(r.user_id) !== 'null' ? String(r.user_id) : null)
+          : (r.userId && r.userId !== 'null' && String(r.userId) !== 'null' ? String(r.userId) : null),
+        clientId: (hasSnakeCase && r.client_id)
+          ? (r.client_id !== 'null' && String(r.client_id) !== 'null' ? String(r.client_id) : null)
+          : (r.clientId && r.clientId !== 'null' && String(r.clientId) !== 'null' ? String(r.clientId) : null),
+        name: r.name ? String(r.name) : null,
+        createdAt: (hasSnakeCase && r.created_at)
+          ? (r.created_at !== 'null' && String(r.created_at) !== 'null' ? String(r.created_at) : null)
+          : (r.createdAt && r.createdAt !== 'null' && String(r.createdAt) !== 'null' ? String(r.createdAt) : null),
+        lastSyncAt: r.lastSyncAt && r.lastSyncAt !== 'null' && String(r.lastSyncAt) !== 'null' ? String(r.lastSyncAt) : null
+      }
+    }
+    stmt.free()
+    return result
+  } catch (e) {
+    console.error('[DB] Error getting device:', e?.message || e)
+    return null
+  }
+}
+
+function updateDeviceLastSyncAt(lastSyncAt) {
+  try {
+    const stmt = db.prepare('UPDATE devices SET lastSyncAt=? WHERE id=(SELECT id FROM devices LIMIT 1)')
+    stmt.bind([lastSyncAt])
+    stmt.step()
+    stmt.free()
+    persist()
+    return true
+  } catch (e) {
+    return false
+  }
+}
+
+function getDeviceByClientId(clientId) {
+  try {
+    // First check if snake_case columns exist (user_id, client_id, created_at)
+    let hasSnakeCase = false
+    try {
+      const tableInfo = db.exec("PRAGMA table_info(devices)")
+      if (tableInfo.length > 0 && tableInfo[0].values) {
+        hasSnakeCase = tableInfo[0].values.some(v => v[1] === 'client_id')
+      }
+    } catch (e) {
+      // Ignore
+    }
+    
+    let stmt
+    let result = null
+    
+    if (hasSnakeCase) {
+      stmt = db.prepare('SELECT id, user_id, client_id, name, created_at, userId, clientId, createdAt, lastSyncAt, migrated FROM devices WHERE client_id=? OR clientId=? LIMIT 1')
+      stmt.bind([clientId, clientId])
+    } else {
+      stmt = db.prepare('SELECT id, userId, clientId, name, createdAt, lastSyncAt, migrated FROM devices WHERE clientId=? LIMIT 1')
+      stmt.bind([clientId])
+    }
+    
+    if (stmt.step()) {
+      const r = stmt.getAsObject()
+      result = {
+        id: r.id ? String(r.id) : null,
+        userId: (hasSnakeCase && r.user_id) 
+          ? (r.user_id !== 'null' && String(r.user_id) !== 'null' ? String(r.user_id) : null)
+          : (r.userId && r.userId !== 'null' && String(r.userId) !== 'null' ? String(r.userId) : null),
+        clientId: (hasSnakeCase && r.client_id)
+          ? (r.client_id !== 'null' && String(r.client_id) !== 'null' ? String(r.client_id) : null)
+          : (r.clientId && r.clientId !== 'null' && String(r.clientId) !== 'null' ? String(r.clientId) : null),
+        name: r.name ? String(r.name) : null,
+        createdAt: (hasSnakeCase && r.created_at)
+          ? (r.created_at !== 'null' && String(r.created_at) !== 'null' ? String(r.created_at) : null)
+          : (r.createdAt && r.createdAt !== 'null' && String(r.createdAt) !== 'null' ? String(r.createdAt) : null),
+        lastSyncAt: r.lastSyncAt && r.lastSyncAt !== 'null' && String(r.lastSyncAt) !== 'null' ? String(r.lastSyncAt) : null,
+        migrated: r.migrated ? (r.migrated === 1 || r.migrated === '1' || r.migrated === true) : false
+      }
+    }
+    stmt.free()
+    return result
+  } catch (e) {
+    console.error('[DB] Error getting device by clientId:', e?.message || e)
+    return null
+  }
+}
+
+function getAllDevices() {
+  try {
+    let hasSnakeCase = false
+    try {
+      const tableInfo = db.exec("PRAGMA table_info(devices)")
+      if (tableInfo.length > 0 && tableInfo[0].values) {
+        hasSnakeCase = tableInfo[0].values.some(v => v[1] === 'user_id')
+      }
+    } catch (e) {
+      // Ignore
+    }
+    
+    let stmt
+    if (hasSnakeCase) {
+      stmt = db.prepare('SELECT id, user_id, client_id, name, created_at, userId, clientId, createdAt, lastSyncAt, migrated FROM devices ORDER BY created_at DESC')
+    } else {
+      stmt = db.prepare('SELECT id, userId, clientId, name, createdAt, lastSyncAt, migrated FROM devices ORDER BY createdAt DESC')
+    }
+    
+    const devices = []
+    while (stmt.step()) {
+      const r = stmt.getAsObject()
+      devices.push({
+        id: r.id ? String(r.id) : null,
+        userId: (hasSnakeCase && r.user_id) 
+          ? (r.user_id !== 'null' && String(r.user_id) !== 'null' ? String(r.user_id) : null)
+          : (r.userId && r.userId !== 'null' && String(r.userId) !== 'null' ? String(r.userId) : null),
+        clientId: (hasSnakeCase && r.client_id)
+          ? (r.client_id !== 'null' && String(r.client_id) !== 'null' ? String(r.client_id) : null)
+          : (r.clientId && r.clientId !== 'null' && String(r.clientId) !== 'null' ? String(r.clientId) : null),
+        name: r.name ? String(r.name) : null,
+        createdAt: (hasSnakeCase && r.created_at)
+          ? (r.created_at !== 'null' && String(r.created_at) !== 'null' ? String(r.created_at) : null)
+          : (r.createdAt && r.createdAt !== 'null' && String(r.createdAt) !== 'null' ? String(r.createdAt) : null),
+        lastSyncAt: r.lastSyncAt && r.lastSyncAt !== 'null' && String(r.lastSyncAt) !== 'null' ? String(r.lastSyncAt) : null,
+        migrated: r.migrated ? (r.migrated === 1 || r.migrated === '1' || r.migrated === true) : false
+      })
+    }
+    stmt.free()
+    return devices
+  } catch (e) {
+    console.error('[DB] Error getting all devices:', e?.message || e)
+    return []
+  }
+}
+
+function markDeviceAsMigrated(clientId) {
+  try {
+    let hasSnakeCase = false
+    try {
+      const tableInfo = db.exec("PRAGMA table_info(devices)")
+      if (tableInfo.length > 0 && tableInfo[0].values) {
+        hasSnakeCase = tableInfo[0].values.some(v => v[1] === 'client_id')
+      }
+    } catch (e) {
+      // Ignore
+    }
+    
+    let stmt
+    if (hasSnakeCase) {
+      stmt = db.prepare('UPDATE devices SET migrated=1 WHERE client_id=? OR clientId=?')
+      stmt.bind([clientId, clientId])
+    } else {
+      stmt = db.prepare('UPDATE devices SET migrated=1 WHERE clientId=?')
+      stmt.bind([clientId])
+    }
+    stmt.step()
+    stmt.free()
+    persist()
+    console.log('[DB] Device marked as migrated:', clientId)
+    return true
+  } catch (e) {
+    console.error('[DB] Error marking device as migrated:', e)
+    return false
+  }
+}
+
+// Get pending items that need to be pushed to backend
+function getPendingItems() {
+  try {
+    const stmt = db.prepare('SELECT id, uuid, value, type, device, device_id, created_at FROM history WHERE pending=1 AND is_deleted=0 ORDER BY created_at ASC')
+    const rows = []
+    while (stmt.step()) {
+      const r = stmt.getAsObject()
+      // Generate UUID if item doesn't have one (UUID must be valid UUID format, not numeric ID)
+      let itemUuid = r.uuid
+      if (!itemUuid || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(itemUuid)) {
+        // Generate new UUID and update the database
+        itemUuid = crypto.randomUUID()
+        try {
+          const updateStmt = db.prepare('UPDATE history SET uuid=? WHERE id=?')
+          updateStmt.bind([itemUuid, r.id])
+          updateStmt.step()
+          updateStmt.free()
+          persist()
+        } catch (updateErr) {
+          console.warn(`[DB] Failed to update UUID for item ${r.id}:`, updateErr?.message)
+        }
+      }
+      rows.push({
+        id: r.id,
+        uuid: itemUuid,
+        value: String(r.value),
+        type: String(r.type || 'text'),
+        device: String(r.device),
+        device_id: r.device_id ? String(r.device_id) : null,
+        created_at: String(r.created_at)
+      })
+    }
+    stmt.free()
+    return rows
+  } catch (e) {
+    return []
+  }
+}
+
+// Mark item as completed (pending=0) after successful push
+function markItemCompleted(uuid) {
+  try {
+    const stmt = db.prepare('UPDATE history SET pending=0 WHERE uuid=?')
+    stmt.bind([uuid])
+    stmt.step()
+    stmt.free()
+    persist()
+    return true
+  } catch (e) {
+    return false
+  }
+}
+
+// Update item with server data (from pull)
+function updateItemFromServer(serverItem, device) {
+  try {
+    // serverItem: { id, uuid, deviceId, clientId, type, value, favorite, version, createdAt, updatedAt }
+    // Try to find by uuid first, then by remote_id, then by value
+    let stmt = db.prepare('SELECT id FROM history WHERE uuid=? OR remote_id=? LIMIT 1')
+    const uuid = serverItem.uuid || serverItem.id
+    stmt.bind([uuid, serverItem.id])
+    let found = false
+    if (stmt.step()) {
+      const r = stmt.getAsObject()
+      found = true
+      // Update existing
+      stmt.free()
+      try {
+        stmt = db.prepare('UPDATE history SET value=?, favorite=?, remote_id=?, version=?, updated_at=?, device_id=?, pending=0, type=? WHERE id=?')
+        stmt.bind([
+          serverItem.value,
+          serverItem.favorite ? 1 : 0,
+          serverItem.id,
+          serverItem.version || 1,
+          serverItem.updatedAt || serverItem.createdAt,
+          serverItem.deviceId,
+          serverItem.type || 'text',
+          r.id
+        ])
+      } catch (e) {
+        // Fallback
+        stmt = db.prepare('UPDATE history SET value=?, favorite=?, remote_id=? WHERE id=?')
+        stmt.bind([
+          serverItem.value,
+          serverItem.favorite ? 1 : 0,
+          serverItem.id,
+          r.id
+        ])
+      }
+      stmt.step()
+      stmt.free()
+    } else {
+      stmt.free()
+      // Insert new if not found
+      const existing = db.prepare('SELECT id FROM history WHERE value=? AND device=? LIMIT 1')
+      existing.bind([serverItem.value, device])
+      if (!existing.step()) {
+        existing.free()
+        // Insert new item from server
+        try {
+          stmt = db.prepare('INSERT INTO history(value, favorite, device, created_at, updated_at, remote_id, uuid, device_id, type, pending, version, client_item_id) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)')
+          stmt.bind([
+            serverItem.value,
+            serverItem.favorite ? 1 : 0,
+            device,
+            serverItem.createdAt,
+            serverItem.updatedAt || serverItem.createdAt,
+            serverItem.id,
+            uuid,
+            serverItem.deviceId,
+            serverItem.type || 'text',
+            serverItem.version || 1,
+            crypto.randomUUID()
+          ])
+        } catch (e) {
+          // Fallback
+          stmt = db.prepare('INSERT INTO history(value, favorite, device, created_at, remote_id) VALUES(?, ?, ?, ?, ?)')
+          stmt.bind([
+            serverItem.value,
+            serverItem.favorite ? 1 : 0,
+            device,
+            serverItem.createdAt,
+            serverItem.id
+          ])
+        }
+        stmt.step()
+        stmt.free()
+      } else {
+        existing.free()
+      }
+    }
+    persist()
+    return true
+  } catch (e) {
+    return false
+  }
+}
+
+module.exports = { init, getAll, insert, setFavorite, clear, clearAll, importItems, search, searchPaginated, getRecent, getByValues, getNotIn, trimToLimit, insertGuest, getAllGuest, clearGuest, trimGuestToLimit, searchGuest, searchGuestPaginated, getRecentGuest, deleteById, getById, updateRemoteIdByValue, getDirtyItems, markSynced, updateFromConflict, updateRemoteId, countActive, countGuestActive, deleteNotInRemote, getConfig, setConfig, removeConfig, getAllConfig, getLegacyImages, updateValue, updateImagesBulk, saveDevice, getDevice, getDeviceByClientId, getAllDevices, updateDeviceLastSyncAt, getPendingItems, markItemCompleted, updateItemFromServer, markDeviceAsMigrated }

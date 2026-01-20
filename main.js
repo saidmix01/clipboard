@@ -23,6 +23,25 @@ const log = {
 }
 const path = require('path')
 
+// Logs al inicio para debugging
+console.log('[MAIN] ==========================================')
+console.log('[MAIN] Electron main process starting...')
+console.log('[MAIN] Node version:', process.version)
+console.log('[MAIN] Electron version:', process.versions.electron)
+console.log('[MAIN] Platform:', process.platform)
+console.log('[MAIN] ==========================================')
+
+// Manejo de errores no capturados
+process.on('uncaughtException', (error) => {
+  console.error('[MAIN] UNCAUGHT EXCEPTION:', error)
+  console.error('[MAIN] Stack:', error.stack)
+})
+
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('[MAIN] UNHANDLED REJECTION at:', promise)
+  console.error('[MAIN] Reason:', reason)
+})
+
 if (process.platform === 'win32') {
   app.setAppUserModelId('Copyfy')
 }
@@ -44,8 +63,8 @@ let history = []
 const childWindows = new Set()
 let tray
 let isQuitting = false
-let worker = null
 let activeUploadWindow = null
+let syncDaemon = null // Sync daemon process (forked Node process)
 
 if (process.platform === 'linux') {
   try { app.setName('copyfy') } catch {}
@@ -70,7 +89,10 @@ if (process.platform === 'linux') {
 
 const gotTheLock = app.requestSingleInstanceLock()
 
+console.log('[MAIN] Single instance lock result:', gotTheLock)
+
 if (!gotTheLock) {
+  console.log('[MAIN] Another instance is already running, quitting...')
   app.quit()
 } else {
   app.on('second-instance', (event, commandLine, workingDirectory) => {
@@ -954,6 +976,9 @@ function performPasteImage (mainWindow) {
 }
 
 function createWindow () {
+  console.log('[MAIN] ==========================================')
+  console.log('[MAIN] createWindow() called')
+  console.log('[MAIN] ==========================================')
   const display = screen.getPrimaryDisplay()
   const screenWidth = display.workArea.width
   const screenHeight = display.workArea.height
@@ -993,17 +1018,35 @@ function createWindow () {
   if (app.isPackaged) {
     // En producción, usar app.getAppPath() que funciona correctamente en todas las plataformas
     const indexPath = path.join(app.getAppPath(), 'frontend', 'dist', 'index.html')
+    console.log('[MAIN] Loading production index:', indexPath)
     mainWindow.loadFile(indexPath)
   } else {
     // En desarrollo, usar el servidor de Vite
+    console.log('[MAIN] Loading development URL: http://localhost:5173')
     mainWindow.loadURL('http://localhost:5173')
   }
+  
+  console.log('[MAIN] Window load initiated')
 
   // Enviar historial al frontend (ya cargado al inicio)
   mainWindow.webContents.on('did-finish-load', () => {
+    console.log('[MAIN] Window finished loading')
     if (mainWindow?.webContents) {
       mainWindow.webContents.send('clipboard-update', augmentHistoryWithImagePaths(history))
     }
+  })
+  
+  // Manejar errores de carga
+  mainWindow.webContents.on('did-fail-load', (event, errorCode, errorDescription, validatedURL) => {
+    console.error('[MAIN] Window failed to load:', {
+      errorCode,
+      errorDescription,
+      validatedURL
+    })
+  })
+  
+  mainWindow.webContents.on('crashed', (event, killed) => {
+    console.error('[MAIN] Window crashed:', { killed })
   })
 
   // Mostrar sin animación manual para evitar bloqueos
@@ -1121,6 +1164,10 @@ function resetClipboardFilesState () {
 }
 
 app.whenReady().then(async () => {
+  console.log('[MAIN] ==========================================')
+  console.log('[MAIN] app.whenReady() called - Electron is ready!')
+  console.log('[MAIN] ==========================================')
+  
   protocol.registerFileProtocol('local-image', (request, callback) => {
     const url = request.url.replace('local-image://', '')
     try {
@@ -1133,152 +1180,291 @@ app.whenReady().then(async () => {
   try { require('./autolaunch').configureAutoLaunch() } catch (e) { log.error('Autolaunch setup failed', e) }
   await db.init(app)
   
-  createWindow()
-
-  // Inicializar Worker
-  // Usamos el worker empaquetado (bundled) tanto en dev como en prod para consistencia
-  const workerPath = app.isPackaged
-    ? path.join(process.resourcesPath, 'app.asar.unpacked', 'workers', 'dist', 'worker.js')
-    : path.join(__dirname, 'workers', 'dist', 'worker.js')
-
-  // Verificar que el worker exista en desarrollo
-  if (!app.isPackaged && !fs.existsSync(workerPath)) {
-    log.error('Worker no encontrado en desarrollo. Ejecuta: npm run build:worker')
-    log.error('Ruta esperada:', workerPath)
-  }
-
+  // Initialize active device from database (devices table)
+  initializeActiveDevice()
+  
+  // Actualizar lista de dispositivos al inicio si hay sesión
   try {
-    // Establecer APP_RESOURCES_PATH para el worker en producción (Linux/macOS/Windows)
-    const workerEnv = { ...process.env }
-    if (app.isPackaged && process.resourcesPath) {
-      workerEnv.APP_RESOURCES_PATH = process.resourcesPath
+    const sessionStr = db.getConfig('session')
+    if (sessionStr) {
+      const session = JSON.parse(sessionStr)
+      if (session && session.token) {
+        authToken = session.token
+        // Actualizar lista de dispositivos al inicio
+        ensureLocalDevices().catch(err => {
+          log.error('Error updating devices list at startup:', err)
+        })
+      }
     }
-
-    worker = fork(workerPath, [], {
-      stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
-      env: workerEnv
-    })
-    
-    if (worker.stdout) {
-      worker.stdout.on('data', (data) => log.info(`[Worker]: ${data.toString().trim()}`))
-    }
-    if (worker.stderr) {
-      worker.stderr.on('data', (data) => log.error(`[Worker Error]: ${data.toString().trim()}`))
-    }
-    
-    worker.on('error', (err) => log.error('Worker error:', err))
-    worker.on('exit', (code) => {
-      if (!isQuitting) log.info(`Worker exited with code ${code}`)
-    })
-
-    worker.send({ type: 'init', path: app.getPath('userData') })
   } catch (e) {
-    log.error('Failed to start worker:', e)
+    // No session or error reading session
   }
   
-  // Promesas pendientes para operaciones del worker
-  const pendingWorkerOps = new Map()
-  let workerOpId = 0
-
-  worker.on('message', (msg) => {
-    if (msg.type === 'migration-done') {
-      try {
-        const updates = msg.results.map(r => ({ id: r.id, path: `[LOCAL_IMAGE]:${r.path}` }))
-        if (updates.length > 0) {
-           log.info(`Worker: Migración completada. ${updates.length} imágenes.`)
-           db.updateImagesBulk(updates)
-           const deviceName = getCurrentDeviceName()
-           history = db.getAll(deviceName)
-           if (mainWindow?.webContents) {
-             mainWindow.webContents.send('clipboard-update', augmentHistoryWithImagePaths(history))
-           }
-        }
-      } catch (e) {
-        log.error('Error al procesar migration-done del worker:', e)
-      }
-    } else if (msg.type === 'sync-done') {
-      const { syncedIds, conflicts, newItems } = msg
-      try {
-          if (syncedIds && syncedIds.length > 0) {
-             const clientIds = syncedIds.map(s => s.clientId).filter(Boolean)
-             if (clientIds.length > 0) db.markSynced(getCurrentDeviceName(), clientIds)
-             
-             for (const s of syncedIds) {
-                if (s.id && s.clientId) {
-                   db.updateRemoteId(getCurrentDeviceName(), s.clientId, s.id)
-                }
-             }
-          }
-          
-          if (conflicts && conflicts.length > 0) {
-             for (const c of conflicts) {
-                db.updateFromConflict(getCurrentDeviceName(), c)
-             }
-          }
-          
-          if (newItems && newItems.length > 0) {
-             const backendItems = newItems.map(it => ({
-                id: it.id,
-                value: it.value,
-                favorite: it.favorite,
-                updatedAt: it.updatedAt
-             }))
-             db.importItems(getCurrentDeviceName(), backendItems)
-             
-             // Delete not in remote
-             const remoteValues = backendItems.map(it => it.value)
-             db.deleteNotInRemote(getCurrentDeviceName(), remoteValues)
-          }
-          
-          history = db.getAll(getCurrentDeviceName())
-          if (mainWindow?.webContents) {
-            mainWindow.webContents.send('clipboard-update', augmentHistoryWithImagePaths(history))
-            mainWindow.webContents.send('sync-progress', { percentage: 100, message: 'Completado' })
-          }
-          log.info('Worker Sync completed')
-      } catch (e) {
-         log.error('Error processing sync-done:', e)
-      } finally {
-         syncLock = false
-      }
-    } else if (msg.type === 'register-device-done') {
-      const { opId, deviceId, error } = msg
-      const pending = pendingWorkerOps.get(opId)
-      if (pending) {
-        pendingWorkerOps.delete(opId)
-        if (error) {
-          pending.reject(new Error(error))
-        } else {
-          pending.resolve(deviceId)
-        }
-      }
-    } else if (msg.type === 'refresh-token-done') {
-      const { opId, token, refreshToken, error } = msg
-      const pending = pendingWorkerOps.get(opId)
-      if (pending) {
-        pendingWorkerOps.delete(opId)
-        if (error) {
-          pending.reject(new Error(error))
-        } else {
-          pending.resolve({ token, refreshToken })
-        }
-      }
+  // ============================================================================
+  // SYNC DAEMON - Fork del proceso Node independiente para sincronización
+  // ============================================================================
+  function startSyncDaemon() {
+    if (syncDaemon) {
+      console.warn('[MAIN] Sync daemon already running')
+      return
     }
-  })
-
-  // Migración de imágenes Base64 a archivos (via Worker)
-  setTimeout(() => {
+    
     try {
-       const deviceName = getCurrentDeviceName()
-       const legacy = db.getLegacyImages(deviceName)
-       if (legacy.length > 0) {
-          log.info(`Enviando ${legacy.length} imágenes al worker para migración...`)
-          worker.send({ type: 'migrate-images', items: legacy })
-       }
-    } catch (e) {
-       log.error('Error iniciando migración en worker:', e)
+      const daemonPath = app.isPackaged
+        ? path.join(process.resourcesPath, 'app.asar.unpacked', 'sync-daemon.js')
+        : path.join(__dirname, 'sync-daemon.js')
+      
+      // Verificar que el archivo existe
+      if (!fs.existsSync(daemonPath)) {
+        console.error('[MAIN] Sync daemon not found at:', daemonPath)
+        return
+      }
+      
+      console.log('[MAIN] Starting sync daemon from:', daemonPath)
+      
+      syncDaemon = fork(daemonPath, [app.getPath('userData')], {
+        stdio: ['pipe', 'pipe', 'pipe', 'ipc'],
+        env: { ...process.env }
+      })
+      
+      // Redirigir stdout/stderr del daemon a la consola del proceso principal
+      if (syncDaemon.stdout) {
+        syncDaemon.stdout.on('data', (data) => {
+          const text = data.toString().trim()
+          if (text) {
+            console.log('[DAEMON-STDOUT]', text)
+          }
+        })
+      }
+      if (syncDaemon.stderr) {
+        syncDaemon.stderr.on('data', (data) => {
+          const text = data.toString().trim()
+          if (text) {
+            console.error('[DAEMON-STDERR]', text)
+          }
+        })
+      }
+      
+      // Handler de mensajes del daemon
+      syncDaemon.on('message', (msg) => {
+        try {
+          switch (msg.type) {
+            case 'READY':
+              console.log('[MAIN] Sync daemon ready:', msg.message)
+              
+              // Cargar sesión de la base de datos
+              let sessionData = null
+              try {
+                const sessionStr = db.getConfig('session')
+                if (sessionStr) {
+                  sessionData = JSON.parse(sessionStr)
+                  console.log('[MAIN] Loaded session from database')
+                  
+                  // Si hay token en la sesión, actualizar authToken
+                  if (sessionData?.token) {
+                    authToken = sessionData.token
+                    console.log('[MAIN] Restored authToken from session')
+                  }
+                }
+              } catch (e) {
+                console.error('[MAIN] Error loading session:', e)
+              }
+              
+              // Enviar configuración inicial al daemon
+              if (BACKEND_URL) {
+                const configToSend = {
+                  backendUrl: BACKEND_URL,
+                  userDataPath: app.getPath('userData')
+                }
+                
+                // Si hay token, enviarlo
+                if (authToken) {
+                  configToSend.authToken = authToken
+                }
+                
+                // Si hay sesión, enviarla también
+                if (sessionData) {
+                  configToSend.session = sessionData
+                }
+                
+                syncDaemon.send({
+                  type: 'SET_CONFIG',
+                  config: configToSend
+                })
+                
+                console.log('[MAIN] Sent initial config to daemon:', {
+                  hasBackendUrl: !!configToSend.backendUrl,
+                  hasAuthToken: !!configToSend.authToken,
+                  hasSession: !!configToSend.session
+                })
+              }
+              break
+              
+            case 'SYNC_PROGRESS':
+              if (msg.stage === 'sync' || msg.stage === 'push' || msg.stage === 'pull' || msg.stage === 'start' || msg.stage === 'device') {
+                console.log(`[MAIN] Sync progress: ${msg.percentage}% - ${msg.message}`)
+              }
+              if (mainWindow?.webContents) {
+                mainWindow.webContents.send('sync-progress', {
+                  percentage: msg.percentage || 0,
+                  message: msg.message || '',
+                  type: msg.stage || 'sync'
+                })
+              }
+              break
+              
+            case 'SYNC_ERROR':
+              console.error('[MAIN] Sync daemon error:', msg.error, msg.details)
+              syncLock = false
+              if (mainWindow?.webContents) {
+                mainWindow.webContents.send('sync-progress', {
+                  percentage: 100,
+                  message: `Error: ${msg.error}`,
+                  type: 'sync-error'
+                })
+              }
+              break
+              
+            case 'SYNC_DONE':
+              console.log('[MAIN] ==========================================')
+              console.log('[MAIN] Sync completed from daemon')
+              console.log('[MAIN] - Push result:', msg.pushResult)
+              console.log('[MAIN] - Pull result:', msg.pullResult)
+              console.log('[MAIN] ==========================================')
+              syncLock = false
+              
+              // Recargar historial desde DB del dispositivo actual
+              const currentDevice = getCurrentDeviceName()
+              console.log('[MAIN] Reloading history for device:', currentDevice)
+              history = db.getAll(currentDevice)
+              console.log('[MAIN] History reloaded, items count:', history.length)
+              if (mainWindow?.webContents) {
+                mainWindow.webContents.send('clipboard-update', augmentHistoryWithImagePaths(history))
+                mainWindow.webContents.send('sync-progress', {
+                  percentage: 100,
+                  message: msg.message || 'Sincronización completada',
+                  type: 'sync-done'
+                })
+              }
+              // Notificar que el sync terminó
+              if (syncCompletionResolve) {
+                syncCompletionResolve()
+                syncCompletionResolve = null
+              }
+              break
+              
+            case 'MIGRATION_DONE':
+              migrationInProgress = false
+              migrationCompleted = true
+              
+              // Recargar historial desde DB del dispositivo actual (que debería ser el seleccionado)
+              const migrationDevice = getCurrentDeviceName()
+              history = db.getAll(migrationDevice)
+              if (mainWindow?.webContents) {
+                mainWindow.webContents.send('clipboard-update', augmentHistoryWithImagePaths(history))
+                mainWindow.webContents.send('sync-progress', {
+                  percentage: 100,
+                  message: msg.message || 'Migración completada',
+                  type: 'migration-done'
+                })
+              }
+              // Emitir evento para notificar que la migración terminó
+              if (migrationCompletionResolve) {
+                migrationCompletionResolve()
+                migrationCompletionResolve = null
+              }
+              break
+              
+            case 'MIGRATION_ERROR':
+              migrationInProgress = false
+              if (mainWindow?.webContents) {
+                mainWindow.webContents.send('sync-progress', {
+                  percentage: 100,
+                  message: `Error en migración: ${msg.error}`,
+                  type: 'migration-error'
+                })
+              }
+              break
+              
+            case 'TOKEN_REFRESHED':
+              console.log('[MAIN] Token refreshed by daemon, updating session...')
+              // Actualizar el token en el main process
+              authToken = msg.token
+              
+              // Actualizar la sesión en la base de datos
+              if (msg.session) {
+                try {
+                  db.setConfig('session', JSON.stringify(msg.session))
+                  console.log('[MAIN] Session updated in database')
+                  
+                  // Notificar al frontend sobre el token refrescado
+                  if (mainWindow?.webContents) {
+                    mainWindow.webContents.send('token-refreshed', msg.token)
+                  }
+                } catch (e) {
+                  console.error('[MAIN] Error updating session:', e)
+                }
+              }
+              break
+              
+            default:
+              console.warn('[MAIN] Unknown daemon message type:', msg.type)
+          }
+        } catch (error) {
+          console.error('[MAIN] Error handling daemon message:', error)
+        }
+      })
+      
+      syncDaemon.on('error', (error) => {
+        console.error('[MAIN] Sync daemon error:', error)
+        syncLock = false
+      })
+      
+      syncDaemon.on('exit', (code, signal) => {
+        console.log(`[MAIN] Sync daemon exited: code=${code}, signal=${signal}`)
+        syncDaemon = null
+        syncLock = false
+        
+        // Reiniciar daemon si se cierra inesperadamente (solo si no es shutdown intencional)
+        if (code !== 0 && !isQuitting) {
+          console.log('[MAIN] Restarting sync daemon...')
+          setTimeout(() => {
+            if (!isQuitting) {
+              startSyncDaemon()
+            }
+          }, 2000)
+        }
+      })
+      
+      // Inicializar daemon
+      syncDaemon.send({
+        type: 'INIT',
+        userDataPath: app.getPath('userData')
+      })
+      
+      console.log('[MAIN] Sync daemon started')
+    } catch (error) {
+      console.error('[MAIN] Failed to start sync daemon:', error)
     }
-  }, 5000)
+  }
+  
+  function stopSyncDaemon() {
+    if (syncDaemon) {
+      console.log('[MAIN] Stopping sync daemon...')
+      syncDaemon.send({ type: 'SHUTDOWN' })
+      setTimeout(() => {
+        if (syncDaemon && !syncDaemon.killed) {
+          syncDaemon.kill()
+        }
+        syncDaemon = null
+      }, 1000)
+    }
+  }
+  
+  // Iniciar daemon
+  startSyncDaemon()
+  
+  createWindow()
   // Ruta del icono: compatible con desarrollo y producción en todas las plataformas
   // En empaquetado, usar app.getAppPath() que funciona correctamente en todas las plataformas
   const iconPath = app.isPackaged
@@ -1485,12 +1671,10 @@ app.whenReady().then(async () => {
                 const dbValue = savedPath ? `[LOCAL_IMAGE]:${savedPath}` : dataUrl
 
                 if (authToken) {
-                  db.insert(getCurrentDeviceName(), dbValue)
+                  // Save locally as pending - push will upload to backend later
+                  db.insert(getCurrentDeviceName(), dbValue, null, 'image')
                   Promise.resolve(enforceHistoryLimit(1000)).catch(() => {})
                   history = db.getAll(getCurrentDeviceName())
-                  saveClipboardRecord('image', dataUrl, { format: 'dataURL' })
-                    .then(rid => { if(rid) db.updateRemoteIdByValue(getCurrentDeviceName(), dbValue, rid) })
-                    .catch(err => log.error('Immediate save error (image path)', err))
                 } else {
                   db.insertGuest(getCurrentDeviceName(), dbValue)
                   enforceGuestLimit(1000)
@@ -1513,12 +1697,10 @@ app.whenReady().then(async () => {
             try { saveClipboardImagePNG(selImg) } catch {}
             lastImageDataUrl = dataUrl
             if (authToken) {
-              db.insert(getCurrentDeviceName(), dataUrl)
+              // Save locally as pending - push will upload to backend later
+              db.insert(getCurrentDeviceName(), dataUrl, null, 'image')
               Promise.resolve(enforceHistoryLimit(1000)).catch(() => {})
               history = db.getAll(getCurrentDeviceName())
-              saveClipboardRecord('image', dataUrl, { format: 'dataURL' })
-                .then(rid => { if(rid) db.updateRemoteIdByValue(getCurrentDeviceName(), dataUrl, rid) })
-                .catch(err => log.error('Immediate save error (linux sel)', err))
             } else {
               db.insertGuest(getCurrentDeviceName(), dataUrl)
               enforceGuestLimit(1000)
@@ -1590,10 +1772,10 @@ app.whenReady().then(async () => {
       ) {
         lastText = text
         if (authToken) {
-          db.insert(getCurrentDeviceName(), text)
+          // Save locally as pending - push will upload to backend later
+          db.insert(getCurrentDeviceName(), text, null, 'text')
           Promise.resolve(enforceHistoryLimit(1000)).catch(() => {})
           history = db.getAll(getCurrentDeviceName())
-          saveClipboardRecord('text', text).catch(err => log.error('Immediate save error (text)', err))
         } else {
           db.insertGuest(getCurrentDeviceName(), text)
           enforceGuestLimit(1000)
@@ -1605,7 +1787,6 @@ app.whenReady().then(async () => {
   }
 
   pollClipboard()
-  // startClipboardImagePolling(1000) // Removed as undefined
   // Solo buscar actualizaciones en Windows
   if (app.isPackaged && process.platform === 'win32') {
     try { mainWindow.webContents.send('update-status', 'Comprobando actualizaciones al iniciar...') } catch {}
@@ -1738,16 +1919,29 @@ app.whenReady().then(async () => {
   // Una vez que el frontend establezca el token vía 'set-auth-token', 
   // entonces se ejecutarán las funciones que requieren autenticación (incluyendo syncClipboardHistory)
 
-  // Iniciar sincronización periódica (se ejecutará solo si hay authToken)
+  // Iniciar sincronización periódica cada 15 minutos (se ejecutará solo si hay authToken)
   setInterval(() => {
-    if (authToken) {
+    if (authToken && !syncLock) {
+      console.log('[MAIN] Periodic sync triggered (every 15 minutes)')
       syncClipboardHistory()
     }
-  }, 15 * 60 * 1000)
+  }, 15 * 60 * 1000) // 15 minutos
 
-  // NO ejecutar syncClipboardHistory() inmediatamente aquí
-  // Esperar a que el frontend establezca el token vía 'set-auth-token'
-  // El handler 'set-auth-token' ya llama a syncClipboardHistory() cuando se establece el token
+  // Ejecutar registro de dispositivo después de un breve delay
+  // para asegurar que el worker esté listo y que el frontend haya cargado la sesión si existe
+  // La migración se ejecutará cuando se establezca el token (set-auth-token)
+  // El sync periódico se ejecutará cada 15 minutos automáticamente
+  setTimeout(async () => {
+    if (authToken) {
+      console.log('[MAIN] Initial device registration on app start')
+      // First ensure device is registered (this will call POST /devices)
+      await ensureDeviceRegistered()
+      // El sync inicial se ejecutará automáticamente después de la migración
+      // o en el próximo intervalo de 15 minutos
+    } else {
+      console.log('[MAIN] No auth token on startup, device registration and migration will run when token is set')
+    }
+  }, 2000) // 2 segundos de delay para que el frontend cargue la sesión
 })
 
 app.on('window-all-closed', () => {
@@ -1755,9 +1949,9 @@ app.on('window-all-closed', () => {
 
 app.on('before-quit', () => {
   isQuitting = true
-  if (worker) {
-    try { worker.kill() } catch (e) { }
-    worker = null
+  // Stop sync daemon gracefully
+  if (syncDaemon) {
+    stopSyncDaemon()
   }
   try { childWindows.forEach(w => { try { w.destroy() } catch {} }) } catch {}
 })
@@ -1913,26 +2107,28 @@ ipcMain.handle('clear-history', async () => {
   try {
     if (authToken) {
       const axiosInstance = getAxiosInstance()
-      const clientId = activeDeviceName || os.hostname()
-      try {
-        log.info('Intentando DELETE backend por clientId (path param)', { url: `/clipboard/by-client/${clientId}` })
-        await axiosInstance.delete(`/clipboard/by-client/${clientId}`)
-        log.info('Historial borrado en backend (DELETE path)')
-      } catch (e) {
-        try { log.warn('DELETE path falló, probando POST /clipboard/by-client', e?.message || e) } catch {}
+      const currentDeviceId = await ensureDeviceRegistered()
+      if (currentDeviceId) {
         try {
-          const payload = { clientId }
-          log.info('Intentando POST backend por clientId (body)', { url: '/clipboard/by-client', payload })
-          await axiosInstance.post('/clipboard/by-client', payload, { headers: { 'Content-Type': 'application/json' } })
-          log.info('Historial borrado en backend (POST body)')
-        } catch (e2) {
-          try { log.warn('POST /clipboard/by-client falló, probando DELETE /clipboard con params', e2?.message || e2) } catch {}
+          log.info('Intentando DELETE backend por device id (path param)', { url: `/clipboard/by-device/${currentDeviceId}` })
+          await axiosInstance.delete(`/clipboard/by-device/${currentDeviceId}`)
+          log.info('Historial borrado en backend (DELETE path)')
+        } catch (e) {
+          try { log.warn('DELETE path falló, probando POST /clipboard/by-device', e?.message || e) } catch {}
           try {
-            log.info('Intentando DELETE backend por clientId (query param)', { url: '/clipboard', params: { clientId } })
-            await axiosInstance.delete('/clipboard', { params: { clientId } })
-            log.info('Historial borrado en backend (DELETE query)')
-          } catch (e3) {
-            log.error('Error borrando historial en backend con todos los intentos', e3?.message || e3)
+            const payload = { id: currentDeviceId }
+            log.info('Intentando POST backend por device id (body)', { url: '/clipboard/by-device', payload })
+            await axiosInstance.post('/clipboard/by-device', payload, { headers: { 'Content-Type': 'application/json' } })
+            log.info('Historial borrado en backend (POST body)')
+          } catch (e2) {
+            try { log.warn('POST /clipboard/by-device falló, probando DELETE /clipboard con params', e2?.message || e2) } catch {}
+            try {
+              log.info('Intentando DELETE backend por device id (query param)', { url: '/clipboard', params: { id: currentDeviceId } })
+              await axiosInstance.delete('/clipboard', { params: { id: currentDeviceId } })
+              log.info('Historial borrado en backend (DELETE query)')
+            } catch (e3) {
+              log.error('Error borrando historial en backend con todos los intentos', e3?.message || e3)
+            }
           }
         }
       }
@@ -1956,15 +2152,17 @@ ipcMain.handle('delete-history-item', async (_, id) => {
     if (authToken && item) {
        try {
           const axiosInstance = getAxiosInstance()
-          const clientId = activeDeviceName || os.hostname()
-          const payload = { clientId, value: item.value }
-          
-          log.info('Enviando POST al backend (by-value):', { url: '/clipboard/by-value', payload })
-          await axiosInstance.post('/clipboard/by-value', payload, {
-            headers: { 'Content-Type': 'application/json' }
-          })
-          
-          log.info('Borrado del backend exitoso')
+          const currentDeviceId = await ensureDeviceRegistered()
+          if (currentDeviceId) {
+            const payload = { id: currentDeviceId, value: item.value }
+            
+            log.info('Enviando POST al backend (by-value):', { url: '/clipboard/by-value', payload })
+            await axiosInstance.post('/clipboard/by-value', payload, {
+              headers: { 'Content-Type': 'application/json' }
+            })
+            
+            log.info('Borrado del backend exitoso')
+          }
         } catch (e) {
          log.error('Error borrando del backend', e?.message || e)
        }
@@ -2153,15 +2351,16 @@ ipcMain.on('paste-text', () => {
   performPaste(mainWindow)
 })
 
-// Escuchar favorito
+// Escuchar favorito (offline-first)
 ipcMain.on('toggle-favorite', async (event, payload) => {
   try {
-    if (!authToken) return
+    // Siempre trabajar contra el historial local actual
     const current = readDeviceHistory()
     if (!Array.isArray(current)) return
 
     const value = (typeof payload === 'string') ? payload : (payload && payload.value)
-    const id = (payload && typeof payload === 'object') ? payload.id : undefined
+    if (!value) return
+
     let newFavorite = false
     const updated = current.map(item => {
       if (typeof item === 'object' && item.value === value) {
@@ -2171,33 +2370,31 @@ ipcMain.on('toggle-favorite', async (event, payload) => {
       }
       return item
     })
+
+    // 1) Actualizar siempre en la DB local y marcar pending=1 (lo hace setFavorite)
     db.setFavorite(getCurrentDeviceName(), value, newFavorite)
 
-    // También actualizamos la variable en memoria
-    history = db.getAll(getCurrentDeviceName())
+    // 2) Notificar al daemon para que recargue la base de datos
+    //    (verá el cambio y lo enviará al backend en la próxima sincronización)
+    if (syncDaemon && syncDaemon.connected) {
+      syncDaemon.send({
+        type: 'RELOAD_DATABASE'
+      })
+    }
 
-    // Enviar al frontend
+    // 3) Actualizar la caché en memoria desde la DB
+    history = authToken
+      ? db.getAll(getCurrentDeviceName())
+      : db.getAllGuest(getCurrentDeviceName())
+
+    // 4) Enviar al frontend el historial actualizado
     if (mainWindow?.webContents) {
       mainWindow.webContents.send('clipboard-update', augmentHistoryWithImagePaths(history))
     }
- 
-    let remoteId = null
-    if (authToken && id) {
-      try {
-        const rec = db.getById(id)
-        remoteId = rec && rec.remote_id
-        log.info('toggle-favorite remote', { localId: id, remoteId, value, favorite: !!newFavorite })
-        if (remoteId) {
-          await updateClipboardRecord(remoteId, { favorite: !!newFavorite })
-        }
-      } catch {}
-    }
-    if (!remoteId) {
-      try { 
-        log.info('toggle-favorite missing remote_id, triggering background sync')
-        syncClipboardHistory() 
-      } catch {}
-    }
+
+    // 5) NO llamar al backend directamente aquí.
+    //    El envío al servidor se hará únicamente desde el sync-daemon
+    //    cuando haya conectividad / token disponible.
   } catch (err) {
     log.error('❌ Error actualizando favoritos:', err)
   }
@@ -2267,11 +2464,45 @@ try { BACKEND_URL = require('./config').BACKEND_URL || BACKEND_URL } catch {}
 let authToken = null
 let deviceId = null
 let activeDeviceName = null
+
+// Initialize active device on startup - always use real hostname
+function initializeActiveDevice() {
+  try {
+    // Always use the real hostname of the current machine
+    const realHostname = os.hostname()
+    activeDeviceName = sanitizeDeviceName(realHostname)
+    console.log('[MAIN] Initialized active device from hostname:', activeDeviceName)
+  } catch (e) {
+    // Fallback to hostname on error
+    activeDeviceName = sanitizeDeviceName(os.hostname())
+    console.log('[MAIN] Initialized active device from hostname (fallback):', activeDeviceName)
+  }
+}
 let syncLock = false
 let favoritesSyncCooldownUntil = 0
 
 function getCurrentDeviceName () {
-  return sanitizeDeviceName(activeDeviceName || os.hostname())
+  // activeDeviceName is always initialized in app.whenReady()
+  // If somehow it's null, fallback to hostname
+  if (!activeDeviceName) {
+    activeDeviceName = sanitizeDeviceName(os.hostname())
+  }
+  return sanitizeDeviceName(activeDeviceName)
+}
+
+function getCurrentDeviceId () {
+  // First check if we have a cached deviceId
+  if (deviceId) return deviceId
+  
+  // Try to get from database
+  const savedDevice = db.getDevice()
+  if (savedDevice && savedDevice.id) {
+    deviceId = savedDevice.id
+    return deviceId
+  }
+  
+  // Fallback to hostname (for backward compatibility during transition)
+  return null
 }
 
 function readDeviceConfigObj () {
@@ -2324,7 +2555,18 @@ function writeDeviceHistory (hist) {
 
 function listLocalDevices () {
   try {
-    // Obtener dispositivos desde la DB (historial por dispositivo)
+    // Primero intentar obtener dispositivos de la tabla devices
+    const devicesFromTable = db.getAllDevices()
+    if (Array.isArray(devicesFromTable) && devicesFromTable.length > 0) {
+      const clientIds = devicesFromTable
+        .map(d => d.clientId || d.name)
+        .filter(Boolean)
+      if (clientIds.length > 0) {
+        return clientIds
+      }
+    }
+    
+    // Fallback: obtener dispositivos desde la DB config (compatibilidad)
     const devicesStr = db.getConfig('devices')
     if (devicesStr) {
       try {
@@ -2407,12 +2649,53 @@ function sanitizeDeviceName (name) {
 
 async function ensureLocalDevices () {
   try {
-    const names = await getDevicesFromBackend()
-    // Guardar lista de dispositivos en DB
-    if (names.length > 0) {
-      db.setConfig('devices', JSON.stringify(names))
+    const axiosInstance = getAxiosInstance()
+    try {
+      const res = await axiosInstance.get('/devices')
+      const data = res?.data
+      const container = (data && typeof data === 'object' ? (data.data ?? data) : {})
+      const list = Array.isArray(container) ? container : (Array.isArray(container.items) ? container.items : [])
+      
+      // Guardar cada dispositivo en la tabla devices
+      if (Array.isArray(list) && list.length > 0) {
+        for (const deviceData of list) {
+          if (deviceData && typeof deviceData === 'object') {
+            const deviceInfo = {
+              id: deviceData.id || deviceData.uuid || null,
+              userId: deviceData.userId || deviceData.user_id || '',
+              clientId: deviceData.clientId || deviceData.client_id || deviceData.name || '',
+              name: deviceData.name || deviceData.clientId || deviceData.client_id || '',
+              createdAt: deviceData.createdAt || deviceData.created_at || new Date().toISOString(),
+              lastSyncAt: deviceData.lastSyncAt || deviceData.last_sync_at || null
+            }
+            
+            if (deviceInfo.id) {
+              db.saveDevice(deviceInfo)
+              log.info('Device saved to local table:', { id: deviceInfo.id, name: deviceInfo.name, clientId: deviceInfo.clientId })
+            }
+          }
+        }
+      }
+      
+      // También mantener compatibilidad con el formato anterior (lista de nombres)
+      const names = Array.isArray(list)
+        ? list
+            .map(p => {
+              if (typeof p === 'string') return p
+              const obj = p || {}
+              return String(obj.clientId || obj.client_id || obj.name || '')
+            })
+            .filter(Boolean)
+        : []
+      
+      if (names.length > 0) {
+        db.setConfig('devices', JSON.stringify(names))
+      }
+      
+      log.info('ensureLocalDevices completo', { count: list.length, savedToTable: list.length })
+    } catch (error) {
+      log.error('ensureLocalDevices error al obtener dispositivos del backend', error?.message || error)
     }
-    log.info('ensureLocalDevices completo', { count: names.length })
   } catch (error) {
     log.error('ensureLocalDevices error', error?.message || error)
   }
@@ -2503,11 +2786,86 @@ async function refreshTokenFromSession (session) {
   }
 }
 
-ipcMain.on('set-auth-token', (event, token) => {
+// Flag to prevent multiple migration executions
+let migrationInProgress = false
+let migrationCompleted = false
+let migrationCompletionResolve = null // Promise resolver para esperar la migración
+let syncCompletionResolve = null // Promise resolver para esperar el sync
+
+ipcMain.on('set-auth-token', async (event, token) => {
   authToken = token
   // Reinicializar el estado de los archivos del portapapeles al iniciar sesión
   // Esto previene que archivos copiados antes de iniciar sesión se procesen
   resetClipboardFilesState()
+  
+  // Cargar sesión de la base de datos para enviarla al daemon
+  let sessionData = null
+  try {
+    const sessionStr = db.getConfig('session')
+    if (sessionStr) {
+      sessionData = JSON.parse(sessionStr)
+    }
+  } catch (e) {
+    console.error('[MAIN] Error loading session for daemon:', e)
+  }
+  
+  // Enviar configuración al daemon
+  if (syncDaemon && syncDaemon.connected) {
+    const configToSend = {
+      backendUrl: BACKEND_URL,
+      authToken: authToken,
+      userDataPath: app.getPath('userData')
+    }
+    
+    // Si hay sesión, enviarla también
+    if (sessionData) {
+      configToSend.session = sessionData
+    }
+    
+    syncDaemon.send({
+      type: 'SET_CONFIG',
+      config: configToSend
+    })
+    
+    // Run migration once: clear local history and load from server (non-blocking)
+    // Verificar si la migración ya se ejecutó (guardado en DB local)
+    const migrationCompletedInDB = db.getConfig('migration_completed')
+    if (migrationCompletedInDB === 'true') {
+      console.log('[MAIN] Migration already completed (saved in DB), skipping...')
+      migrationCompleted = true
+      return // No ejecutar migración si ya se completó
+    }
+    
+    if (!migrationInProgress && !migrationCompleted) {
+      // console.log('[MAIN] ==========================================')
+      // console.log('[MAIN] Requesting migration from daemon...')
+      // console.log('[MAIN] Device name:', getCurrentDeviceName())
+      // console.log('[MAIN] Daemon connected:', syncDaemon && syncDaemon.connected)
+      // console.log('[MAIN] ==========================================')
+      migrationInProgress = true
+      const deviceName = getCurrentDeviceName()
+      if (syncDaemon && syncDaemon.connected) {
+        syncDaemon.send({
+          type: 'MIGRATION_START',
+          deviceName: deviceName
+        })
+        // console.log('[MAIN] Migration request sent to daemon')
+      } else {
+        // console.error('[MAIN] Cannot send migration: daemon not connected')
+        migrationInProgress = false
+      }
+    } else if (migrationInProgress) {
+      // console.log('[MAIN] Migration already in progress, skipping...')
+    } else if (migrationCompleted) {
+      // console.log('[MAIN] Migration already completed, skipping...')
+    }
+  }
+  
+  // First ensure device is registered (this will call POST /devices)
+  console.log('[MAIN] Token set, registering device...')
+  await ensureDeviceRegistered()
+  
+  // Then sync using daemon
   syncClipboardHistory()
   ensureLocalDevices()
   Promise.resolve(enforceHistoryLimit(1000)).catch(() => {})
@@ -2555,6 +2913,26 @@ ipcMain.handle('save-session', (event, sessionData) => {
   try {
     if (sessionData && typeof sessionData === 'object') {
       db.setConfig('session', JSON.stringify(sessionData))
+      
+      // Actualizar authToken si hay token en la sesión
+      if (sessionData.token) {
+        authToken = sessionData.token
+      }
+      
+      // Sincronizar con el daemon si está conectado
+      if (syncDaemon && syncDaemon.connected) {
+        syncDaemon.send({
+          type: 'SET_CONFIG',
+          config: {
+            backendUrl: BACKEND_URL,
+            authToken: sessionData.token || authToken,
+            userDataPath: app.getPath('userData'),
+            session: sessionData
+          }
+        })
+        console.log('[MAIN] Session synced with daemon')
+      }
+      
       return true
     }
     return false
@@ -2612,31 +2990,160 @@ async function resolveDeviceIdentifiers (rawName) {
   return { deviceId: null, clientId: null, name: sanitizeDeviceName(rawName) }
 }
 
+async function startMigration(deviceName) {
+  try {
+    if (!authToken) {
+      console.warn('[MAIN-MIGRATION] No auth token, skipping migration')
+      return
+    }
+    
+    if (!syncDaemon || !syncDaemon.connected) {
+      console.error('[MAIN-MIGRATION] Sync daemon not available')
+      return
+    }
+    
+    if (mainWindow?.webContents) {
+      mainWindow.webContents.send('sync-progress', { percentage: 0, message: 'Iniciando migración...', type: 'migration-start' })
+    }
+    
+    // Enviar comando de migración al daemon con el deviceName especificado
+    const targetDeviceName = deviceName ? sanitizeDeviceName(deviceName) : getCurrentDeviceName()
+    syncDaemon.send({
+      type: 'MIGRATION_START',
+      deviceName: targetDeviceName
+    })
+    
+    console.log('[MAIN-MIGRATION] Migration request sent to daemon for device:', targetDeviceName)
+  } catch (error) {
+    console.error('[MAIN-MIGRATION] startMigration error:', error?.message || error)
+    if (mainWindow?.webContents) {
+      mainWindow.webContents.send('sync-progress', { percentage: 100, message: 'Migración fallida', type: 'migration-error' })
+    }
+  }
+}
+
 ipcMain.handle('switch-active-device', async (_, deviceName) => {
   try {
-    activeDeviceName = sanitizeDeviceName(deviceName)
-    await ensureLocalDevices()
-    const devHist = readDeviceHistory()
+    console.log('[MAIN] switch-active-device called with:', deviceName)
+    const targetDeviceName = sanitizeDeviceName(deviceName)
+    
+    // Obtener el clientId del dispositivo seleccionado desde la tabla devices LOCAL (sin llamar al backend)
+    let targetClientId = targetDeviceName
+    const deviceInfo = db.getDeviceByClientId(targetDeviceName)
+    console.log('[MAIN] Local deviceInfo for switch:', deviceInfo)
+    if (deviceInfo && deviceInfo.clientId) {
+      targetClientId = deviceInfo.clientId
+      // Actualizar activeDeviceName con el clientId correcto
+      activeDeviceName = targetClientId
+    } else {
+      activeDeviceName = targetDeviceName
+    }
+    
+    // Cargar el historial del dispositivo seleccionado primero
+    const devHist = authToken 
+      ? readDeviceHistoryByName(targetClientId) 
+      : db.getAllGuest(targetClientId)
     history = devHist
+    
+    if (mainWindow?.webContents) {
+      mainWindow.webContents.send('clipboard-update', augmentHistoryWithImagePaths(history))
+      mainWindow.webContents.send('sync-progress', { percentage: 0, message: 'Sincronizando dispositivo...', type: 'device-switch' })
+    }
+    
+    // Verificar si el dispositivo ya fue migrado
+    const isMigrated = deviceInfo && deviceInfo.migrated === true
+    console.log('[MAIN] Device migration state:', { deviceName: targetClientId, isMigrated })
+    
+    if (!isMigrated && authToken) {
+      // Si no está migrado, ejecutar migración primero
+      console.log('[MAIN] Device not migrated yet, starting migration for:', targetClientId)
+      if (mainWindow?.webContents) {
+        mainWindow.webContents.send('sync-progress', { percentage: 10, message: 'Migrando dispositivo por primera vez...', type: 'device-migration' })
+      }
+      
+      // Crear una promesa que se resuelve cuando la migración termine
+      const migrationWaitPromise = new Promise((resolve) => {
+        migrationCompletionResolve = resolve
+      })
+      
+      // Iniciar la migración
+      if (syncDaemon && syncDaemon.connected) {
+        syncDaemon.send({
+          type: 'MIGRATION_START',
+          deviceName: targetClientId
+        })
+      }
+      
+      // Esperar a que la migración termine (con timeout)
+      const migrationTimeoutMs = 60 * 1000
+      const migrationTimeout = new Promise(resolve => setTimeout(() => {
+        if (migrationCompletionResolve) {
+          migrationCompletionResolve()
+          migrationCompletionResolve = null
+        }
+        resolve()
+      }, migrationTimeoutMs))
+      
+      await Promise.race([migrationWaitPromise, migrationTimeout])
+      
+      // Recargar historial después de la migración
+      const migratedHist = authToken 
+        ? readDeviceHistoryByName(targetClientId) 
+        : db.getAllGuest(targetClientId)
+      history = migratedHist
+      
+      if (mainWindow?.webContents) {
+        mainWindow.webContents.send('clipboard-update', augmentHistoryWithImagePaths(history))
+        mainWindow.webContents.send('sync-progress', { percentage: 50, message: 'Migración completada, sincronizando...', type: 'device-migration-done' })
+      }
+    }
+    
+    // Ejecutar sync (pull y push) con el UUID del dispositivo seleccionado
+    console.log('[MAIN] Starting sync for device:', targetClientId)
+    console.log('[MAIN] Sync daemon connected:', syncDaemon && syncDaemon.connected)
+    console.log('[MAIN] Auth token available:', !!authToken)
+    
+    // Crear una promesa que se resuelve cuando el sync termine
+    const syncWaitPromise = new Promise((resolve) => {
+      syncCompletionResolve = resolve
+    })
+    
+    // Iniciar el sync
+    console.log('[MAIN] Calling syncClipboardHistory with device:', targetClientId)
+    await syncClipboardHistory(targetClientId)
+    console.log('[MAIN] syncClipboardHistory call completed')
+    
+    // Esperar a que el sync termine (con timeout)
+    const timeoutMs = 30 * 1000
+    const timeout = new Promise(resolve => setTimeout(() => {
+      if (syncCompletionResolve) {
+        syncCompletionResolve()
+        syncCompletionResolve = null
+      }
+      resolve()
+    }, timeoutMs))
+    
+    await Promise.race([syncWaitPromise, timeout])
+    
+    // Después del sync, recargar el historial del dispositivo seleccionado
+    console.log('[MAIN] After sync, reloading history for device:', targetClientId)
+    const updatedHist = authToken 
+      ? readDeviceHistoryByName(targetClientId) 
+      : db.getAllGuest(targetClientId)
+    history = updatedHist
+    console.log('[MAIN] History reloaded after sync, items count:', history.length)
+    
     if (mainWindow?.webContents) {
       mainWindow.webContents.send('clipboard-update', augmentHistoryWithImagePaths(history))
     }
-    try { authToken ? await enforceHistoryLimit(1000) : enforceGuestLimit(1000) } catch {}
-    if (mainWindow?.webContents) {
-      mainWindow.webContents.send('sync-progress', { percentage: 1, message: 'Sincronizando…' })
-    }
-  let finished = false
-    const syncPromise = (async () => { 
-      await syncClipboardHistory(); 
-      finished = true 
-    })()
-    const timeoutMs = 30 * 1000
-    const timeout = new Promise(resolve => setTimeout(resolve, timeoutMs))
-    await Promise.race([syncPromise, timeout])
+    
     try { authToken ? await enforceHistoryLimit(1000) : enforceGuestLimit(1000) } catch {}
     if (!finished && mainWindow?.webContents) {
-      mainWindow.webContents.send('sync-progress', { percentage: 30, message: 'Sincronización en segundo plano' })
+      mainWindow.webContents.send('sync-progress', { percentage: 90, message: 'Sincronización en segundo plano' })
+    } else if (mainWindow?.webContents) {
+      mainWindow.webContents.send('sync-progress', { percentage: 100, message: 'Dispositivo cambiado', type: 'device-switch-complete' })
     }
+    
     return history
   } catch (e) {
     log.error('switch-active-device error', e?.message || e)
@@ -2646,7 +3153,7 @@ ipcMain.handle('switch-active-device', async (_, deviceName) => {
 
 ipcMain.handle('list-devices', async () => {
   try {
-    await ensureLocalDevices()
+    // Usar solo la tabla local, no llamar al backend (para funcionar offline)
     return listLocalDevices()
   } catch {
     return []
@@ -2698,6 +3205,57 @@ function getAxiosInstance () {
       'Content-Type': 'application/json'
     }
   })
+
+  // Log básico de cada request/response
+  instance.interceptors.request.use((config) => {
+    try {
+      console.log('[MAIN-HTTP-REQUEST]', {
+        method: config.method,
+        url: config.url,
+        baseURL: config.baseURL,
+        params: config.params,
+        dataPreview: config.data
+          ? (typeof config.data === 'string'
+              ? config.data.slice(0, 200)
+              : JSON.stringify(config.data).slice(0, 200))
+          : undefined
+      })
+    } catch {}
+    return config
+  })
+
+  instance.interceptors.response.use(
+    (response) => {
+      try {
+        console.log('[MAIN-HTTP-RESPONSE]', {
+          url: response.config?.url,
+          status: response.status,
+          statusText: response.statusText,
+          dataPreview: response.data
+            ? (typeof response.data === 'string'
+                ? response.data.slice(0, 200)
+                : JSON.stringify(response.data).slice(0, 200))
+            : undefined
+        })
+      } catch {}
+      return response
+    },
+    (error) => {
+      try {
+        console.error('[MAIN-HTTP-ERROR]', {
+          url: error.config?.url,
+          status: error.response?.status,
+          dataPreview: error.response?.data
+            ? (typeof error.response.data === 'string'
+                ? error.response.data.slice(0, 200)
+                : JSON.stringify(error.response.data).slice(0, 200))
+            : undefined,
+          message: error.message
+        })
+      } catch {}
+      return Promise.reject(error)
+    }
+  )
 
   // Interceptor para manejar errores 401 y refrescar token automáticamente
   instance.interceptors.response.use(
@@ -2767,17 +3325,10 @@ async function enforceHistoryLimit (limit = 1000) {
     const count = db.countActive(device)
     if (count > limit) {
       db.trimToLimit(device, limit)
-      if (authToken) {
-        try {
-          const axiosInstance = getAxiosInstance()
-          const ids = await resolveDeviceIdentifiers(device)
-          if (ids && ids.deviceId) {
-            await axiosInstance.post('/clipboard/trim', { deviceId: ids.deviceId })
-          }
-        } catch (e) {
-          try { log.error('trim backend error', e?.message || e) } catch {}
-        }
-      }
+      // Nota: El endpoint /clipboard/trim no existe en el backend, 
+      // el recorte se hace solo localmente con db.trimToLimit
+      // Si en el futuro se necesita sincronizar el recorte con el backend,
+      // se debería implementar el endpoint primero
     }
   } catch {}
 }
@@ -2795,8 +3346,9 @@ function enforceGuestLimit (limit = 1000) {
 async function fetchBackendClipboard () {
   try {
     const axiosInstance = getAxiosInstance()
-    const clientId = activeDeviceName || os.hostname()
-    const res = await axiosInstance.get('/clipboard', { params: { clientId } })
+    const currentDeviceId = await ensureDeviceRegistered()
+    if (!currentDeviceId) return
+    const res = await axiosInstance.get('/clipboard', { params: { id: currentDeviceId } })
     const data = res?.data
     const items = (data && typeof data === 'object' ? (data.data?.items ?? data.items ?? []) : [])
     const mapped = Array.isArray(items)
@@ -2821,69 +3373,116 @@ async function fetchBackendClipboard () {
 
 async function ensureDeviceRegistered () {
   try {
-    if (deviceId) return deviceId
-    // Si el worker no está disponible, usar método directo como fallback
-    if (!worker) {
-      log.warn('Worker not available, using direct device registration')
+    console.log('[MAIN] ensureDeviceRegistered called')
+    // First check if we have device info in database
+    const savedDevice = db.getDevice()
+    console.log('[MAIN] ensureDeviceRegistered - Device from DB:', savedDevice)
+    
+    // Get current hostname
+    const currentHostname = os.hostname()
+    
+    // Check if device has all required fields (id, userId, clientId)
+    // Also verify that clientId matches current hostname
+    if (savedDevice && savedDevice.id && savedDevice.userId && savedDevice.clientId) {
+      const savedClientId = sanitizeDeviceName(savedDevice.clientId)
+      const currentClientId = sanitizeDeviceName(currentHostname)
+      
+      // If clientId doesn't match current hostname, we need to re-register
+      if (savedClientId === currentClientId) {
+        deviceId = savedDevice.id
+        console.log('[MAIN] ensureDeviceRegistered - Device already complete in DB and hostname matches, returning:', deviceId)
+        return deviceId
+      } else {
+        console.log(`[MAIN] ensureDeviceRegistered - Device clientId (${savedClientId}) doesn't match current hostname (${currentClientId}), will re-register`)
+        // Continue to registration below to update with new hostname
+      }
+    }
+    
+    // If device exists but is incomplete, we need to re-register
+    if (savedDevice && savedDevice.id) {
+      console.log('[MAIN] ensureDeviceRegistered - Device in DB but incomplete (missing userId or clientId), will re-register')
+      // Continue to registration below
+    }
+    
+    if (deviceId && !savedDevice) {
+      console.log('[MAIN] ensureDeviceRegistered - deviceId exists but not in DB:', deviceId)
+      return deviceId
+    }
+    
+    // Usar método directo asíncrono no bloqueante (axios no bloquea el event loop)
+    console.log('[MAIN] ensureDeviceRegistered: Using direct async method (non-blocking)')
+    
+    try {
       const axiosInstance = getAxiosInstance()
       const hostname = os.hostname()
       const osName = process.platform === 'win32' ? 'Windows' : (process.platform === 'darwin' ? 'macOS' : 'Linux')
       const payload = { clientId: hostname, name: hostname, metadata: { os: osName, appVersion: app.getVersion() } }
-      const res = await axiosInstance.post('/devices', payload)
-      const data = res?.data
-      const obj = (data && typeof data === 'object' ? (data.data ?? data) : {})
-      deviceId = obj?.id || obj?.device?.id || null
-      return deviceId
-    }
-    
-    // Usar worker para registro de dispositivo (no bloquea el hilo principal)
-    return new Promise((resolve, reject) => {
-      const opId = ++workerOpId
-      const timeout = setTimeout(() => {
-        pendingWorkerOps.delete(opId)
-        log.warn('Device registration timeout, using fallback')
-        // Fallback a método directo si el worker tarda mucho
-        const axiosInstance = getAxiosInstance()
-        const hostname = os.hostname()
-        const osName = process.platform === 'win32' ? 'Windows' : (process.platform === 'darwin' ? 'macOS' : 'Linux')
-        const payload = { clientId: hostname, name: hostname, metadata: { os: osName, appVersion: app.getVersion() } }
-        axiosInstance.post('/devices', payload).then(res => {
-          const data = res?.data
-          const obj = (data && typeof data === 'object' ? (data.data ?? data) : {})
-          deviceId = obj?.id || obj?.device?.id || null
-          resolve(deviceId)
-        }).catch(reject)
-      }, 5000)
+      console.log('[MAIN] POST /devices - payload:', payload)
       
-      pendingWorkerOps.set(opId, {
-        resolve: (result) => {
-          clearTimeout(timeout)
-          deviceId = result
-          resolve(result)
-        },
-        reject: (error) => {
-          clearTimeout(timeout)
-          log.error('ensureDeviceRegistered error', error?.message || error)
-          resolve(null) // Resolver con null en lugar de rechazar para no romper el flujo
-        }
+      const res = await axiosInstance.post('/devices', payload)
+      console.log('[MAIN] POST /devices - Response status:', res.status)
+      console.log('[MAIN] POST /devices - Full response:', JSON.stringify(res.data, null, 2))
+      
+      const data = res?.data
+      console.log('[MAIN] Response data structure:', {
+        hasData: !!data,
+        hasDataData: !!(data && data.data),
+        hasDataDataDevice: !!(data && data.data && data.data.device),
+        keys: data ? Object.keys(data) : []
       })
       
-      const hostname = os.hostname()
-      const osName = process.platform === 'win32' ? 'Windows' : (process.platform === 'darwin' ? 'macOS' : 'Linux')
-      const config = {
-        backendUrl: BACKEND_URL,
-        authToken: authToken
-      }
-      const deviceInfo = {
-        hostname,
-        osName,
-        appVersion: app.getVersion()
+      // Extract device from response structure: { success, message, data: { device: {...} } }
+      const device = (data && data.data && data.data.device) 
+        ? data.data.device 
+        : (data && data.device) 
+          ? data.device 
+          : (data && typeof data === 'object' && data.id ? data : null)
+      
+      console.log('[MAIN] Extracted device object:', device ? { 
+        id: device.id, 
+        userId: device.userId, 
+        clientId: device.clientId, 
+        name: device.name,
+        createdAt: device.createdAt 
+      } : 'null')
+      
+      if (!device || !device.id) {
+        console.error('[MAIN] Failed to extract device from response. Full response:', JSON.stringify(data, null, 2))
+        return null
       }
       
-      worker.send({ type: 'register-device', opId, config, deviceInfo })
-    })
+      deviceId = device.id
+      
+      // Save device info to database
+      console.log('[MAIN] Saving device to database:', device)
+      const saved = db.saveDevice({
+        id: device.id,
+        userId: device.userId || '',
+        clientId: device.clientId || hostname,
+        name: device.name || hostname,
+        createdAt: device.createdAt || new Date().toISOString(),
+        lastSyncAt: null
+      })
+      
+      if (saved) {
+        console.log('[MAIN] Device saved successfully to database')
+        const verify = db.getDevice()
+        console.log('[MAIN] Verified device in database:', verify)
+      } else {
+        console.error('[MAIN] Failed to save device to database')
+      }
+      
+      return deviceId
+    } catch (error) {
+      console.error('[MAIN] Error registering device (direct method):', error?.message || error)
+      if (error?.response) {
+        console.error('[MAIN] Error response status:', error.response.status)
+        console.error('[MAIN] Error response data:', JSON.stringify(error.response.data, null, 2))
+      }
+      return null
+    }
   } catch (error) {
-    log.error('ensureDeviceRegistered error', error?.message || error)
+    console.error('[MAIN] ensureDeviceRegistered error:', error?.message || error)
     return null
   }
 }
@@ -3372,12 +3971,13 @@ async function uploadFile(filePath) {
     form.append('file', fs.createReadStream(filePath))
     
     const axiosInstance = getAxiosInstance()
-    const clientId = activeDeviceName || os.hostname()
+    const currentDeviceId = await ensureDeviceRegistered()
+    if (!currentDeviceId) return { success: false, message: 'Device not registered' }
     
     const headers = {
       ...axiosInstance.defaults.headers,
       ...form.getHeaders(),
-      'x-device-id': clientId
+      'x-device-id': currentDeviceId
     }
     
     // Asegurar que el Content-Type sea el del form-data (multipart)
@@ -3401,24 +4001,19 @@ async function uploadFile(filePath) {
 async function saveClipboardRecord (type, value, meta = {}, overrides = {}) {
   try {
     const axiosInstance = getAxiosInstance()
-    const clientIdOverride = overrides && overrides.clientId ? String(overrides.clientId) : null
     const deviceIdOverride = overrides && overrides.deviceId ? overrides.deviceId : null
-    const hostname = os.hostname()
-    let desiredClientId = clientIdOverride ?? (activeDeviceName || hostname)
     let desiredDeviceId = null
     if (deviceIdOverride) {
       desiredDeviceId = deviceIdOverride
-    } else if (sanitizeDeviceName(desiredClientId) === sanitizeDeviceName(hostname)) {
-      desiredDeviceId = deviceId || (await ensureDeviceRegistered())
     } else {
-      const resolved = await resolveDeviceIdentifiers(desiredClientId)
-      desiredDeviceId = resolved.deviceId || null
-      desiredClientId = resolved.clientId || desiredClientId
+      desiredDeviceId = await ensureDeviceRegistered()
     }
-    const payload = desiredDeviceId
-      ? { type, value, meta, clientId: desiredClientId, deviceId: desiredDeviceId }
-      : { type, value, meta, clientId: desiredClientId }
-    log.info('clipboard save request', { type, deviceId: desiredDeviceId })
+    if (!desiredDeviceId) {
+      log.warn('clipboard save skipped: device not registered')
+      return null
+    }
+    const payload = { type, value, meta, id: desiredDeviceId }
+    log.info('clipboard save request', { type, id: desiredDeviceId })
     const res = await axiosInstance.post('/clipboard', payload)
     const data = res?.data
     const item = (data && typeof data === 'object') ? (data.data ?? data) : null
@@ -3451,186 +4046,46 @@ function readLocalHistory () {
   }
 }
 
-async function syncWithServer() {
+
+
+// NEW SYNC FUNCTION - Usa el daemon para sincronización
+async function syncClipboardHistory(deviceNameOverride = null) {
   try {
-    const dirtyItems = db.getDirtyItems(getCurrentDeviceName())
-    if (dirtyItems.length === 0) return
-
-    const axiosInstance = getAxiosInstance()
-    // Ensure we have a valid clientId (device identifier)
-    const clientId = activeDeviceName || os.hostname()
-
-    // BATCH PROCESSING: Dynamic batching based on size (1MB chunks)
-    // We increase MAX_BATCH_SIZE significantly to let payload size drive the splitting
-    const MAX_BATCH_SIZE = 10000; 
-    const MAX_PAYLOAD_SIZE = 1024 * 1024 * 1; // ~1MB limit (Nginx default)
-
-    // Helper to calculate approximate size
-    const getSize = (obj) => JSON.stringify(obj).length;
-
-    const batches = [];
-    let currentBatch = [];
-    let currentSize = 0;
-
-    for (const item of dirtyItems) {
-        let type = 'text'
-        let valueToSend = item.value
-
-        if (item.value.startsWith('data:image')) {
-            type = 'image'
-        } else if (item.value.startsWith('[LOCAL_IMAGE]:')) {
-            type = 'image'
-            const localPath = item.value.replace('[LOCAL_IMAGE]:', '')
-            try {
-                if (fs.existsSync(localPath)) {
-                   const ni = nativeImage.createFromPath(localPath)
-                   if (!ni.isEmpty()) {
-                      valueToSend = ni.toDataURL()
-                   } else {
-                      continue
-                   }
-                } else {
-                   continue
-                }
-            } catch (e) {
-               continue
-            }
-        }
-
-        const itemChange = {
-            id: item.id,
-            clientId: item.clientId,
-            type: type,
-            value: valueToSend,
-            favorite: item.favorite,
-            version: item.version,
-            updatedAt: item.updatedAt
-        };
-        
-        const itemSize = getSize(itemChange);
-
-        // If a single item is too big, skip it or truncate (logging warning)
-        if (itemSize > MAX_PAYLOAD_SIZE) {
-            log.warn('Skipping item too large for sync', { id: item.id, size: itemSize });
-            continue; 
-        }
-
-        if (currentBatch.length >= MAX_BATCH_SIZE || (currentSize + itemSize) > MAX_PAYLOAD_SIZE) {
-             batches.push(currentBatch);
-             currentBatch = [];
-             currentSize = 0;
-        }
-
-        currentBatch.push(itemChange);
-        currentSize += itemSize;
+    console.log('[MAIN-SYNC] Starting syncClipboardHistory')
+    if (syncLock) {
+      console.warn('[MAIN-SYNC] Sync lock active, skipping sync')
+      return
     }
-
-    if (currentBatch.length > 0) {
-        batches.push(currentBatch);
-    }
-
-    // Parallel processing with concurrency limit
-    // Increased to 10 concurrent requests to maximize throughput
-    const CONCURRENCY = 10;
-    log.info(`Syncing ${batches.length} batches with concurrency ${CONCURRENCY}`);
-    
-    for (let i = 0; i < batches.length; i += CONCURRENCY) {
-        const chunk = batches.slice(i, i + CONCURRENCY);
-        await Promise.all(chunk.map(batch => sendBatch(axiosInstance, clientId, batch)));
-    }
-    
-  } catch (error) {
-    log.error('syncWithServer error', error?.message || error)
-    // Don't throw, just log, so periodic sync keeps trying
-  }
-}
-
-async function sendBatch(axiosInstance, clientId, changes) {
-    if (changes.length === 0) return;
-    
-    try {
-        const payload = { clientId, changes };
-        log.info('syncWithServer sending batch', { count: changes.length });
-        
-        const res = await axiosInstance.post('/clipboard/sync', payload);
-        const { applied, conflicts } = res.data;
-
-        if (applied && Array.isArray(applied)) {
-            const appliedClientIds = applied.map(a => a.clientId).filter(Boolean);
-            if (appliedClientIds.length > 0) {
-                db.markSynced(getCurrentDeviceName(), appliedClientIds);
-            }
-            // Update remote IDs for new items
-            for (const appItem of applied) {
-                if (appItem.id && appItem.clientId) {
-                    db.updateRemoteId(getCurrentDeviceName(), appItem.clientId, appItem.id);
-                }
-            }
-        }
-
-        if (conflicts && Array.isArray(conflicts)) {
-            for (const conflict of conflicts) {
-                if (conflict.server) {
-                    db.updateFromConflict(getCurrentDeviceName(), conflict.server);
-                }
-            }
-        }
-        log.info('Batch synced successfully', { applied: applied?.length });
-    } catch (e) {
-        log.error('Batch sync failed', e.message);
-        if (e.response && e.response.status === 413) {
-            log.error('Batch too large even after splitting. Retrying items individually...');
-            // Fallback: Try syncing items one by one
-            if (changes.length > 1) {
-                for (const item of changes) {
-                    try {
-                        await sendBatch(axiosInstance, clientId, [item]);
-                    } catch (innerError) {
-                        log.error('Individual item sync failed', { id: item.clientId, error: innerError.message });
-                        // If individual item fails with 413, we can't do much but skip it
-                    }
-                }
-                return; // Handled via fallback
-            } else {
-                 log.error('Single item too large to sync', { id: changes[0].clientId });
-            }
-        }
-        throw e;
-    }
-}
-
-async function syncClipboardHistory () {
-  try {
-    if (syncLock) return
-    syncLock = true
     if (!authToken) {
-       syncLock = false
-       return
+      console.warn('[MAIN-SYNC] No auth token, skipping sync')
+      return
     }
     
-    if (mainWindow?.webContents) { mainWindow.webContents.send('sync-progress', { percentage: 10, message: 'Iniciando sincronización en segundo plano' }) }
-    
-    // Get dirty items to send
-    const dirtyItems = db.getDirtyItems(getCurrentDeviceName())
-    
-    // Send to worker
-    const config = { backendUrl: BACKEND_URL, authToken }
-    
-    // If worker is not ready, we can't sync
-    if (!worker || !worker.connected) {
-       log.error('Worker not connected, skipping sync')
-       syncLock = false
-       return
+    if (!syncDaemon || !syncDaemon.connected) {
+      console.error('[MAIN-SYNC] Sync daemon not available')
+      return
     }
-
-    worker.send({ type: 'sync', config, items: dirtyItems, device: getCurrentDeviceName() })
     
-    // Logic continues in worker.on('message', 'sync-done')
+    syncLock = true
     
+    if (mainWindow?.webContents) {
+      mainWindow.webContents.send('sync-progress', { percentage: 0, message: 'Iniciando sincronización...', type: 'sync-start' })
+    }
+    
+    // Enviar comando de sync al daemon con el deviceName especificado o el actual
+    const deviceName = deviceNameOverride ? sanitizeDeviceName(deviceNameOverride) : getCurrentDeviceName()
+    syncDaemon.send({
+      type: 'SYNC_START',
+      deviceName: deviceName
+    })
+    
+    console.log('[MAIN-SYNC] Sync request sent to daemon for device:', deviceName)
   } catch (error) {
-    log.error('syncClipboardHistory error', error?.message || error)
-    if (mainWindow?.webContents) { mainWindow.webContents.send('sync-progress', { percentage: 100, message: 'Sincronización fallida' }) }
+    console.error('[MAIN-SYNC] syncClipboardHistory error:', error?.message || error)
     syncLock = false
+    if (mainWindow?.webContents) {
+      mainWindow.webContents.send('sync-progress', { percentage: 100, message: 'Sincronización fallida', type: 'sync-error' })
+    }
   }
 }
 
