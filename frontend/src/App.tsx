@@ -997,7 +997,20 @@ function App () {
               isOpen={showDeviceSwitch}
               onClose={() => setShowDeviceSwitch(false)}
               onApplied={(newHistory: HistoryItem[]) => {
-                if (Array.isArray(newHistory)) setHistory(newHistory)
+                if (Array.isArray(newHistory)) {
+                  // Actualizar historial interno
+                  setHistory(newHistory)
+                  // Resetear búsqueda y filtro para mostrar claramente el historial del dispositivo seleccionado
+                  setSearchLocked(false)
+                  setSearch('')
+                  const textOnly = newHistory.filter(d =>
+                    typeof d.value === 'string' &&
+                    !d.value.startsWith('data:image') &&
+                    !d.value.startsWith('[LOCAL_IMAGE]:') &&
+                    !(d as any).imagePath
+                  )
+                  setDisplayed(textOnly.slice(0, 50))
+                }
               }}
               onBack={() => { setShowDeviceSwitch(false); setSettingsOpen(true) }}
             />

@@ -6,6 +6,7 @@
     "dev": "concurrently \"npm run dev --prefix frontend\" \"wait-on http://localhost:5173 && electron .\"",
     "build": "npm run build --prefix frontend",
     "start": "electron .",
+    "sql": "electron . --sql-mode",
     "dist": "electron-builder"
   },
   "build": {

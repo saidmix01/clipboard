@@ -1160,6 +1160,16 @@ app.whenReady().then(async () => {
   try { require('./autolaunch').configureAutoLaunch() } catch (e) { log.error('Autolaunch setup failed', e) }
   await db.init(app)
   
+  // Si se ejecuta con --sql-mode, abrir solo el editor SQL
+  const args = process.argv.slice(1)
+  const sqlMode = args.includes('--sql-mode') || args.includes('--sql')
+  if (sqlMode) {
+    setTimeout(() => {
+      openSQLEditor()
+    }, 500)
+    return
+  }
+  
   // Initialize active device from database (devices table)
   initializeActiveDevice()
   
@@ -1208,7 +1218,16 @@ app.whenReady().then(async () => {
       if (syncDaemon.stdout) {
         syncDaemon.stdout.on('data', (data) => {
           const text = data.toString().trim()
-          if (text && (text.includes('[DAEMON-SYNC-PULL] Descargados:') || text.includes('[DAEMON-SYNC] Subidos:'))) {
+          if (text && (
+            text.includes('[DAEMON-SYNC-PULL] Descargados:') || 
+            text.includes('[DAEMON-SYNC] Subidos:') ||
+            text.includes('[DAEMON-SYNC] performSync') ||
+            text.includes('[DAEMON-SYNC] Parámetros de sync') ||
+            text.includes('[DAEMON-SYNC-PULL] Petición') ||
+            text.includes('[DAEMON-SYNC-PULL] Parámetros') ||
+            text.includes('[DAEMON-SYNC-PUSH] Petición') ||
+            text.includes('[DAEMON-SYNC-PUSH] Payload')
+          )) {
             console.log(text)
           }
         })
@@ -1296,18 +1315,26 @@ app.whenReady().then(async () => {
               console.log('[MAIN] Sync: Subidos:', msg.pushResult?.successful || 0, 'Fallidos:', msg.pushResult?.failed || 0, '| Descargados:', msg.pullResult?.received || 0, 'Insertados:', msg.pullResult?.inserted || 0, 'Actualizados:', msg.pullResult?.updated || 0)
               syncLock = false
               
-              // Recargar historial desde DB del dispositivo actual
+              // Recargar historial desde DB del dispositivo sincronizado
+              // Usar el deviceName del mensaje si está disponible, sino usar el dispositivo actual
+              const syncedDeviceName = msg.deviceName ? sanitizeDeviceName(msg.deviceName) : getCurrentDeviceName()
               const currentDevice = getCurrentDeviceName()
-              history = db.getAll(currentDevice)
-              if (mainWindow?.webContents) {
-                mainWindow.webContents.send('clipboard-update', augmentHistoryWithImagePaths(history))
-                mainWindow.webContents.send('sync-progress', {
-                  percentage: 100,
-                  message: msg.message || 'Sincronización completada',
-                  type: 'sync-done'
-                })
+              
+              // Solo recargar el historial si el dispositivo sincronizado es el dispositivo activo actual
+              if (syncedDeviceName === currentDevice) {
+                history = authToken ? readDeviceHistoryByName(currentDevice) : db.getAllGuest(currentDevice)
+                
+                if (mainWindow?.webContents) {
+                  mainWindow.webContents.send('clipboard-update', augmentHistoryWithImagePaths(history))
+                  mainWindow.webContents.send('sync-progress', {
+                    percentage: 100,
+                    message: msg.message || 'Sincronización completada',
+                    type: 'sync-done'
+                  })
+                }
               }
-              // Notificar que el sync terminó
+              
+              // Notificar que el sync terminó (siempre, incluso si no se actualizó la UI)
               if (syncCompletionResolve) {
                 syncCompletionResolve()
                 syncCompletionResolve = null
@@ -1869,7 +1896,7 @@ app.whenReady().then(async () => {
   }, 15 * 60 * 1000) // 15 minutos
 
   // Ejecutar registro de dispositivo después de un breve delay
-  // para asegurar que el worker esté listo y que el frontend haya cargado la sesión si existe
+  // para asegurar que el frontend haya cargado la sesión si existe
   // La migración se ejecutará cuando se establezca el token (set-auth-token)
   // El sync periódico se ejecutará cada 15 minutos automáticamente
   setTimeout(async () => {
@@ -2429,7 +2456,6 @@ function stopSyncDaemon() {
     }, 1000)
   }
 }
-let favoritesSyncCooldownUntil = 0
 
 function getCurrentDeviceName () {
   // activeDeviceName is always initialized in app.whenReady()
@@ -2615,8 +2641,9 @@ async function ensureLocalDevices () {
               userId: deviceData.userId || deviceData.user_id || '',
               clientId: deviceData.clientId || deviceData.client_id || deviceData.name || '',
               name: deviceData.name || deviceData.clientId || deviceData.client_id || '',
-              createdAt: deviceData.createdAt || deviceData.created_at || new Date().toISOString(),
-              lastSyncAt: deviceData.lastSyncAt || deviceData.last_sync_at || null
+              createdAt: deviceData.createdAt || deviceData.created_at || new Date().toISOString()
+              // OJO: No enviamos lastSyncAt aquí.
+              // Es un valor local y se conserva en db.saveDevice cuando no se pasa la propiedad.
             }
             
             if (deviceInfo.id) {
@@ -3010,18 +3037,17 @@ ipcMain.handle('switch-active-device', async (_, deviceName) => {
   try {
     const targetDeviceName = sanitizeDeviceName(deviceName)
     
-    // Obtener el clientId del dispositivo seleccionado desde la tabla devices LOCAL (sin llamar al backend)
+    // Obtener el clientId del dispositivo seleccionado desde la tabla devices LOCAL
     let targetClientId = targetDeviceName
     const deviceInfo = db.getDeviceByClientId(targetDeviceName)
     if (deviceInfo && deviceInfo.clientId) {
       targetClientId = deviceInfo.clientId
-      // Actualizar activeDeviceName con el clientId correcto
       activeDeviceName = targetClientId
     } else {
       activeDeviceName = targetDeviceName
     }
     
-    // Cargar el historial del dispositivo seleccionado primero
+    // Cargar el historial del dispositivo seleccionado
     const devHist = authToken 
       ? readDeviceHistoryByName(targetClientId) 
       : db.getAllGuest(targetClientId)
@@ -3029,24 +3055,21 @@ ipcMain.handle('switch-active-device', async (_, deviceName) => {
     
     if (mainWindow?.webContents) {
       mainWindow.webContents.send('clipboard-update', augmentHistoryWithImagePaths(history))
-      mainWindow.webContents.send('sync-progress', { percentage: 0, message: 'Sincronizando dispositivo...', type: 'device-switch' })
     }
     
     // Verificar si el dispositivo ya fue migrado
     const isMigrated = deviceInfo && deviceInfo.migrated === true
     
     if (!isMigrated && authToken) {
-      // Si no está migrado, ejecutar migración primero
+      // Si no está migrado, ejecutar migración y cargar items
       if (mainWindow?.webContents) {
-        mainWindow.webContents.send('sync-progress', { percentage: 10, message: 'Migrando dispositivo por primera vez...', type: 'device-migration' })
+        mainWindow.webContents.send('sync-progress', { percentage: 0, message: 'Migrando dispositivo por primera vez...', type: 'device-migration' })
       }
       
-      // Crear una promesa que se resuelve cuando la migración termine
       const migrationWaitPromise = new Promise((resolve) => {
         migrationCompletionResolve = resolve
       })
       
-      // Iniciar la migración
       if (syncDaemon && syncDaemon.connected) {
         syncDaemon.send({
           type: 'MIGRATION_START',
@@ -3054,7 +3077,6 @@ ipcMain.handle('switch-active-device', async (_, deviceName) => {
         })
       }
       
-      // Esperar a que la migración termine (con timeout)
       const migrationTimeoutMs = 60 * 1000
       const migrationTimeout = new Promise(resolve => setTimeout(() => {
         if (migrationCompletionResolve) {
@@ -3074,47 +3096,36 @@ ipcMain.handle('switch-active-device', async (_, deviceName) => {
       
       if (mainWindow?.webContents) {
         mainWindow.webContents.send('clipboard-update', augmentHistoryWithImagePaths(history))
-        mainWindow.webContents.send('sync-progress', { percentage: 50, message: 'Migración completada, sincronizando...', type: 'device-migration-done' })
+        mainWindow.webContents.send('sync-progress', { percentage: 100, message: 'Migración completada', type: 'device-switch-complete' })
       }
-    }
-    
-    // Ejecutar sync (pull y push) con el UUID del dispositivo seleccionado
-    
-    // Crear una promesa que se resuelve cuando el sync termine
-    const syncWaitPromise = new Promise((resolve) => {
-      syncCompletionResolve = resolve
-    })
-    
-    // Iniciar el sync
-    await syncClipboardHistory(targetClientId)
-    
-    // Esperar a que el sync termine (con timeout)
-    const timeoutMs = 30 * 1000
-    const timeout = new Promise(resolve => setTimeout(() => {
-      if (syncCompletionResolve) {
-        syncCompletionResolve()
-        syncCompletionResolve = null
+    } else if (isMigrated && authToken) {
+      // Si ya está migrado, ejecutar sync con el device id
+      const syncWaitPromise = new Promise((resolve) => {
+        syncCompletionResolve = resolve
+      })
+      
+      syncClipboardHistory(targetClientId)
+      
+      const timeoutMs = 30 * 1000
+      const timeout = new Promise(resolve => setTimeout(() => {
+        if (syncCompletionResolve) {
+          syncCompletionResolve()
+          syncCompletionResolve = null
+        }
+        resolve()
+      }, timeoutMs))
+      
+      await Promise.race([syncWaitPromise, timeout])
+      
+      // Recargar historial después del sync
+      const updatedHist = authToken 
+        ? readDeviceHistoryByName(targetClientId) 
+        : db.getAllGuest(targetClientId)
+      history = updatedHist
+      
+      if (mainWindow?.webContents) {
+        mainWindow.webContents.send('clipboard-update', augmentHistoryWithImagePaths(history))
       }
-      resolve()
-    }, timeoutMs))
-    
-    await Promise.race([syncWaitPromise, timeout])
-    
-    // Después del sync, recargar el historial del dispositivo seleccionado
-    const updatedHist = authToken 
-      ? readDeviceHistoryByName(targetClientId) 
-      : db.getAllGuest(targetClientId)
-    history = updatedHist
-    
-    if (mainWindow?.webContents) {
-      mainWindow.webContents.send('clipboard-update', augmentHistoryWithImagePaths(history))
-    }
-    
-    try { authToken ? await enforceHistoryLimit(1000) : enforceGuestLimit(1000) } catch {}
-    if (!finished && mainWindow?.webContents) {
-      mainWindow.webContents.send('sync-progress', { percentage: 90, message: 'Sincronización en segundo plano' })
-    } else if (mainWindow?.webContents) {
-      mainWindow.webContents.send('sync-progress', { percentage: 100, message: 'Dispositivo cambiado', type: 'device-switch-complete' })
     }
     
     return history
@@ -3291,67 +3302,19 @@ function enforceGuestLimit (limit = 1000) {
   } catch {}
 }
 
-async function fetchBackendClipboard () {
-  try {
-    const axiosInstance = getAxiosInstance()
-    const currentDeviceId = await ensureDeviceRegistered()
-    if (!currentDeviceId) return
-    const res = await axiosInstance.get('/clipboard', { params: { id: currentDeviceId } })
-    const data = res?.data
-    const items = (data && typeof data === 'object' ? (data.data?.items ?? data.items ?? []) : [])
-    const mapped = Array.isArray(items)
-      ? items.map(it => ({
-          id: it.id,
-          value: String(it.value ?? ''),
-          favorite: !!it.favorite,
-          deviceId: it.deviceId || (it.device && it.device.id) || null,
-          clientId: it.clientId || (it.meta && it.meta.clientId) || (it.device && it.device.clientId) || null
-        }))
-      : []
-    history = mapped
-    writeDeviceHistory(history)
-    history = db.getAll(getCurrentDeviceName())
-        if (mainWindow?.webContents) {
-          mainWindow.webContents.send('clipboard-update', augmentHistoryWithImagePaths(history))
-        }
-  } catch (error) {
-    log.error('fetchBackendClipboard error', error?.message || error)
-  }
-}
-
 async function ensureDeviceRegistered () {
   try {
-    // First check if we have device info in database
+    // 1) Si ya tenemos un dispositivo guardado en la DB, reutilizarlo tal cual (no tocar lastSyncAt)
     const savedDevice = db.getDevice()
-    
-    // Get current hostname
-    const currentHostname = os.hostname()
-    
-    // Check if device has all required fields (id, userId, clientId)
-    // Also verify that clientId matches current hostname
-    if (savedDevice && savedDevice.id && savedDevice.userId && savedDevice.clientId) {
-      const savedClientId = sanitizeDeviceName(savedDevice.clientId)
-      const currentClientId = sanitizeDeviceName(currentHostname)
-      
-      // If clientId doesn't match current hostname, we need to re-register
-      if (savedClientId === currentClientId) {
-        deviceId = savedDevice.id
-        return deviceId
-      } else {
-        // Continue to registration below to update with new hostname
-      }
-    }
-    
-    // If device exists but is incomplete, we need to re-register
     if (savedDevice && savedDevice.id) {
-      // Continue to registration below
-    }
-    
-    if (deviceId && !savedDevice) {
+      deviceId = savedDevice.id
       return deviceId
     }
     
-    // Usar método directo asíncrono no bloqueante (axios no bloquea el event loop)
+    // 2) Si no hay dispositivo aún y tenemos token, registrar uno nuevo
+    if (!authToken) {
+      return null
+    }
     
     try {
       const axiosInstance = getAxiosInstance()
@@ -3360,10 +3323,9 @@ async function ensureDeviceRegistered () {
       const payload = { clientId: hostname, name: hostname, metadata: { os: osName, appVersion: app.getVersion() } }
       
       const res = await axiosInstance.post('/devices', payload)
-      
       const data = res?.data
       
-      // Extract device from response structure: { success, message, data: { device: {...} } }
+      // Extraer el dispositivo de la respuesta: { success, message, data: { device: {...} } }
       const device = (data && data.data && data.data.device) 
         ? data.data.device 
         : (data && data.device) 
@@ -3377,19 +3339,15 @@ async function ensureDeviceRegistered () {
       
       deviceId = device.id
       
-      // Save device info to database
-      const saved = db.saveDevice({
+      // Guardar el dispositivo inicial; lastSyncAt viene del backend si existe, o null si es la primera vez
+      db.saveDevice({
         id: device.id,
         userId: device.userId || '',
         clientId: device.clientId || hostname,
         name: device.name || hostname,
         createdAt: device.createdAt || new Date().toISOString(),
-        lastSyncAt: null
+        lastSyncAt: device.lastSyncAt || null
       })
-      
-      if (saved) {
-        const verify = db.getDevice()
-      }
       
       return deviceId
     } catch (error) {
@@ -4002,80 +3960,6 @@ async function syncClipboardHistory(deviceNameOverride = null) {
   }
 }
 
-async function fetchBackendFavorites () {
-  const axiosInstance = getAxiosInstance()
-  log.info('favorite get request', { url: `${BACKEND_URL}/favorite/get_favorites` })
-  const res = await axiosInstance.get('/favorite/get_favorites')
-  try { log.info('favorite get response', { status: res.status, data: res.data }) } catch {}
-  if (!res.data.status) throw new Error('Error al obtener favoritos')
-  return res.data.data
-}
-
-async function createFavorite (value) {
-  const axiosInstance = getAxiosInstance()
-  log.info('favorite save request', { url: `${BACKEND_URL}/favorite/save`, body: { value } })
-  const res = await axiosInstance.post('/favorite/save', { value })
-  try { log.info('favorite save response', { status: res.status, data: res.data }) } catch {}
-  if (!res.data.status) throw new Error('Error al crear favorito')
-  return res.data.data
-}
-
-async function deleteFavorite (value) {
-  const axiosInstance = getAxiosInstance()
-  log.info('favorite delete request', { url: `${BACKEND_URL}/favorite/delete`, body: { value } })
-  const res = await axiosInstance.post(`/favorite/delete`,{value})
-  try { log.info('favorite delete response', { status: res.status, data: res.data }) } catch {}
-  if (!res.data.status) {
-    log.error('Error al eliminar favorito:', res.data.message)
-    throw new Error('Error al eliminar favorito')
-  }
-}
-
-function readLocalFavorites () {
-  try {
-    const items = readDeviceHistory()
-    return items.filter(item => item.favorite).map(item => item.value)
-  } catch {
-    return []
-  }
-}
-
-async function syncFavorites () {
-  try {
-    if (!authToken) return
-    if (Date.now() < favoritesSyncCooldownUntil) return
-    const localFavorites = readLocalFavorites()
-    log.info('syncFavorites start', { localCount: localFavorites.length })
-    const backendFavorites = await fetchBackendFavorites()
-
-    const backendValues = backendFavorites.map(fav => fav.value)
-    log.info('syncFavorites local/remote', { local: localFavorites.slice(0, 50), remote: backendValues.slice(0, 50) })
-
-    for (const value of localFavorites) {
-      if (!backendValues.includes(value)) {
-        log.info('syncFavorites creando favorito', { value })
-        await createFavorite(value)
-      }
-    }
-
-    for (const fav of backendFavorites) {
-      if (!localFavorites.includes(fav.value)) {
-        log.info('syncFavorites eliminando favorito', { value: fav.value })
-        await deleteFavorite(fav.value)
-      }
-    }
-
-    log.info('syncFavorites sincronización completa')
-  } catch (error) {
-    const status = error && error.response && error.response.status
-    if (status === 404) {
-      favoritesSyncCooldownUntil = Date.now() + (10 * 60 * 1000)
-      log.warn('syncFavorites deshabilitado temporalmente (404)', { cooldownMin: 10 })
-    } else {
-      log.error('syncFavorites error', { message: error.message })
-    }
-  }
-}
 
 
 
@@ -4112,11 +3996,10 @@ ipcMain.handle('auth-login', async (_, body) => {
 ipcMain.handle('clear-user-data', async () => {
   try {
     try { fs.rmSync(legacyHistoryPath, { force: true }) } catch {}
-    // Limpiar configuración de la DB
+    // Limpiar configuración de la DB (solo datos de sesión / auth, NO preferencias de UI)
     try {
       db.removeConfig('session')
       db.removeConfig('x-token')
-      db.removeConfig('preferences')
       db.removeConfig('devices')
     } catch {}
     try {
@@ -4688,3 +4571,132 @@ ipcMain.handle('install-linux-paste-support', async () => {
   } catch {}
   return res
 })
+
+// SQL Editor IPC handlers
+ipcMain.handle('sql-execute-query', async (_, query) => {
+  try {
+    const result = db.executeQuery(query)
+    return { success: true, result }
+  } catch (error) {
+    return { success: false, error: error.message || 'Error al ejecutar consulta' }
+  }
+})
+
+ipcMain.handle('sql-list-tables', async () => {
+  try {
+    const tables = db.listTables()
+    return { success: true, tables }
+  } catch (error) {
+    return { success: false, tables: [], error: error.message }
+  }
+})
+
+ipcMain.handle('sql-get-table-info', async (_, tableName) => {
+  try {
+    const info = db.getTableInfo(tableName)
+    return { success: true, info }
+  } catch (error) {
+    return { success: false, info: null, error: error.message }
+  }
+})
+
+ipcMain.on('sql-execute-query', (event, query) => {
+  try {
+    const result = db.executeQuery(query)
+    event.sender.send('query-result', result)
+  } catch (error) {
+    event.sender.send('query-error', error.message || 'Error al ejecutar consulta')
+  }
+})
+
+ipcMain.on('sql-list-tables', (event) => {
+  try {
+    const tables = db.listTables()
+    event.sender.send('tables-list', tables)
+  } catch (error) {
+    event.sender.send('tables-list', [])
+  }
+})
+
+ipcMain.on('sql-get-table-info', (event, tableName) => {
+  try {
+    const info = db.getTableInfo(tableName)
+    event.sender.send('table-info', info)
+  } catch (error) {
+    event.sender.send('table-info', null)
+  }
+})
+
+ipcMain.on('window-minimize', (event) => {
+  try {
+    const win = BrowserWindow.fromWebContents(event.sender)
+    if (win) {
+      win.minimize()
+    }
+  } catch (e) {
+    // Ignore
+  }
+})
+
+ipcMain.on('window-close', (event) => {
+  try {
+    const win = BrowserWindow.fromWebContents(event.sender)
+    if (win) {
+      win.close()
+    }
+  } catch (e) {
+    // Ignore
+  }
+})
+
+// Función para abrir el editor SQL
+function openSQLEditor() {
+  try {
+    const sqlWindow = new BrowserWindow({
+      width: 1200,
+      height: 800,
+      resizable: true,
+      frame: false,
+      transparent: true,
+      backgroundColor: '#00FFFFFF',
+      hasShadow: true,
+      show: true,
+      parent: mainWindow,
+      webPreferences: {
+        nodeIntegration: true,
+        contextIsolation: false,
+        sandbox: false,
+        devTools: !app.isPackaged
+      }
+    })
+    
+    try {
+      childWindows.add(sqlWindow)
+      sqlWindow.on('closed', () => {
+        try { childWindows.delete(sqlWindow) } catch {}
+      })
+    } catch {}
+    
+    const display = screen.getPrimaryDisplay()
+    const wa = display.workArea
+    
+    // Centrar la ventana
+    const x = Math.round(wa.x + (wa.width - 1200) / 2)
+    const y = Math.round(wa.y + (wa.height - 800) / 2)
+    sqlWindow.setBounds({ x, y, width: 1200, height: 800 })
+    
+    // Ruta del editor SQL
+    const editorPath = app.isPackaged
+      ? path.join(app.getAppPath(), 'viewer', 'sql-editor.html')
+      : path.join(__dirname, 'viewer', 'sql-editor.html')
+    
+    sqlWindow.loadFile(editorPath)
+    
+    // Los eventos de cerrar/minimizar se manejan a través de IPC
+    
+    return sqlWindow
+  } catch (err) {
+    console.error('[MAIN] Error abriendo editor SQL', err)
+    return null
+  }
+}

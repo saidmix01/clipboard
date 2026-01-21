@@ -973,6 +973,36 @@ function saveDevice(deviceInfo) {
       // Could not check table structure
     }
     
+    // lastSyncAt es un valor 100% local del cliente.
+    // Regla:
+    // - Si deviceInfo trae lastSyncAt explícitamente, usar ese valor (o null para limpiar).
+    // - Si NO trae la propiedad lastSyncAt, conservar el valor ya existente en la DB.
+    let finalLastSyncAt = null
+    const hasLastSyncProp = Object.prototype.hasOwnProperty.call(deviceInfo, 'lastSyncAt')
+    if (hasLastSyncProp) {
+      const v = deviceInfo.lastSyncAt
+      if (v && v !== 'null' && v !== 'undefined' && v !== '') {
+        finalLastSyncAt = String(v)
+      } else {
+        finalLastSyncAt = null
+      }
+    } else if (deviceInfo.id) {
+      // No se pasó lastSyncAt: intentar conservar el valor actual de la fila
+      try {
+        const checkStmt = db.prepare('SELECT lastSyncAt FROM devices WHERE id=?')
+        checkStmt.bind([String(deviceInfo.id)])
+        if (checkStmt.step()) {
+          const r = checkStmt.getAsObject()
+          if (r.lastSyncAt && r.lastSyncAt !== 'null' && String(r.lastSyncAt) !== 'null') {
+            finalLastSyncAt = String(r.lastSyncAt)
+          }
+        }
+        checkStmt.free()
+      } catch (e) {
+        // Ignore
+      }
+    }
+    
     // Ensure we don't save 'null' strings - convert undefined/null to null or empty string appropriately
     // Required fields (userId, clientId, name, createdAt) must have values, not null
     const cleanDeviceInfo = {
@@ -981,7 +1011,7 @@ function saveDevice(deviceInfo) {
       clientId: deviceInfo.clientId && deviceInfo.clientId !== 'null' && deviceInfo.clientId !== 'undefined' ? String(deviceInfo.clientId) : (deviceInfo.clientId === '' ? '' : ''),
       name: deviceInfo.name && deviceInfo.name !== 'null' && deviceInfo.name !== 'undefined' ? String(deviceInfo.name) : (deviceInfo.name === '' ? '' : ''),
       createdAt: deviceInfo.createdAt && deviceInfo.createdAt !== 'null' && deviceInfo.createdAt !== 'undefined' ? String(deviceInfo.createdAt) : (deviceInfo.createdAt === '' ? '' : new Date().toISOString()),
-      lastSyncAt: deviceInfo.lastSyncAt && deviceInfo.lastSyncAt !== 'null' && deviceInfo.lastSyncAt !== 'undefined' && deviceInfo.lastSyncAt !== '' ? String(deviceInfo.lastSyncAt) : null
+      lastSyncAt: finalLastSyncAt
     }
     
     // Preservar el estado de migrated si existe, o usar el valor proporcionado
@@ -1398,4 +1428,207 @@ function updateItemFromServer(serverItem, device) {
   }
 }
 
-module.exports = { init, getAll, insert, setFavorite, clear, clearAll, importItems, search, searchPaginated, getRecent, getByValues, getNotIn, trimToLimit, insertGuest, getAllGuest, clearGuest, trimGuestToLimit, searchGuest, searchGuestPaginated, getRecentGuest, deleteById, getById, updateRemoteIdByValue, getDirtyItems, markSynced, updateFromConflict, updateRemoteId, countActive, countGuestActive, deleteNotInRemote, getConfig, setConfig, removeConfig, getAllConfig, getLegacyImages, updateValue, updateImagesBulk, saveDevice, getDevice, getDeviceByClientId, getAllDevices, updateDeviceLastSyncAt, getPendingItems, markItemCompleted, updateItemFromServer, markDeviceAsMigrated }
+// SQL Editor functions
+function executeQuery(query) {
+  try {
+    if (!db) {
+      throw new Error('Base de datos no inicializada')
+    }
+    
+    const trimmedQuery = String(query || '').trim()
+    if (!trimmedQuery) {
+      throw new Error('Consulta SQL vacía')
+    }
+    
+    // Separar múltiples queries por punto y coma y ejecutar solo la primera
+    const queries = trimmedQuery.split(';').map(q => q.trim()).filter(q => q.length > 0)
+    if (queries.length === 0) {
+      throw new Error('Consulta SQL vacía')
+    }
+    
+    const firstQuery = queries[0]
+    const upperQuery = firstQuery.toUpperCase().trim()
+    
+    // Detectar tipo de query
+    if (upperQuery.startsWith('SELECT') || upperQuery.startsWith('PRAGMA')) {
+      // Query SELECT o PRAGMA - retornar resultados
+      const result = db.exec(firstQuery)
+      if (result.length === 0) {
+        return { columns: [], rows: [] }
+      }
+      
+      const firstResult = result[0]
+      const columns = firstResult.columns || []
+      const values = firstResult.values || []
+      
+      // Convertir a array de objetos
+      const rows = values.map(row => {
+        const obj = {}
+        columns.forEach((col, index) => {
+          let value = row[index]
+          // Convertir valores especiales
+          if (value === null || value === undefined) {
+            value = null
+          } else if (typeof value === 'number') {
+            value = value
+          } else {
+            value = String(value)
+          }
+          obj[col] = value
+        })
+        return obj
+      })
+      
+      return { columns, rows }
+    } else if (upperQuery.startsWith('INSERT') || upperQuery.startsWith('UPDATE') || upperQuery.startsWith('DELETE')) {
+      // Query de modificación - ejecutar y obtener filas afectadas
+      // Para INSERT, UPDATE, DELETE necesitamos contar manualmente o usar stmt.getRowsModified()
+      // SQL.js no tiene getRowsModified directamente, así que hacemos un workaround
+      
+      let rowsAffected = 0
+      try {
+        // Preparar statement para poder obtener información
+        const stmt = db.prepare(firstQuery)
+        stmt.step()
+        
+        // Para INSERT: contar registros después
+        if (upperQuery.startsWith('INSERT')) {
+          // Intentar obtener el ID del último insert
+          try {
+            const lastIdResult = db.exec('SELECT last_insert_rowid()')
+            if (lastIdResult.length > 0 && lastIdResult[0].values && lastIdResult[0].values.length > 0) {
+              rowsAffected = 1
+            }
+          } catch (e) {
+            rowsAffected = 1 // Asumir 1 fila insertada
+          }
+        } else {
+          // Para UPDATE/DELETE, asumir 1 fila afectada (SQL.js no provee mejor manera)
+          rowsAffected = 1
+        }
+        
+        stmt.free()
+      } catch (e) {
+        // Si falla la preparación, usar run directamente
+        db.run(firstQuery)
+        rowsAffected = 1
+      }
+      
+      persist()
+      return { rowsAffected, message: 'Consulta ejecutada exitosamente' }
+    } else {
+      // Otras queries (CREATE, DROP, ALTER, etc.)
+      db.run(firstQuery)
+      persist()
+      return { message: 'Consulta ejecutada exitosamente' }
+    }
+  } catch (e) {
+    throw new Error(e.message || 'Error al ejecutar consulta SQL')
+  }
+}
+
+function listTables() {
+  try {
+    if (!db) {
+      return []
+    }
+    
+    // Obtener todas las tablas usando sqlite_master
+    const result = db.exec("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
+    
+    if (result.length === 0 || !result[0].values) {
+      return []
+    }
+    
+    const tables = []
+    for (const row of result[0].values) {
+      const tableName = String(row[0])
+      
+      // Obtener conteo de filas
+      let rowCount = 0
+      try {
+        const countResult = db.exec(`SELECT COUNT(*) as count FROM ${tableName}`)
+        if (countResult.length > 0 && countResult[0].values && countResult[0].values.length > 0) {
+          rowCount = Number(countResult[0].values[0][0]) || 0
+        }
+      } catch (e) {
+        // Ignorar errores al contar filas
+      }
+      
+      tables.push({
+        name: tableName,
+        rowCount: rowCount
+      })
+    }
+    
+    return tables
+  } catch (e) {
+    return []
+  }
+}
+
+function getTableInfo(tableName) {
+  try {
+    if (!db || !tableName) {
+      return null
+    }
+    
+    // Obtener información de columnas usando PRAGMA table_info
+    const result = db.exec(`PRAGMA table_info(${tableName})`)
+    
+    if (result.length === 0 || !result[0].values) {
+      return null
+    }
+    
+    const columns = []
+    const values = result[0].values
+    const columnNames = result[0].columns || ['cid', 'name', 'type', 'notnull', 'dflt_value', 'pk']
+    let primaryKey = null
+    
+    values.forEach(row => {
+      const col = {}
+      columnNames.forEach((name, index) => {
+        col[name] = row[index]
+      })
+      // Detectar clave primaria
+      if (col.pk === 1 || col.pk === '1' || col.pk === true) {
+        primaryKey = col.name
+      }
+      columns.push(col)
+    })
+    
+    // Si no se encontró clave primaria, intentar con el primer campo llamado 'id'
+    if (!primaryKey) {
+      const idColumn = columns.find(col => col.name && col.name.toLowerCase() === 'id')
+      if (idColumn) {
+        primaryKey = idColumn.name
+      } else if (columns.length > 0) {
+        // Fallback: usar el primer campo
+        primaryKey = columns[0].name
+      }
+    }
+    
+    // Obtener conteo de filas
+    let rowCount = 0
+    try {
+      const countResult = db.exec(`SELECT COUNT(*) as count FROM ${tableName}`)
+      if (countResult.length > 0 && countResult[0].values && countResult[0].values.length > 0) {
+        rowCount = Number(countResult[0].values[0][0]) || 0
+      }
+    } catch (e) {
+      // Ignorar errores
+    }
+    
+    return {
+      name: tableName,
+      columns: columns,
+      columnCount: columns.length,
+      rowCount: rowCount,
+      primaryKey: primaryKey
+    }
+  } catch (e) {
+    return null
+  }
+}
+
+module.exports = { init, getAll, insert, setFavorite, clear, clearAll, importItems, search, searchPaginated, getRecent, getByValues, getNotIn, trimToLimit, insertGuest, getAllGuest, clearGuest, trimGuestToLimit, searchGuest, searchGuestPaginated, getRecentGuest, deleteById, getById, updateRemoteIdByValue, getDirtyItems, markSynced, updateFromConflict, updateRemoteId, countActive, countGuestActive, deleteNotInRemote, getConfig, setConfig, removeConfig, getAllConfig, getLegacyImages, updateValue, updateImagesBulk, saveDevice, getDevice, getDeviceByClientId, getAllDevices, updateDeviceLastSyncAt, getPendingItems, markItemCompleted, updateItemFromServer, markDeviceAsMigrated, executeQuery, listTables, getTableInfo }

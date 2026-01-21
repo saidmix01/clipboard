@@ -242,6 +242,28 @@ function getDeviceByClientId(clientId) {
   }
 }
 
+// Marca un dispositivo como migrado en la tabla `devices` usando su clientId
+function markDeviceAsMigrated(clientId) {
+  if (!db || !clientId) return false
+  try {
+    // Asegurarse de que la columna exista (en instalaciones viejas podría no estar)
+    try {
+      db.run('ALTER TABLE devices ADD COLUMN migrated INTEGER NOT NULL DEFAULT 0')
+    } catch (e) {
+      // Si ya existe, ignorar el error
+    }
+    
+    const stmt = db.prepare('UPDATE devices SET migrated=1 WHERE clientId=?')
+    stmt.bind([clientId])
+    stmt.step()
+    stmt.free()
+    persistDatabase()
+    return true
+  } catch (error) {
+    return false
+  }
+}
+
 function saveDevice(deviceInfo) {
   if (!db) return false
   try {
@@ -263,11 +285,11 @@ function saveDevice(deviceInfo) {
   }
 }
 
-function updateDeviceLastSyncAt(lastSyncAt) {
+function updateDeviceLastSyncAt(deviceId, lastSyncAt) {
   if (!db) return false
   try {
-    const stmt = db.prepare('UPDATE devices SET lastSyncAt=? WHERE id=(SELECT id FROM devices LIMIT 1)')
-    stmt.bind([lastSyncAt])
+    const stmt = db.prepare('UPDATE devices SET lastSyncAt=? WHERE id=?')
+    stmt.bind([lastSyncAt, deviceId])
     stmt.step()
     stmt.free()
     persistDatabase()
@@ -740,7 +762,7 @@ async function pushPendingItems(deviceName, clientId, deviceId) {
   return { successful: successfulUuids.length, failed: failedUuids.length, successfulUuids }
 }
 
-async function pullItems(deviceName, clientId, deviceId) {
+async function pullItems(deviceName, clientId, deviceId, sinceOverride = null) {
   try {
     sendMessage(MESSAGE_TYPES.SYNC_PROGRESS, {
       percentage: 50,
@@ -751,13 +773,14 @@ async function pullItems(deviceName, clientId, deviceId) {
     const axiosInstance = getAxiosInstance()
     const url = '/clipboard'
     
-    // Usar 'since' para sincronizar solo cambios del día de hoy (si no es la primera vez)
-    // Obtener la fecha de inicio del día de hoy en formato ISO
-    const today = new Date()
-    today.setHours(0, 0, 0, 0)
-    const since = today.toISOString()
+    // Usar lastSyncAt si existe; si es null/undefined/cadena vacía, no enviar 'since'
+    const params = { clientId, deviceId }
+    if (sinceOverride && typeof sinceOverride === 'string' && sinceOverride.trim() !== '') {
+      params.since = sinceOverride
+    }
     
-    const params = { clientId, deviceId, since }
+    console.log('[DAEMON-SYNC-PULL] Petición GET:', url)
+    console.log('[DAEMON-SYNC-PULL] Parámetros:', JSON.stringify(params, null, 2))
     
     const res = await axiosInstance.get(url, { params })
     
@@ -1114,12 +1137,26 @@ async function performSync(deviceName) {
     // Usar el clientId del dispositivo para guardar los items (puede ser diferente al deviceName)
     const targetDeviceName = clientId || deviceName
     
+    // Determinar desde cuándo sincronizar:
+    // - Si device.lastSyncAt es null/undefined/vacío, no se envía 'since' (full sync).
+    // - Si tiene valor, se envía ese timestamp exacto en el parámetro 'since'.
+    const lastSyncAt = (device.lastSyncAt && String(device.lastSyncAt).trim() !== 'null' && String(device.lastSyncAt).trim() !== 'undefined')
+      ? String(device.lastSyncAt)
+      : null
+    
+    console.log('[DAEMON-SYNC] Parámetros de sync:')
+    console.log('[DAEMON-SYNC]   - deviceName (original):', deviceName)
+    console.log('[DAEMON-SYNC]   - targetDeviceName (usado):', targetDeviceName)
+    console.log('[DAEMON-SYNC]   - clientId:', clientId)
+    console.log('[DAEMON-SYNC]   - deviceId:', deviceId)
+    console.log('[DAEMON-SYNC]   - lastSyncAt usado como since:', lastSyncAt)
+    
     // Recargar base de datos antes de hacer pull para ver los cambios más recientes del main process
     // Esto asegura que cualquier cambio local (como favoritos marcados) se preserve
     reloadDatabase()
     
-    // 4. Pull (Full en primera ejecución, incremental con since en las siguientes)
-    const pullResult = await pullItems(targetDeviceName, clientId, deviceId)
+    // 4. Pull (Full en primera ejecución, incremental con lastSyncAt en las siguientes)
+    const pullResult = await pullItems(targetDeviceName, clientId, deviceId, lastSyncAt)
     
     // 5. Push (desde local → remoto)
     // IMPORTANTE: Buscar items pendientes por TODOS los devices posibles
@@ -1159,8 +1196,8 @@ async function performSync(deviceName) {
     // 6. Resolver conflictos por version (ya se hace en updateItemFromServer)
     
     // 7. Guardar lastSyncAt
-    const lastSyncAt = new Date().toISOString()
-    updateDeviceLastSyncAt(lastSyncAt)
+    const lastSyncAtNow = new Date().toISOString()
+    updateDeviceLastSyncAt(deviceId, lastSyncAtNow)
     
     sendMessage(MESSAGE_TYPES.SYNC_DONE, {
       percentage: 100,
