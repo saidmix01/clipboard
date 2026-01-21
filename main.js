@@ -23,13 +23,7 @@ const log = {
 }
 const path = require('path')
 
-// Logs al inicio para debugging
-console.log('[MAIN] ==========================================')
-console.log('[MAIN] Electron main process starting...')
-console.log('[MAIN] Node version:', process.version)
-console.log('[MAIN] Electron version:', process.versions.electron)
-console.log('[MAIN] Platform:', process.platform)
-console.log('[MAIN] ==========================================')
+// Logs al inicio eliminados
 
 // Manejo de errores no capturados
 process.on('uncaughtException', (error) => {
@@ -89,10 +83,7 @@ if (process.platform === 'linux') {
 
 const gotTheLock = app.requestSingleInstanceLock()
 
-console.log('[MAIN] Single instance lock result:', gotTheLock)
-
 if (!gotTheLock) {
-  console.log('[MAIN] Another instance is already running, quitting...')
   app.quit()
 } else {
   app.on('second-instance', (event, commandLine, workingDirectory) => {
@@ -976,9 +967,6 @@ function performPasteImage (mainWindow) {
 }
 
 function createWindow () {
-  console.log('[MAIN] ==========================================')
-  console.log('[MAIN] createWindow() called')
-  console.log('[MAIN] ==========================================')
   const display = screen.getPrimaryDisplay()
   const screenWidth = display.workArea.width
   const screenHeight = display.workArea.height
@@ -1018,19 +1006,14 @@ function createWindow () {
   if (app.isPackaged) {
     // En producción, usar app.getAppPath() que funciona correctamente en todas las plataformas
     const indexPath = path.join(app.getAppPath(), 'frontend', 'dist', 'index.html')
-    console.log('[MAIN] Loading production index:', indexPath)
     mainWindow.loadFile(indexPath)
   } else {
     // En desarrollo, usar el servidor de Vite
-    console.log('[MAIN] Loading development URL: http://localhost:5173')
     mainWindow.loadURL('http://localhost:5173')
   }
-  
-  console.log('[MAIN] Window load initiated')
 
   // Enviar historial al frontend (ya cargado al inicio)
   mainWindow.webContents.on('did-finish-load', () => {
-    console.log('[MAIN] Window finished loading')
     if (mainWindow?.webContents) {
       mainWindow.webContents.send('clipboard-update', augmentHistoryWithImagePaths(history))
     }
@@ -1164,9 +1147,6 @@ function resetClipboardFilesState () {
 }
 
 app.whenReady().then(async () => {
-  console.log('[MAIN] ==========================================')
-  console.log('[MAIN] app.whenReady() called - Electron is ready!')
-  console.log('[MAIN] ==========================================')
   
   protocol.registerFileProtocol('local-image', (request, callback) => {
     const url = request.url.replace('local-image://', '')
@@ -1205,7 +1185,6 @@ app.whenReady().then(async () => {
   // ============================================================================
   function startSyncDaemon() {
     if (syncDaemon) {
-      console.warn('[MAIN] Sync daemon already running')
       return
     }
     
@@ -1216,11 +1195,9 @@ app.whenReady().then(async () => {
       
       // Verificar que el archivo existe
       if (!fs.existsSync(daemonPath)) {
-        console.error('[MAIN] Sync daemon not found at:', daemonPath)
         return
       }
       
-      console.log('[MAIN] Starting sync daemon from:', daemonPath)
       
       syncDaemon = fork(daemonPath, [app.getPath('userData')], {
         stdio: ['pipe', 'pipe', 'pipe', 'ipc'],
@@ -1231,16 +1208,17 @@ app.whenReady().then(async () => {
       if (syncDaemon.stdout) {
         syncDaemon.stdout.on('data', (data) => {
           const text = data.toString().trim()
-          if (text) {
-            console.log('[DAEMON-STDOUT]', text)
+          if (text && (text.includes('[DAEMON-SYNC-PULL] Descargados:') || text.includes('[DAEMON-SYNC] Subidos:'))) {
+            console.log(text)
           }
         })
       }
       if (syncDaemon.stderr) {
         syncDaemon.stderr.on('data', (data) => {
           const text = data.toString().trim()
-          if (text) {
-            console.error('[DAEMON-STDERR]', text)
+          // Solo mostrar errores del sync
+          if (text && text.includes('[DAEMON-SYNC')) {
+            console.error(text)
           }
         })
       }
@@ -1250,7 +1228,6 @@ app.whenReady().then(async () => {
         try {
           switch (msg.type) {
             case 'READY':
-              console.log('[MAIN] Sync daemon ready:', msg.message)
               
               // Cargar sesión de la base de datos
               let sessionData = null
@@ -1258,12 +1235,10 @@ app.whenReady().then(async () => {
                 const sessionStr = db.getConfig('session')
                 if (sessionStr) {
                   sessionData = JSON.parse(sessionStr)
-                  console.log('[MAIN] Loaded session from database')
                   
                   // Si hay token en la sesión, actualizar authToken
                   if (sessionData?.token) {
                     authToken = sessionData.token
-                    console.log('[MAIN] Restored authToken from session')
                   }
                 }
               } catch (e) {
@@ -1291,18 +1266,11 @@ app.whenReady().then(async () => {
                   type: 'SET_CONFIG',
                   config: configToSend
                 })
-                
-                console.log('[MAIN] Sent initial config to daemon:', {
-                  hasBackendUrl: !!configToSend.backendUrl,
-                  hasAuthToken: !!configToSend.authToken,
-                  hasSession: !!configToSend.session
-                })
               }
               break
               
             case 'SYNC_PROGRESS':
               if (msg.stage === 'sync' || msg.stage === 'push' || msg.stage === 'pull' || msg.stage === 'start' || msg.stage === 'device') {
-                console.log(`[MAIN] Sync progress: ${msg.percentage}% - ${msg.message}`)
               }
               if (mainWindow?.webContents) {
                 mainWindow.webContents.send('sync-progress', {
@@ -1314,7 +1282,6 @@ app.whenReady().then(async () => {
               break
               
             case 'SYNC_ERROR':
-              console.error('[MAIN] Sync daemon error:', msg.error, msg.details)
               syncLock = false
               if (mainWindow?.webContents) {
                 mainWindow.webContents.send('sync-progress', {
@@ -1326,18 +1293,12 @@ app.whenReady().then(async () => {
               break
               
             case 'SYNC_DONE':
-              console.log('[MAIN] ==========================================')
-              console.log('[MAIN] Sync completed from daemon')
-              console.log('[MAIN] - Push result:', msg.pushResult)
-              console.log('[MAIN] - Pull result:', msg.pullResult)
-              console.log('[MAIN] ==========================================')
+              console.log('[MAIN] Sync: Subidos:', msg.pushResult?.successful || 0, 'Fallidos:', msg.pushResult?.failed || 0, '| Descargados:', msg.pullResult?.received || 0, 'Insertados:', msg.pullResult?.inserted || 0, 'Actualizados:', msg.pullResult?.updated || 0)
               syncLock = false
               
               // Recargar historial desde DB del dispositivo actual
               const currentDevice = getCurrentDeviceName()
-              console.log('[MAIN] Reloading history for device:', currentDevice)
               history = db.getAll(currentDevice)
-              console.log('[MAIN] History reloaded, items count:', history.length)
               if (mainWindow?.webContents) {
                 mainWindow.webContents.send('clipboard-update', augmentHistoryWithImagePaths(history))
                 mainWindow.webContents.send('sync-progress', {
@@ -1387,7 +1348,6 @@ app.whenReady().then(async () => {
               break
               
             case 'TOKEN_REFRESHED':
-              console.log('[MAIN] Token refreshed by daemon, updating session...')
               // Actualizar el token en el main process
               authToken = msg.token
               
@@ -1395,7 +1355,6 @@ app.whenReady().then(async () => {
               if (msg.session) {
                 try {
                   db.setConfig('session', JSON.stringify(msg.session))
-                  console.log('[MAIN] Session updated in database')
                   
                   // Notificar al frontend sobre el token refrescado
                   if (mainWindow?.webContents) {
@@ -1408,7 +1367,6 @@ app.whenReady().then(async () => {
               break
               
             default:
-              console.warn('[MAIN] Unknown daemon message type:', msg.type)
           }
         } catch (error) {
           console.error('[MAIN] Error handling daemon message:', error)
@@ -1421,13 +1379,11 @@ app.whenReady().then(async () => {
       })
       
       syncDaemon.on('exit', (code, signal) => {
-        console.log(`[MAIN] Sync daemon exited: code=${code}, signal=${signal}`)
         syncDaemon = null
         syncLock = false
         
         // Reiniciar daemon si se cierra inesperadamente (solo si no es shutdown intencional)
         if (code !== 0 && !isQuitting) {
-          console.log('[MAIN] Restarting sync daemon...')
           setTimeout(() => {
             if (!isQuitting) {
               startSyncDaemon()
@@ -1442,22 +1398,8 @@ app.whenReady().then(async () => {
         userDataPath: app.getPath('userData')
       })
       
-      console.log('[MAIN] Sync daemon started')
     } catch (error) {
       console.error('[MAIN] Failed to start sync daemon:', error)
-    }
-  }
-  
-  function stopSyncDaemon() {
-    if (syncDaemon) {
-      console.log('[MAIN] Stopping sync daemon...')
-      syncDaemon.send({ type: 'SHUTDOWN' })
-      setTimeout(() => {
-        if (syncDaemon && !syncDaemon.killed) {
-          syncDaemon.kill()
-        }
-        syncDaemon = null
-      }, 1000)
     }
   }
   
@@ -1922,7 +1864,6 @@ app.whenReady().then(async () => {
   // Iniciar sincronización periódica cada 15 minutos (se ejecutará solo si hay authToken)
   setInterval(() => {
     if (authToken && !syncLock) {
-      console.log('[MAIN] Periodic sync triggered (every 15 minutes)')
       syncClipboardHistory()
     }
   }, 15 * 60 * 1000) // 15 minutos
@@ -1933,13 +1874,11 @@ app.whenReady().then(async () => {
   // El sync periódico se ejecutará cada 15 minutos automáticamente
   setTimeout(async () => {
     if (authToken) {
-      console.log('[MAIN] Initial device registration on app start')
       // First ensure device is registered (this will call POST /devices)
       await ensureDeviceRegistered()
       // El sync inicial se ejecutará automáticamente después de la migración
       // o en el próximo intervalo de 15 minutos
     } else {
-      console.log('[MAIN] No auth token on startup, device registration and migration will run when token is set')
     }
   }, 2000) // 2 segundos de delay para que el frontend cargue la sesión
 })
@@ -2471,14 +2410,25 @@ function initializeActiveDevice() {
     // Always use the real hostname of the current machine
     const realHostname = os.hostname()
     activeDeviceName = sanitizeDeviceName(realHostname)
-    console.log('[MAIN] Initialized active device from hostname:', activeDeviceName)
   } catch (e) {
     // Fallback to hostname on error
     activeDeviceName = sanitizeDeviceName(os.hostname())
-    console.log('[MAIN] Initialized active device from hostname (fallback):', activeDeviceName)
   }
 }
 let syncLock = false
+
+// Función para detener el daemon de sync (debe estar fuera de app.whenReady para ser accesible)
+function stopSyncDaemon() {
+  if (syncDaemon) {
+    syncDaemon.send({ type: 'SHUTDOWN' })
+    setTimeout(() => {
+      if (syncDaemon && !syncDaemon.killed) {
+        syncDaemon.kill()
+      }
+      syncDaemon = null
+    }, 1000)
+  }
+}
 let favoritesSyncCooldownUntil = 0
 
 function getCurrentDeviceName () {
@@ -2831,7 +2781,6 @@ ipcMain.on('set-auth-token', async (event, token) => {
     // Verificar si la migración ya se ejecutó (guardado en DB local)
     const migrationCompletedInDB = db.getConfig('migration_completed')
     if (migrationCompletedInDB === 'true') {
-      console.log('[MAIN] Migration already completed (saved in DB), skipping...')
       migrationCompleted = true
       return // No ejecutar migración si ya se completó
     }
@@ -2862,7 +2811,6 @@ ipcMain.on('set-auth-token', async (event, token) => {
   }
   
   // First ensure device is registered (this will call POST /devices)
-  console.log('[MAIN] Token set, registering device...')
   await ensureDeviceRegistered()
   
   // Then sync using daemon
@@ -2930,7 +2878,6 @@ ipcMain.handle('save-session', (event, sessionData) => {
             session: sessionData
           }
         })
-        console.log('[MAIN] Session synced with daemon')
       }
       
       return true
@@ -3013,7 +2960,6 @@ async function startMigration(deviceName) {
       deviceName: targetDeviceName
     })
     
-    console.log('[MAIN-MIGRATION] Migration request sent to daemon for device:', targetDeviceName)
   } catch (error) {
     console.error('[MAIN-MIGRATION] startMigration error:', error?.message || error)
     if (mainWindow?.webContents) {
@@ -3022,15 +2968,51 @@ async function startMigration(deviceName) {
   }
 }
 
+// Handler para sincronizar manualmente (botón "Sincronizar ahora")
+ipcMain.handle('sync-now', async () => {
+  try {
+    if (!authToken) {
+      return { success: false, error: 'No hay sesión activa' }
+    }
+    
+    if (syncLock) {
+      return { success: false, error: 'Sincronización en progreso' }
+    }
+    
+    // Crear una promesa que se resuelve cuando el sync termine
+    const syncWaitPromise = new Promise((resolve) => {
+      syncCompletionResolve = resolve
+    })
+    
+    // Iniciar el sync (usa el dispositivo actual)
+    syncClipboardHistory()
+    
+    // Esperar a que el sync termine (con timeout)
+    const timeoutMs = 30 * 1000
+    const timeout = new Promise(resolve => setTimeout(() => {
+      if (syncCompletionResolve) {
+        syncCompletionResolve()
+        syncCompletionResolve = null
+      }
+      resolve()
+    }, timeoutMs))
+    
+    await Promise.race([syncWaitPromise, timeout])
+    
+    return { success: true }
+  } catch (e) {
+    log.error('sync-now error', e?.message || e)
+    return { success: false, error: e?.message || 'Error al sincronizar' }
+  }
+})
+
 ipcMain.handle('switch-active-device', async (_, deviceName) => {
   try {
-    console.log('[MAIN] switch-active-device called with:', deviceName)
     const targetDeviceName = sanitizeDeviceName(deviceName)
     
     // Obtener el clientId del dispositivo seleccionado desde la tabla devices LOCAL (sin llamar al backend)
     let targetClientId = targetDeviceName
     const deviceInfo = db.getDeviceByClientId(targetDeviceName)
-    console.log('[MAIN] Local deviceInfo for switch:', deviceInfo)
     if (deviceInfo && deviceInfo.clientId) {
       targetClientId = deviceInfo.clientId
       // Actualizar activeDeviceName con el clientId correcto
@@ -3052,11 +3034,9 @@ ipcMain.handle('switch-active-device', async (_, deviceName) => {
     
     // Verificar si el dispositivo ya fue migrado
     const isMigrated = deviceInfo && deviceInfo.migrated === true
-    console.log('[MAIN] Device migration state:', { deviceName: targetClientId, isMigrated })
     
     if (!isMigrated && authToken) {
       // Si no está migrado, ejecutar migración primero
-      console.log('[MAIN] Device not migrated yet, starting migration for:', targetClientId)
       if (mainWindow?.webContents) {
         mainWindow.webContents.send('sync-progress', { percentage: 10, message: 'Migrando dispositivo por primera vez...', type: 'device-migration' })
       }
@@ -3099,9 +3079,6 @@ ipcMain.handle('switch-active-device', async (_, deviceName) => {
     }
     
     // Ejecutar sync (pull y push) con el UUID del dispositivo seleccionado
-    console.log('[MAIN] Starting sync for device:', targetClientId)
-    console.log('[MAIN] Sync daemon connected:', syncDaemon && syncDaemon.connected)
-    console.log('[MAIN] Auth token available:', !!authToken)
     
     // Crear una promesa que se resuelve cuando el sync termine
     const syncWaitPromise = new Promise((resolve) => {
@@ -3109,9 +3086,7 @@ ipcMain.handle('switch-active-device', async (_, deviceName) => {
     })
     
     // Iniciar el sync
-    console.log('[MAIN] Calling syncClipboardHistory with device:', targetClientId)
     await syncClipboardHistory(targetClientId)
-    console.log('[MAIN] syncClipboardHistory call completed')
     
     // Esperar a que el sync termine (con timeout)
     const timeoutMs = 30 * 1000
@@ -3126,12 +3101,10 @@ ipcMain.handle('switch-active-device', async (_, deviceName) => {
     await Promise.race([syncWaitPromise, timeout])
     
     // Después del sync, recargar el historial del dispositivo seleccionado
-    console.log('[MAIN] After sync, reloading history for device:', targetClientId)
     const updatedHist = authToken 
       ? readDeviceHistoryByName(targetClientId) 
       : db.getAllGuest(targetClientId)
     history = updatedHist
-    console.log('[MAIN] History reloaded after sync, items count:', history.length)
     
     if (mainWindow?.webContents) {
       mainWindow.webContents.send('clipboard-update', augmentHistoryWithImagePaths(history))
@@ -3208,36 +3181,11 @@ function getAxiosInstance () {
 
   // Log básico de cada request/response
   instance.interceptors.request.use((config) => {
-    try {
-      console.log('[MAIN-HTTP-REQUEST]', {
-        method: config.method,
-        url: config.url,
-        baseURL: config.baseURL,
-        params: config.params,
-        dataPreview: config.data
-          ? (typeof config.data === 'string'
-              ? config.data.slice(0, 200)
-              : JSON.stringify(config.data).slice(0, 200))
-          : undefined
-      })
-    } catch {}
     return config
   })
 
   instance.interceptors.response.use(
     (response) => {
-      try {
-        console.log('[MAIN-HTTP-RESPONSE]', {
-          url: response.config?.url,
-          status: response.status,
-          statusText: response.statusText,
-          dataPreview: response.data
-            ? (typeof response.data === 'string'
-                ? response.data.slice(0, 200)
-                : JSON.stringify(response.data).slice(0, 200))
-            : undefined
-        })
-      } catch {}
       return response
     },
     (error) => {
@@ -3373,10 +3321,8 @@ async function fetchBackendClipboard () {
 
 async function ensureDeviceRegistered () {
   try {
-    console.log('[MAIN] ensureDeviceRegistered called')
     // First check if we have device info in database
     const savedDevice = db.getDevice()
-    console.log('[MAIN] ensureDeviceRegistered - Device from DB:', savedDevice)
     
     // Get current hostname
     const currentHostname = os.hostname()
@@ -3390,46 +3336,32 @@ async function ensureDeviceRegistered () {
       // If clientId doesn't match current hostname, we need to re-register
       if (savedClientId === currentClientId) {
         deviceId = savedDevice.id
-        console.log('[MAIN] ensureDeviceRegistered - Device already complete in DB and hostname matches, returning:', deviceId)
         return deviceId
       } else {
-        console.log(`[MAIN] ensureDeviceRegistered - Device clientId (${savedClientId}) doesn't match current hostname (${currentClientId}), will re-register`)
         // Continue to registration below to update with new hostname
       }
     }
     
     // If device exists but is incomplete, we need to re-register
     if (savedDevice && savedDevice.id) {
-      console.log('[MAIN] ensureDeviceRegistered - Device in DB but incomplete (missing userId or clientId), will re-register')
       // Continue to registration below
     }
     
     if (deviceId && !savedDevice) {
-      console.log('[MAIN] ensureDeviceRegistered - deviceId exists but not in DB:', deviceId)
       return deviceId
     }
     
     // Usar método directo asíncrono no bloqueante (axios no bloquea el event loop)
-    console.log('[MAIN] ensureDeviceRegistered: Using direct async method (non-blocking)')
     
     try {
       const axiosInstance = getAxiosInstance()
       const hostname = os.hostname()
       const osName = process.platform === 'win32' ? 'Windows' : (process.platform === 'darwin' ? 'macOS' : 'Linux')
       const payload = { clientId: hostname, name: hostname, metadata: { os: osName, appVersion: app.getVersion() } }
-      console.log('[MAIN] POST /devices - payload:', payload)
       
       const res = await axiosInstance.post('/devices', payload)
-      console.log('[MAIN] POST /devices - Response status:', res.status)
-      console.log('[MAIN] POST /devices - Full response:', JSON.stringify(res.data, null, 2))
       
       const data = res?.data
-      console.log('[MAIN] Response data structure:', {
-        hasData: !!data,
-        hasDataData: !!(data && data.data),
-        hasDataDataDevice: !!(data && data.data && data.data.device),
-        keys: data ? Object.keys(data) : []
-      })
       
       // Extract device from response structure: { success, message, data: { device: {...} } }
       const device = (data && data.data && data.data.device) 
@@ -3437,14 +3369,6 @@ async function ensureDeviceRegistered () {
         : (data && data.device) 
           ? data.device 
           : (data && typeof data === 'object' && data.id ? data : null)
-      
-      console.log('[MAIN] Extracted device object:', device ? { 
-        id: device.id, 
-        userId: device.userId, 
-        clientId: device.clientId, 
-        name: device.name,
-        createdAt: device.createdAt 
-      } : 'null')
       
       if (!device || !device.id) {
         console.error('[MAIN] Failed to extract device from response. Full response:', JSON.stringify(data, null, 2))
@@ -3454,7 +3378,6 @@ async function ensureDeviceRegistered () {
       deviceId = device.id
       
       // Save device info to database
-      console.log('[MAIN] Saving device to database:', device)
       const saved = db.saveDevice({
         id: device.id,
         userId: device.userId || '',
@@ -3465,11 +3388,7 @@ async function ensureDeviceRegistered () {
       })
       
       if (saved) {
-        console.log('[MAIN] Device saved successfully to database')
         const verify = db.getDevice()
-        console.log('[MAIN] Verified device in database:', verify)
-      } else {
-        console.error('[MAIN] Failed to save device to database')
       }
       
       return deviceId
@@ -4051,18 +3970,14 @@ function readLocalHistory () {
 // NEW SYNC FUNCTION - Usa el daemon para sincronización
 async function syncClipboardHistory(deviceNameOverride = null) {
   try {
-    console.log('[MAIN-SYNC] Starting syncClipboardHistory')
     if (syncLock) {
-      console.warn('[MAIN-SYNC] Sync lock active, skipping sync')
       return
     }
     if (!authToken) {
-      console.warn('[MAIN-SYNC] No auth token, skipping sync')
       return
     }
     
     if (!syncDaemon || !syncDaemon.connected) {
-      console.error('[MAIN-SYNC] Sync daemon not available')
       return
     }
     
@@ -4079,9 +3994,7 @@ async function syncClipboardHistory(deviceNameOverride = null) {
       deviceName: deviceName
     })
     
-    console.log('[MAIN-SYNC] Sync request sent to daemon for device:', deviceName)
   } catch (error) {
-    console.error('[MAIN-SYNC] syncClipboardHistory error:', error?.message || error)
     syncLock = false
     if (mainWindow?.webContents) {
       mainWindow.webContents.send('sync-progress', { percentage: 100, message: 'Sincronización fallida', type: 'sync-error' })

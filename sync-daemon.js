@@ -144,7 +144,7 @@ function ensureSchema() {
       CREATE INDEX IF NOT EXISTS idx_history_device_pending ON history(device, pending);
     `)
   } catch (error) {
-    console.error('[DAEMON] Schema error:', error)
+    // Schema error
   }
 }
 
@@ -154,7 +154,7 @@ function persistDatabase() {
     const data = db.export()
     fs.writeFileSync(dbFilePath, Buffer.from(data))
   } catch (error) {
-    console.error('[DAEMON] Persist error:', error)
+    // Persist error
   }
 }
 
@@ -169,10 +169,8 @@ function reloadDatabase() {
     const buf = fs.readFileSync(dbFilePath)
     db = new SQL.Database(new Uint8Array(buf))
     ensureSchema()
-    console.log('[DAEMON] Database reloaded from file (main process changes visible)')
     return true
   } catch (error) {
-    console.error('[DAEMON] Reload database error:', error)
     return false
   }
 }
@@ -208,7 +206,6 @@ function getDevice() {
     stmt.free()
     return result
   } catch (error) {
-    console.error('[DAEMON] getDevice error:', error)
     return null
   }
 }
@@ -241,7 +238,6 @@ function getDeviceByClientId(clientId) {
     stmt.free()
     return result
   } catch (error) {
-    console.error('[DAEMON] getDeviceByClientId error:', error)
     return null
   }
 }
@@ -263,7 +259,6 @@ function saveDevice(deviceInfo) {
     persistDatabase()
     return true
   } catch (error) {
-    console.error('[DAEMON] saveDevice error:', error)
     return false
   }
 }
@@ -278,7 +273,6 @@ function updateDeviceLastSyncAt(lastSyncAt) {
     persistDatabase()
     return true
   } catch (error) {
-    console.error('[DAEMON] updateDeviceLastSyncAt error:', error)
     return false
   }
 }
@@ -324,11 +318,6 @@ function getPendingItems(device) {
         remote_id: r.remote_id ? String(r.remote_id) : null
       }
       rows.push(itemData)
-      
-      // Log para debugging: items con remote_id que solo cambiaron el favorite
-      if (itemData.remote_id) {
-        console.log(`[DAEMON] Found pending item with remote_id (favorite update): uuid=${itemData.uuid}, remote_id=${itemData.remote_id}, favorite=${itemData.favorite}`)
-      }
     }
     stmt.free()
     
@@ -354,13 +343,12 @@ function getPendingItems(device) {
         }
         allPendingStmt.free()
       } catch (e) {
-        console.error('[DAEMON] Could not get all pending items:', e.message)
+        // Could not get all pending items
       }
     }
     
     return rows
   } catch (error) {
-    console.error('[DAEMON] getPendingItems error:', error)
     return []
   }
 }
@@ -375,7 +363,6 @@ function markItemCompleted(uuid) {
     persistDatabase()
     return true
   } catch (error) {
-    console.error('[DAEMON] markItemCompleted error:', error)
     return false
   }
 }
@@ -391,7 +378,9 @@ function updateItemFromServer(serverItem, device) {
       const r = stmt.getAsObject()
       found = true
       const currentFavorite = r.favorite ? 1 : 0
-      const hasPendingChanges = r.pending === 1 || r.pending === '1' || r.pending === true
+      // Verificar pending más robustamente (SQLite puede devolver como número, string o boolean)
+      const pendingValue = r.pending
+      const hasPendingChanges = pendingValue === 1 || pendingValue === '1' || pendingValue === true || pendingValue === 'true' || (typeof pendingValue === 'number' && pendingValue > 0)
       
       stmt.free()
       
@@ -445,7 +434,6 @@ function updateItemFromServer(serverItem, device) {
     persistDatabase()
     return true
   } catch (error) {
-    console.error('[DAEMON] updateItemFromServer error:', error)
     return false
   }
 }
@@ -477,7 +465,6 @@ function setConfig(key, value) {
     persistDatabase()
     return true
   } catch (error) {
-    console.error('[DAEMON] setConfig error:', error)
     return false
   }
 }
@@ -531,7 +518,6 @@ function getAxiosInstance() {
             setConfig('session', JSON.stringify(updatedSession))
             
             // Notificar al main process sobre el token refrescado
-            console.log('[DAEMON] Token refreshed, notifying main process')
             sendMessage(MESSAGE_TYPES.TOKEN_REFRESHED, {
               token: tokenResult.token,
               refreshToken: tokenResult.refreshToken || session.refreshToken,
@@ -575,7 +561,6 @@ async function refreshToken(refreshTokenValue) {
     
     throw new Error('Invalid refresh response')
   } catch (error) {
-    console.error('[DAEMON] refreshToken error:', error)
     throw error
   }
 }
@@ -597,9 +582,7 @@ async function ensureDeviceRegistered() {
       metadata: { os: osName }
     }
     
-    console.log('[DAEMON-HTTP] POST /devices payload:', payload)
     const res = await axiosInstance.post('/devices', payload)
-    console.log('[DAEMON-HTTP] POST /devices status:', res.status)
     const data = res?.data
     const device = (data && data.data && data.data.device)
       ? data.data.device
@@ -622,7 +605,6 @@ async function ensureDeviceRegistered() {
     
     throw new Error('Failed to register device')
   } catch (error) {
-    console.error('[DAEMON] ensureDeviceRegistered error:', error)
     throw error
   }
 }
@@ -663,16 +645,12 @@ async function pushPendingItems(deviceName, clientId, deviceId) {
             favorite: item.favorite || false
           }
           
-          console.log(`[DAEMON-SYNC-PUSH] Updating favorite for existing item: remote_id=${item.remote_id}, favorite=${putPayload.favorite}, uuid=${item.uuid}`)
-          
           const res = await axiosInstance.put(`/clipboard/${item.remote_id}`, putPayload)
           
           if (res.status === 200 || res.status === 204) {
-            console.log(`[DAEMON-SYNC-PUSH] ✅ Favorite updated successfully for item ${item.uuid}`)
             markItemCompleted(item.uuid)
             return { success: true, uuid: item.uuid }
           } else {
-            console.warn(`[DAEMON-SYNC-PUSH] Item ${item.uuid} PUT failed with status: ${res.status}`)
             return { success: false, uuid: item.uuid }
           }
         }
@@ -690,7 +668,6 @@ async function pushPendingItems(deviceName, clientId, deviceId) {
             else if (localPath.endsWith('.webp')) mime = 'image/webp'
             valueToSend = `data:${mime};base64,${buf.toString('base64')}`
           } else {
-            console.warn(`[DAEMON-SYNC-PUSH] Local image not found: ${localPath} for item ${item.uuid}`)
             return { success: false, uuid: item.uuid }
           }
         }
@@ -722,24 +699,16 @@ async function pushPendingItems(deviceName, clientId, deviceId) {
               updateStmt.free()
               persistDatabase()
             } catch (e) {
-              console.error(`[DAEMON-SYNC-PUSH] Error updating remote_id for ${item.uuid}:`, e.message)
+              // Error updating remote_id
             }
           }
           
           markItemCompleted(item.uuid)
           return { success: true, uuid: item.uuid }
         } else {
-          console.warn(`[DAEMON-SYNC-PUSH] Item ${item.uuid} POST failed with status: ${res.status}`)
           return { success: false, uuid: item.uuid }
         }
       } catch (error) {
-        console.error(`[DAEMON-SYNC-PUSH] Error pushing item ${item.uuid}:`, {
-          message: error.message,
-          status: error.response?.status,
-          statusText: error.response?.statusText,
-          data: error.response?.data,
-          stack: error.stack
-        })
         return { success: false, uuid: item.uuid }
       }
     })
@@ -772,11 +741,6 @@ async function pushPendingItems(deviceName, clientId, deviceId) {
 }
 
 async function pullItems(deviceName, clientId, deviceId) {
-  console.log('[DAEMON-SYNC-PULL] ==========================================')
-  console.log('[DAEMON-SYNC-PULL] Starting pull for device:', deviceName)
-  console.log('[DAEMON-SYNC-PULL] clientId:', clientId, 'deviceId:', deviceId)
-  console.log('[DAEMON-SYNC-PULL] ==========================================')
-  
   try {
     sendMessage(MESSAGE_TYPES.SYNC_PROGRESS, {
       percentage: 50,
@@ -795,24 +759,12 @@ async function pullItems(deviceName, clientId, deviceId) {
     
     const params = { clientId, deviceId, since }
     
-    console.log('[DAEMON-HTTP] GET /clipboard params:', params)
     const res = await axiosInstance.get(url, { params })
-    console.log('[DAEMON-HTTP] GET /clipboard status:', res.status)
     
     const data = res?.data
-    console.log('[DAEMON-SYNC-PULL] Response data structure:', {
-      success: data?.success,
-      hasData: !!data?.data,
-      hasItems: !!data?.data?.items,
-      itemsIsArray: Array.isArray(data?.data?.items),
-      itemsLength: Array.isArray(data?.data?.items) ? data.data.items.length : 'N/A'
-    })
-    
     const items = (data && typeof data === 'object' && data.data?.items)
       ? data.data.items
       : (Array.isArray(data?.data) ? data.data : [])
-    
-    console.log('[DAEMON-SYNC-PULL] Extracted items from response:', items.length)
     
     const mappedItems = Array.isArray(items)
       ? items.map(it => ({
@@ -829,8 +781,6 @@ async function pullItems(deviceName, clientId, deviceId) {
         }))
       : []
     
-    console.log('[DAEMON-SYNC-PULL] Mapped items:', mappedItems.length)
-    
     sendMessage(MESSAGE_TYPES.SYNC_PROGRESS, {
       percentage: 60,
       message: `Procesando ${mappedItems.length} items...`,
@@ -842,12 +792,9 @@ async function pullItems(deviceName, clientId, deviceId) {
     let updated = 0
     let inserted = 0
     
-    console.log('[DAEMON-SYNC-PULL] Processing', mappedItems.length, 'items in batches of', BATCH_SIZE, 'with Promise.all')
-    
     // Procesar en batches de 100
     for (let batchStart = 0; batchStart < mappedItems.length; batchStart += BATCH_SIZE) {
       if (syncCanceled) {
-        console.log('[DAEMON-SYNC-PULL] Sync canceled, stopping pull')
         break
       }
       
@@ -890,16 +837,10 @@ async function pullItems(deviceName, clientId, deviceId) {
       }
     }
     
-    console.log('[DAEMON-SYNC-PULL] Pull completed:', {
-      received: mappedItems.length,
-      inserted,
-      updated
-    })
+    console.log('[DAEMON-SYNC-PULL] Descargados:', mappedItems.length, 'insertados:', inserted, 'actualizados:', updated)
     
     return { received: mappedItems.length, inserted, updated }
   } catch (error) {
-    console.error('[DAEMON-SYNC-PULL] Pull error:', error)
-    console.error('[DAEMON-SYNC-PULL] Error stack:', error.stack)
     throw error
   }
 }
@@ -930,7 +871,6 @@ function clearAll() {
     persistDatabase()
     return true
   } catch (error) {
-    console.error('[DAEMON] clearAll error:', error)
     return false
   }
 }
@@ -945,7 +885,6 @@ function clearDeviceHistory(device) {
     persistDatabase()
     return true
   } catch (error) {
-    console.error('[DAEMON] clearDeviceHistory error:', error)
     return false
   }
 }
@@ -955,32 +894,24 @@ function clearDeviceHistory(device) {
 // ============================================================================
 
 async function performMigration(deviceName) {
-  console.log('[DAEMON-MIGRATE] ==========================================')
-  console.log('[DAEMON-MIGRATE] performMigration called for device:', deviceName)
-  console.log('[DAEMON-MIGRATE] ==========================================')
-  
   // Verificar si la migración ya se ejecutó (guardado en DB)
   const migrationCompletedInDB = getConfig('migration_completed')
   if (migrationCompletedInDB === 'true') {
-    console.log('[DAEMON-MIGRATE] Migration already completed (saved in DB), skipping...')
     migrationCompleted = true
     return
   }
   
   if (migrationInProgress) {
-    console.warn('[DAEMON-MIGRATE] Migration already in progress, skipping...')
     return
   }
   
   if (migrationCompleted) {
-    console.log('[DAEMON-MIGRATE] Migration already completed (in-memory flag), skipping...')
     return
   }
   
   migrationInProgress = true
   
   try {
-    console.log('[DAEMON-MIGRATE] Step 0: Starting migration...')
     sendMessage(MESSAGE_TYPES.SYNC_PROGRESS, {
       percentage: 0,
       message: 'Iniciando migración...',
@@ -991,13 +922,7 @@ async function performMigration(deviceName) {
       throw new Error('No auth token or backend URL configured')
     }
     
-    console.log('[DAEMON-MIGRATE] Config check OK:', {
-      hasAuthToken: !!config.authToken,
-      backendUrl: config.backendUrl
-    })
-    
     // Ensure device is registered
-    console.log('[DAEMON-MIGRATE] Step 1: Registering device...')
     sendMessage(MESSAGE_TYPES.SYNC_PROGRESS, {
       percentage: 5,
       message: 'Registrando dispositivo...',
@@ -1015,12 +940,6 @@ async function performMigration(deviceName) {
       }
     }
     
-    console.log('[DAEMON-MIGRATE] Device registered:', {
-      id: device.id,
-      clientId: device.clientId,
-      name: device.name
-    })
-    
     const clientId = device.clientId || deviceName
     const deviceId = device.id
     
@@ -1028,7 +947,6 @@ async function performMigration(deviceName) {
     const targetDeviceName = clientId || deviceName
     
     // Step 1: Clear local history for the selected device only
-    console.log('[DAEMON-MIGRATE] Step 2: Clearing local history for device:', targetDeviceName)
     sendMessage(MESSAGE_TYPES.SYNC_PROGRESS, {
       percentage: 10,
       message: 'Limpiando historial del dispositivo...',
@@ -1036,12 +954,9 @@ async function performMigration(deviceName) {
     })
     
     // Clear history only for the selected device (usar clientId si está disponible)
-    const cleared = clearDeviceHistory(targetDeviceName)
-    console.log('[DAEMON-MIGRATE] Local history cleared for device:', targetDeviceName, 'result:', cleared)
+    clearDeviceHistory(targetDeviceName)
     
     // Step 2: Fetch all items from server
-    console.log('[DAEMON-MIGRATE] Step 3: Fetching items from server...')
-    console.log('[DAEMON-MIGRATE] Request params:', { clientId, deviceId })
     sendMessage(MESSAGE_TYPES.SYNC_PROGRESS, {
       percentage: 20,
       message: 'Descargando items del servidor...',
@@ -1052,24 +967,12 @@ async function performMigration(deviceName) {
     const url = '/clipboard'
     const params = { clientId, deviceId }
     
-    console.log('[DAEMON-MIGRATE] GET', url, 'with params:', params)
     const res = await axiosInstance.get(url, { params })
-    console.log('[DAEMON-MIGRATE] GET response status:', res.status)
     
     const data = res?.data
-    console.log('[DAEMON-MIGRATE] Response data structure:', {
-      success: data?.success,
-      hasData: !!data?.data,
-      hasItems: !!data?.data?.items,
-      itemsIsArray: Array.isArray(data?.data?.items),
-      itemsLength: Array.isArray(data?.data?.items) ? data.data.items.length : 'N/A'
-    })
-    
     const items = (data && typeof data === 'object' && data.data?.items)
       ? data.data.items
       : (Array.isArray(data?.data) ? data.data : [])
-    
-    console.log('[DAEMON-MIGRATE] Extracted items from response:', items.length)
     
     const mappedItems = Array.isArray(items)
       ? items.map(it => ({
@@ -1166,12 +1069,7 @@ async function performMigration(deviceName) {
 // ============================================================================
 
 async function performSync(deviceName) {
-  console.log('[DAEMON-SYNC] ==========================================')
-  console.log('[DAEMON-SYNC] performSync called for device:', deviceName)
-  console.log('[DAEMON-SYNC] ==========================================')
-  
   if (syncInProgress) {
-    console.warn('[DAEMON-SYNC] Sync already in progress, skipping...')
     return
   }
   
@@ -1179,7 +1077,6 @@ async function performSync(deviceName) {
   syncCanceled = false
   
   try {
-    console.log('[DAEMON-SYNC] Step 0: Starting sync...')
     sendMessage(MESSAGE_TYPES.SYNC_PROGRESS, {
       percentage: 0,
       message: 'Iniciando sincronización...',
@@ -1193,13 +1090,7 @@ async function performSync(deviceName) {
       throw new Error('No auth token or backend URL configured')
     }
     
-    console.log('[DAEMON-SYNC] Config check OK:', {
-      hasAuthToken: !!config.authToken,
-      backendUrl: config.backendUrl
-    })
-    
     // 3. Asegurar dispositivo registrado
-    console.log('[DAEMON-SYNC] Step 1: Ensuring device registered...')
     sendMessage(MESSAGE_TYPES.SYNC_PROGRESS, {
       percentage: 5,
       message: 'Registrando dispositivo...',
@@ -1217,56 +1108,32 @@ async function performSync(deviceName) {
       }
     }
     
-    console.log('[DAEMON-SYNC] Device registered:', {
-      id: device.id,
-      clientId: device.clientId,
-      name: device.name
-    })
-    
     const clientId = device.clientId || deviceName
     const deviceId = device.id // UUID del dispositivo
     
     // Usar el clientId del dispositivo para guardar los items (puede ser diferente al deviceName)
     const targetDeviceName = clientId || deviceName
     
-    console.log('[DAEMON-SYNC] Device identifiers:', {
-      deviceName,
-      clientId,
-      deviceId,
-      targetDeviceName
-    })
-    
     // Recargar base de datos antes de hacer pull para ver los cambios más recientes del main process
     // Esto asegura que cualquier cambio local (como favoritos marcados) se preserve
     reloadDatabase()
     
     // 4. Pull (Full en primera ejecución, incremental con since en las siguientes)
-    console.log('[DAEMON-SYNC] Step 2: Pulling items from server...')
     const pullResult = await pullItems(targetDeviceName, clientId, deviceId)
-    console.log('[DAEMON-SYNC] Pull completed:', pullResult)
     
     // 5. Push (desde local → remoto)
     // IMPORTANTE: Buscar items pendientes por TODOS los devices posibles
     // porque puede haber items guardados con diferentes nombres de device
-    console.log('[DAEMON-SYNC] Step 3: Pushing pending items to server...')
-    console.log('[DAEMON-SYNC] Calling pushPendingItems with:', {
-      deviceName: targetDeviceName,
-      clientId,
-      deviceId
-    })
-    
     // Intentar push con el targetDeviceName primero
     let pushResult = await pushPendingItems(targetDeviceName, clientId, deviceId)
     
     // Si no hay items pendientes, intentar con el deviceName original
     if (pushResult.successful === 0 && pushResult.failed === 0) {
-      console.log('[DAEMON-SYNC] No pending items found for', targetDeviceName, '- trying with', deviceName)
       pushResult = await pushPendingItems(deviceName, clientId, deviceId)
     }
     
     // Si aún no hay items, buscar TODOS los items pendientes sin filtrar por device
     if (pushResult.successful === 0 && pushResult.failed === 0) {
-      console.log('[DAEMON-SYNC] No pending items found for specific device - trying to push ALL pending items...')
       try {
         const allPendingStmt = db.prepare('SELECT DISTINCT device FROM history WHERE pending=1 AND is_deleted=0')
         const devicesWithPending = []
@@ -1276,35 +1143,24 @@ async function performSync(deviceName) {
         }
         allPendingStmt.free()
         
-        console.log('[DAEMON-SYNC] Found devices with pending items:', devicesWithPending)
-        
         // Push items de cada device que tenga items pendientes
         for (const pendingDevice of devicesWithPending) {
-          console.log('[DAEMON-SYNC] Pushing pending items for device:', pendingDevice)
           const devicePushResult = await pushPendingItems(pendingDevice, clientId, deviceId)
           pushResult.successful += devicePushResult.successful
           pushResult.failed += devicePushResult.failed
         }
       } catch (e) {
-        console.error('[DAEMON-SYNC] Error pushing all pending items:', e)
+        // Error pushing all pending items
       }
     }
     
-    console.log('[DAEMON-SYNC] Push completed:', pushResult)
+    console.log('[DAEMON-SYNC] Subidos:', pushResult.successful, 'fallidos:', pushResult.failed)
     
     // 6. Resolver conflictos por version (ya se hace en updateItemFromServer)
     
     // 7. Guardar lastSyncAt
     const lastSyncAt = new Date().toISOString()
     updateDeviceLastSyncAt(lastSyncAt)
-    console.log('[DAEMON-SYNC] LastSyncAt updated:', lastSyncAt)
-    
-    // 8. Emitir estados de progreso final
-    console.log('[DAEMON-SYNC] ==========================================')
-    console.log('[DAEMON-SYNC] Sync completed successfully:')
-    console.log('[DAEMON-SYNC] - Pull: received:', pullResult.received, 'inserted:', pullResult.inserted, 'updated:', pullResult.updated)
-    console.log('[DAEMON-SYNC] - Push: successful:', pushResult.successful, 'failed:', pushResult.failed)
-    console.log('[DAEMON-SYNC] ==========================================')
     
     sendMessage(MESSAGE_TYPES.SYNC_DONE, {
       percentage: 100,
@@ -1315,10 +1171,6 @@ async function performSync(deviceName) {
     })
     
   } catch (error) {
-    console.error('[DAEMON-SYNC] ==========================================')
-    console.error('[DAEMON-SYNC] Sync ERROR:', error.message)
-    console.error('[DAEMON-SYNC] Stack:', error.stack)
-    console.error('[DAEMON-SYNC] ==========================================')
     sendMessage(MESSAGE_TYPES.SYNC_ERROR, {
       error: error.message,
       details: error.stack
@@ -1341,21 +1193,12 @@ function sendMessage(type, payload = {}) {
 
 process.on('message', async (msg) => {
   try {
-    console.log('[DAEMON] Received message:', msg.type, msg.deviceName ? `device: ${msg.deviceName}` : '')
-    
     switch (msg.type) {
       case 'INIT':
-        console.log('[DAEMON] Initializing database with userDataPath:', msg.userDataPath)
         await initDatabase(msg.userDataPath)
         break
         
       case MESSAGE_TYPES.SET_CONFIG:
-        console.log('[DAEMON] Setting config:', {
-          hasBackendUrl: !!msg.config?.backendUrl,
-          hasAuthToken: !!msg.config?.authToken,
-          userDataPath: msg.config?.userDataPath,
-          hasSession: !!msg.config?.session
-        })
         config = { ...config, ...msg.config }
         
         // Si se pasa una sesión en el config, guardarla en la base de datos
@@ -1365,9 +1208,8 @@ process.on('message', async (msg) => {
               ? JSON.parse(msg.config.session) 
               : msg.config.session
             setConfig('session', JSON.stringify(sessionData))
-            console.log('[DAEMON] Session saved to database from SET_CONFIG')
           } catch (e) {
-            console.error('[DAEMON] Error saving session from SET_CONFIG:', e)
+            // Error saving session
           }
         }
         
@@ -1379,31 +1221,17 @@ process.on('message', async (msg) => {
               const session = JSON.parse(sessionStr)
               if (session?.token) {
                 config.authToken = session.token
-                console.log('[DAEMON] Loaded authToken from database session')
               }
             }
           } catch (e) {
-            console.error('[DAEMON] Error loading session from database:', e)
+            // Error loading session
           }
         }
         break
         
       case MESSAGE_TYPES.SYNC_START:
-        console.log('[DAEMON] ==========================================')
-        console.log('[DAEMON] SYNC_START message received')
-        console.log('[DAEMON] Device name:', msg.deviceName)
-        console.log('[DAEMON] Config state:', {
-          hasAuthToken: !!config.authToken,
-          hasBackendUrl: !!config.backendUrl,
-          backendUrl: config.backendUrl
-        })
-        console.log('[DAEMON] ==========================================')
         if (msg.deviceName) {
-          console.log('[DAEMON] Calling performSync for device:', msg.deviceName)
           await performSync(msg.deviceName)
-          console.log('[DAEMON] performSync completed')
-        } else {
-          console.warn('[DAEMON] SYNC_START received but no deviceName provided')
         }
         break
         
@@ -1414,12 +1242,10 @@ process.on('message', async (msg) => {
         break
         
       case MESSAGE_TYPES.SYNC_CANCEL:
-        console.log('[DAEMON] SYNC_CANCEL received')
         syncCanceled = true
         break
         
       case MESSAGE_TYPES.SHUTDOWN:
-        console.log('[DAEMON] SHUTDOWN received, persisting database and exiting...')
         if (db) {
           persistDatabase()
         }
@@ -1427,16 +1253,13 @@ process.on('message', async (msg) => {
         break
         
       case MESSAGE_TYPES.RELOAD_DATABASE:
-        console.log('[DAEMON] RELOAD_DATABASE received, reloading from file...')
         reloadDatabase()
         break
         
       default:
-        console.warn('[DAEMON] Unknown message type:', msg.type)
+        // Unknown message type
     }
   } catch (error) {
-    console.error('[DAEMON] Message handler error:', error)
-    console.error('[DAEMON] Error stack:', error.stack)
     sendMessage(MESSAGE_TYPES.SYNC_ERROR, {
       error: error.message,
       details: error.stack
@@ -1451,7 +1274,6 @@ process.once('SIGUSR2', () => {
 
 // Manejar errores no capturados
 process.on('uncaughtException', (error) => {
-  console.error('[DAEMON] Uncaught exception:', error)
   sendMessage(MESSAGE_TYPES.SYNC_ERROR, {
     error: error.message,
     details: error.stack
@@ -1459,7 +1281,6 @@ process.on('uncaughtException', (error) => {
 })
 
 process.on('unhandledRejection', (reason) => {
-  console.error('[DAEMON] Unhandled rejection:', reason)
   sendMessage(MESSAGE_TYPES.SYNC_ERROR, {
     error: 'Unhandled rejection',
     details: String(reason)

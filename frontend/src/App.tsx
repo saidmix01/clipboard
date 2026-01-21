@@ -508,7 +508,7 @@ function App () {
             }
           })
         } catch (err) {
-          console.error('Error optimizando imágenes:', err)
+          // Error optimizando imágenes
         }
       } else {
         // Cuando la ventana se muestra, restaurar imágenes
@@ -522,7 +522,7 @@ function App () {
             }
           })
         } catch (err) {
-          console.error('Error restaurando imágenes:', err)
+          // Error restaurando imágenes
         }
       }
     }
@@ -913,9 +913,8 @@ function App () {
             setDisplayed([])
           }
         })
-        .catch((err: any) => {
+        .catch(() => {
           // Ignorar errores de cancelación
-          if (err?.name === 'AbortError' || abortController.signal.aborted) return
           setDisplayed([])
           setHasMore(false)
         })
@@ -956,8 +955,7 @@ function App () {
             onSyncNow={async () => {
               try {
                 setSettingsOpen(false)
-                const dev = await (window as any).electronAPI?.getActiveDevice?.()
-                await (window as any).electronAPI?.switchActiveDevice?.(dev || '')
+                await (window as any).electronAPI?.syncNow?.()
               } catch {
                 toast.error(t('notifications.sync_error'))
               }

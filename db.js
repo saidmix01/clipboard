@@ -127,15 +127,14 @@ async function init(app) {
         if (!devicesExistingColumns.has(m.col)) {
           try {
             db.run(m.sql)
-            console.log(`[DB] Added column '${m.col}' to devices table`)
+            // Added column
           } catch (e) {
-            console.error(`[DB] Failed to add column '${m.col}' to devices table:`, e)
+            // Failed to add column
           }
         }
       }
     } catch (e) {
       // Table might not exist yet, that's okay
-      console.log('[DB] Could not check devices table structure (might not exist yet):', e?.message)
     }
 
     // Verificación final de columnas críticas y reparación de emergencia
@@ -295,13 +294,11 @@ function insert(device, value, remoteId = null, type = 'text', deviceId = null) 
         // Update existing: mark as pending again (needs to be pushed to server), update timestamp
         stmt = db.prepare('UPDATE history SET created_at=strftime(\'%Y-%m-%d %H:%M:%f\', \'now\'), updated_at=strftime(\'%Y-%m-%d %H:%M:%f\', \'now\'), version=?, pending=1, remote_id=coalesce(?, remote_id), device_id=coalesce(?, device_id), type=? WHERE id=?')
         stmt.bind([newVer, remoteId, finalDeviceId, itemType, r.id])
-        console.log('[DB] Updated existing item and set pending=1, id:', r.id, 'device:', device)
     } catch (e) {
         // Fallback for legacy schema
         try {
           stmt = db.prepare('UPDATE history SET created_at=strftime(\'%Y-%m-%d %H:%M:%f\', \'now\'), pending=1, remote_id=coalesce(?, remote_id), device_id=coalesce(?, device_id), type=? WHERE id=?')
           stmt.bind([remoteId, finalDeviceId, itemType, r.id])
-          console.log('[DB] Updated existing item and set pending=1 (fallback), id:', r.id, 'device:', device)
         } catch (e2) {
           stmt = db.prepare('UPDATE history SET created_at=strftime(\'%Y-%m-%d %H:%M:%f\', \'now\'), remote_id=coalesce(?, remote_id) WHERE id=?')
           stmt.bind([remoteId, r.id])
@@ -313,9 +310,8 @@ function insert(device, value, remoteId = null, type = 'text', deviceId = null) 
             updatePending.bind([r.id])
             updatePending.step()
             updatePending.free()
-            console.log('[DB] Updated existing item and set pending=1 (legacy fallback), id:', r.id)
           } catch (e3) {
-            console.warn('[DB] Could not set pending=1 (column may not exist), id:', r.id)
+            // Could not set pending=1
           }
           persist()
           return
@@ -329,13 +325,11 @@ function insert(device, value, remoteId = null, type = 'text', deviceId = null) 
         // Insert new: pending=1, generate UUID, include device_id and type
         stmt = db.prepare('INSERT INTO history(value, favorite, device, created_at, updated_at, remote_id, client_item_id, version, is_synced, pending, device_id, uuid, type) VALUES(?, ?, ?, strftime(\'%Y-%m-%d %H:%M:%f\', \'now\'), strftime(\'%Y-%m-%d %H:%M:%f\', \'now\'), ?, ?, 1, 0, 1, ?, ?, ?)')
         stmt.bind([value, 0, device, remoteId, uuid, finalDeviceId, uuid, itemType])
-        console.log('[DB] Inserted new item with pending=1, uuid:', uuid, 'device:', device)
     } catch(e) {
         // Fallback - try with pending column
         try {
           stmt = db.prepare('INSERT INTO history(value, favorite, device, created_at, updated_at, remote_id, client_item_id, version, is_synced, pending) VALUES(?, ?, ?, strftime(\'%Y-%m-%d %H:%M:%f\', \'now\'), strftime(\'%Y-%m-%d %H:%M:%f\', \'now\'), ?, ?, 1, 0, 1)')
           stmt.bind([value, 0, device, remoteId, uuid])
-          console.log('[DB] Inserted new item with pending=1 (fallback), uuid:', uuid, 'device:', device)
         } catch(e2) {
           // Legacy fallback - try to add pending after insert
           stmt = db.prepare('INSERT INTO history(value, favorite, device, created_at, remote_id) VALUES(?, ?, ?, strftime(\'%Y-%m-%d %H:%M:%f\', \'now\'), ?)')
@@ -348,9 +342,8 @@ function insert(device, value, remoteId = null, type = 'text', deviceId = null) 
             updatePending.bind([device, value, remoteId])
             updatePending.step()
             updatePending.free()
-            console.log('[DB] Inserted new item and set pending=1 (legacy fallback), device:', device)
           } catch (e3) {
-            console.warn('[DB] Could not set pending=1 (column may not exist), device:', device)
+            // Could not set pending=1
           }
           persist()
           return
@@ -967,7 +960,6 @@ function updateImagesBulk(updates) {
 function saveDevice(deviceInfo) {
   try {
     // deviceInfo: { id, userId, clientId, name, createdAt, lastSyncAt }
-    console.log('[DB] saveDevice called with:', deviceInfo)
     
     // First, check the actual table structure
     let hasSnakeCase = false
@@ -975,11 +967,10 @@ function saveDevice(deviceInfo) {
       const tableInfo = db.exec("PRAGMA table_info(devices)")
       if (tableInfo.length > 0 && tableInfo[0].values) {
         const columns = tableInfo[0].values.map(v => ({ name: v[1], type: v[2], notnull: v[3] }))
-        console.log('[DB] Actual devices table columns:', columns)
         hasSnakeCase = tableInfo[0].values.some(v => v[1] === 'user_id')
       }
     } catch (e) {
-      console.warn('[DB] Could not check table structure:', e?.message)
+      // Could not check table structure
     }
     
     // Ensure we don't save 'null' strings - convert undefined/null to null or empty string appropriately
@@ -993,17 +984,6 @@ function saveDevice(deviceInfo) {
       lastSyncAt: deviceInfo.lastSyncAt && deviceInfo.lastSyncAt !== 'null' && deviceInfo.lastSyncAt !== 'undefined' && deviceInfo.lastSyncAt !== '' ? String(deviceInfo.lastSyncAt) : null
     }
     
-    console.log('[DB] Cleaned device info:', cleanDeviceInfo)
-    console.log('[DB] Binding values:', {
-      id: cleanDeviceInfo.id,
-      userId: cleanDeviceInfo.userId,
-      userIdType: typeof cleanDeviceInfo.userId,
-      userIdLength: cleanDeviceInfo.userId ? cleanDeviceInfo.userId.length : 0,
-      clientId: cleanDeviceInfo.clientId,
-      name: cleanDeviceInfo.name,
-      createdAt: cleanDeviceInfo.createdAt
-    })
-    
     // Preservar el estado de migrated si existe, o usar el valor proporcionado
     const migrated = deviceInfo.migrated !== undefined ? (deviceInfo.migrated ? 1 : 0) : null
     
@@ -1012,7 +992,6 @@ function saveDevice(deviceInfo) {
     let stmt
     if (hasSnakeCase) {
       // Use snake_case columns (user_id, client_id) for required fields
-      console.log('[DB] Using snake_case columns (user_id, client_id)')
       // Si migrated es null, obtener el valor actual de la DB
       let currentMigrated = 0
       if (migrated === null && cleanDeviceInfo.id) {
@@ -1044,7 +1023,6 @@ function saveDevice(deviceInfo) {
       ])
     } else {
       // Use camelCase columns only
-      console.log('[DB] Using camelCase columns only')
       // Si migrated es null, obtener el valor actual de la DB
       let currentMigrated = 0
       if (migrated === null && cleanDeviceInfo.id) {
@@ -1075,10 +1053,8 @@ function saveDevice(deviceInfo) {
     stmt.step()
     stmt.free()
     persist()
-    console.log('[DB] Device saved successfully:', { id: cleanDeviceInfo.id, userId: cleanDeviceInfo.userId, clientId: cleanDeviceInfo.clientId })
     return true
   } catch (e) {
-    console.error('[DB] Error saving device:', e)
     return false
   }
 }
@@ -1144,7 +1120,6 @@ function getDevice() {
     stmt.free()
     return result
   } catch (e) {
-    console.error('[DB] Error getting device:', e?.message || e)
     return null
   }
 }
@@ -1207,7 +1182,6 @@ function getDeviceByClientId(clientId) {
     stmt.free()
     return result
   } catch (e) {
-    console.error('[DB] Error getting device by clientId:', e?.message || e)
     return null
   }
 }
@@ -1253,7 +1227,6 @@ function getAllDevices() {
     stmt.free()
     return devices
   } catch (e) {
-    console.error('[DB] Error getting all devices:', e?.message || e)
     return []
   }
 }
@@ -1281,10 +1254,8 @@ function markDeviceAsMigrated(clientId) {
     stmt.step()
     stmt.free()
     persist()
-    console.log('[DB] Device marked as migrated:', clientId)
     return true
   } catch (e) {
-    console.error('[DB] Error marking device as migrated:', e)
     return false
   }
 }
@@ -1308,7 +1279,7 @@ function getPendingItems() {
           updateStmt.free()
           persist()
         } catch (updateErr) {
-          console.warn(`[DB] Failed to update UUID for item ${r.id}:`, updateErr?.message)
+          // Failed to update UUID
         }
       }
       rows.push({
