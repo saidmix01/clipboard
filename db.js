@@ -34,6 +34,148 @@ async function init(app) {
   } catch {
     db = new SQL.Database()
   }
+  
+  // Primero crear la tabla config si no existe para poder verificar la bandera
+  db.run(`
+    CREATE TABLE IF NOT EXISTS config (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL,
+      updated_at DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%f', 'now'))
+    );
+  `)
+  
+  // Verificar si ya se ejecutó el reset del esquema
+  let schemaResetCompleted = false
+  try {
+    const checkStmt = db.prepare('SELECT value FROM config WHERE key=?')
+    checkStmt.bind(['schema_reset_completed'])
+    if (checkStmt.step()) {
+      const r = checkStmt.getAsObject()
+      schemaResetCompleted = r.value === 'true'
+    }
+    checkStmt.free()
+  } catch (e) {
+    // Si hay error, asumir que no se ha ejecutado
+    schemaResetCompleted = false
+  }
+  
+  // Si no se ha ejecutado el reset, borrar SOLO las tablas de historial y dispositivos
+  if (!schemaResetCompleted) {
+    try {
+      console.log('[DB] Ejecutando reset del esquema - esto solo debería pasar UNA VEZ')
+      console.log('[DB] Solo se borrarán las tablas: history, guest_history, devices')
+      
+      // Verificar cuántos dispositivos hay antes de borrar
+      try {
+        const countStmt = db.prepare('SELECT COUNT(*) as count FROM devices')
+        if (countStmt.step()) {
+          const r = countStmt.getAsObject()
+          const deviceCount = Number(r.count || 0)
+          console.log('[DB] Dispositivos que se van a borrar:', deviceCount)
+        }
+        countStmt.free()
+      } catch (e) {
+        // Ignore
+      }
+      
+      // IMPORTANTE: Solo borrar las tablas de historial y dispositivos
+      // NO borrar config ni otras tablas que puedan existir
+      db.run('DROP TABLE IF EXISTS history')
+      db.run('DROP TABLE IF EXISTS guest_history')
+      db.run('DROP TABLE IF EXISTS devices')
+      
+      // Borrar solo los índices relacionados con las tablas que borramos
+      db.run('DROP INDEX IF EXISTS idx_history_device_value')
+      db.run('DROP INDEX IF EXISTS idx_history_device_created')
+      db.run('DROP INDEX IF EXISTS idx_history_device_favorite')
+      db.run('DROP INDEX IF EXISTS idx_history_device_synced')
+      db.run('DROP INDEX IF EXISTS idx_history_device_deleted')
+      db.run('DROP INDEX IF EXISTS idx_guest_device_value')
+      db.run('DROP INDEX IF EXISTS idx_guest_device_created')
+      db.run('DROP INDEX IF EXISTS idx_guest_device_deleted')
+      
+      // Recrear todas las tablas con el esquema completo actualizado
+      db.run(`
+        CREATE TABLE history (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          value TEXT NOT NULL,
+          favorite INTEGER NOT NULL DEFAULT 0,
+          device TEXT NOT NULL,
+          created_at DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%f', 'now')),
+          updated_at DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%f', 'now')),
+          version INTEGER NOT NULL DEFAULT 1,
+          is_synced INTEGER NOT NULL DEFAULT 0,
+          client_item_id TEXT,
+          is_deleted INTEGER NOT NULL DEFAULT 0,
+          remote_id TEXT,
+          pending INTEGER DEFAULT 1,
+          device_id TEXT,
+          uuid TEXT,
+          type TEXT DEFAULT 'text'
+        );
+        CREATE TABLE guest_history (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          value TEXT NOT NULL,
+          favorite INTEGER NOT NULL DEFAULT 0,
+          device TEXT NOT NULL,
+          created_at DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%f', 'now')),
+          is_deleted INTEGER NOT NULL DEFAULT 0,
+          remote_id TEXT
+        );
+        CREATE TABLE devices (
+          id TEXT PRIMARY KEY,
+          userId TEXT NOT NULL,
+          clientId TEXT NOT NULL,
+          name TEXT NOT NULL,
+          createdAt TEXT NOT NULL,
+          lastSyncAt TEXT,
+          migrated INTEGER NOT NULL DEFAULT 0
+        );
+      `)
+      
+      // Crear índices
+      db.run(`
+        CREATE UNIQUE INDEX idx_history_device_value ON history(device, value);
+        CREATE INDEX idx_history_device_created ON history(device, created_at DESC);
+        CREATE INDEX idx_history_device_favorite ON history(device, favorite);
+        CREATE INDEX idx_history_device_synced ON history(device, is_synced);
+        CREATE INDEX idx_history_device_deleted ON history(device, is_deleted);
+        CREATE UNIQUE INDEX idx_guest_device_value ON guest_history(device, value);
+        CREATE INDEX idx_guest_device_created ON guest_history(device, created_at DESC);
+        CREATE INDEX idx_guest_device_deleted ON guest_history(device, is_deleted);
+      `)
+      
+      // Guardar la bandera indicando que el reset ya se ejecutó
+      const flagStmt = db.prepare('INSERT OR REPLACE INTO config(key, value, updated_at) VALUES(?, ?, strftime(\'%Y-%m-%d %H:%M:%f\', \'now\'))')
+      flagStmt.bind(['schema_reset_completed', 'true'])
+      flagStmt.step()
+      flagStmt.free()
+      
+      // IMPORTANTE: Persistir cambios inmediatamente ANTES de continuar
+      // Esto asegura que la bandera se guarde y no se borren las tablas en el próximo inicio
+      persist()
+      
+      // Verificar que la bandera se guardó correctamente
+      try {
+        const verifyStmt = db.prepare('SELECT value FROM config WHERE key=?')
+        verifyStmt.bind(['schema_reset_completed'])
+        if (verifyStmt.step()) {
+          const r = verifyStmt.getAsObject()
+          if (r.value !== 'true') {
+            console.error('[DB] ERROR: La bandera schema_reset_completed no se guardó correctamente')
+          }
+        }
+        verifyStmt.free()
+      } catch (e) {
+        console.error('[DB] ERROR verificando bandera:', e)
+      }
+    } catch (e) {
+      // Si hay error en el reset, continuar con el flujo normal
+      // pero no marcar como completado para que se intente de nuevo
+    }
+  }
+  
+  // Continuar con el esquema normal (por si acaso falta algo)
   db.run(`
     CREATE TABLE IF NOT EXISTS history (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -710,6 +852,22 @@ function persist() {
   } catch (e) {
     // Persist error
   }
+}
+
+function reloadDatabase() {
+  if (!dbFilePath || !SQL) return false
+  try {
+    if (fs.existsSync(dbFilePath)) {
+      // Recargar desde el archivo (sql.js no requiere cerrar explícitamente)
+      // Simplemente crear una nueva instancia que reemplazará la anterior
+      const buf = fs.readFileSync(dbFilePath)
+      db = new SQL.Database(new Uint8Array(buf))
+      return true
+    }
+  } catch (e) {
+    // Reload error - si falla, la instancia anterior sigue activa
+  }
+  return false
 }
 
 function sanitize(name) {
@@ -1631,4 +1789,4 @@ function getTableInfo(tableName) {
   }
 }
 
-module.exports = { init, getAll, insert, setFavorite, clear, clearAll, importItems, search, searchPaginated, getRecent, getByValues, getNotIn, trimToLimit, insertGuest, getAllGuest, clearGuest, trimGuestToLimit, searchGuest, searchGuestPaginated, getRecentGuest, deleteById, getById, updateRemoteIdByValue, getDirtyItems, markSynced, updateFromConflict, updateRemoteId, countActive, countGuestActive, deleteNotInRemote, getConfig, setConfig, removeConfig, getAllConfig, getLegacyImages, updateValue, updateImagesBulk, saveDevice, getDevice, getDeviceByClientId, getAllDevices, updateDeviceLastSyncAt, getPendingItems, markItemCompleted, updateItemFromServer, markDeviceAsMigrated, executeQuery, listTables, getTableInfo }
+module.exports = { init, getAll, insert, setFavorite, clear, clearAll, importItems, search, searchPaginated, getRecent, getByValues, getNotIn, trimToLimit, insertGuest, getAllGuest, clearGuest, trimGuestToLimit, searchGuest, searchGuestPaginated, getRecentGuest, deleteById, getById, updateRemoteIdByValue, getDirtyItems, markSynced, updateFromConflict, updateRemoteId, countActive, countGuestActive, deleteNotInRemote, getConfig, setConfig, removeConfig, getAllConfig, getLegacyImages, updateValue, updateImagesBulk, saveDevice, getDevice, getDeviceByClientId, getAllDevices, updateDeviceLastSyncAt, getPendingItems, markItemCompleted, updateItemFromServer, markDeviceAsMigrated, executeQuery, listTables, getTableInfo, reloadDatabase }

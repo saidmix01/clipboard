@@ -1170,8 +1170,17 @@ app.whenReady().then(async () => {
     return
   }
   
-  // Initialize active device from database (devices table)
+  // Initialize active device - SIEMPRE usar el dispositivo actual (hostname)
+  // Esto asegura que al abrir la app, siempre se seleccione el dispositivo actual
   initializeActiveDevice()
+  
+  // Asegurarse de que activeDeviceName esté establecido correctamente
+  // (por si acaso algo lo cambió antes de initializeActiveDevice)
+  const initialHostname = sanitizeDeviceName(os.hostname())
+  if (activeDeviceName !== initialHostname) {
+    activeDeviceName = initialHostname
+    log.info('Dispositivo activo establecido al hostname actual:', initialHostname)
+  }
   
   // Actualizar lista de dispositivos al inicio si hay sesión
   try {
@@ -1315,6 +1324,10 @@ app.whenReady().then(async () => {
               console.log('[MAIN] Sync: Subidos:', msg.pushResult?.successful || 0, 'Fallidos:', msg.pushResult?.failed || 0, '| Descargados:', msg.pullResult?.received || 0, 'Insertados:', msg.pullResult?.inserted || 0, 'Actualizados:', msg.pullResult?.updated || 0)
               syncLock = false
               
+              // IMPORTANTE: Recargar la base de datos desde el archivo para ver los cambios del daemon
+              // El daemon guarda los items en su instancia de la DB, necesitamos recargar para verlos
+              db.reloadDatabase()
+              
               // Recargar historial desde DB del dispositivo sincronizado
               // Usar el deviceName del mensaje si está disponible, sino usar el dispositivo actual
               const syncedDeviceName = msg.deviceName ? sanitizeDeviceName(msg.deviceName) : getCurrentDeviceName()
@@ -1338,39 +1351,6 @@ app.whenReady().then(async () => {
               if (syncCompletionResolve) {
                 syncCompletionResolve()
                 syncCompletionResolve = null
-              }
-              break
-              
-            case 'MIGRATION_DONE':
-              migrationInProgress = false
-              migrationCompleted = true
-              
-              // Recargar historial desde DB del dispositivo actual (que debería ser el seleccionado)
-              const migrationDevice = getCurrentDeviceName()
-              history = db.getAll(migrationDevice)
-              if (mainWindow?.webContents) {
-                mainWindow.webContents.send('clipboard-update', augmentHistoryWithImagePaths(history))
-                mainWindow.webContents.send('sync-progress', {
-                  percentage: 100,
-                  message: msg.message || 'Migración completada',
-                  type: 'migration-done'
-                })
-              }
-              // Emitir evento para notificar que la migración terminó
-              if (migrationCompletionResolve) {
-                migrationCompletionResolve()
-                migrationCompletionResolve = null
-              }
-              break
-              
-            case 'MIGRATION_ERROR':
-              migrationInProgress = false
-              if (mainWindow?.webContents) {
-                mainWindow.webContents.send('sync-progress', {
-                  percentage: 100,
-                  message: `Error en migración: ${msg.error}`,
-                  type: 'migration-error'
-                })
               }
               break
               
@@ -1495,9 +1475,19 @@ app.whenReady().then(async () => {
   }
   autoUpdater.forceDevUpdateConfig = true
   
+  // Asegurarse de que el dispositivo activo sea el actual antes de cargar el historial
+  const currentHostname = sanitizeDeviceName(os.hostname())
+  if (activeDeviceName !== currentHostname) {
+    activeDeviceName = currentHostname
+    log.info('Dispositivo activo corregido antes de cargar historial:', currentHostname)
+  }
+  
   // Cargar historial una sola vez al inicio (optimización)
+  // SIEMPRE usar el dispositivo actual (hostname) para evitar bugs
   try {
-    history = authToken ? db.getAll(getCurrentDeviceName()) : db.getAllGuest(getCurrentDeviceName())
+    const deviceName = getCurrentDeviceName()
+    log.info('Cargando historial para dispositivo:', deviceName)
+    history = authToken ? db.getAll(deviceName) : db.getAllGuest(deviceName)
   } catch (err) {
     log.error('Error al leer historial (device)', err)
     history = []
@@ -2669,6 +2659,15 @@ async function ensureLocalDevices () {
         db.setConfig('devices', JSON.stringify(names))
       }
       
+      // IMPORTANTE: Recargar la base de datos para ver los cambios guardados
+      // (en caso de que el daemon también haya actualizado dispositivos)
+      db.reloadDatabase()
+      
+      // Notificar al frontend que los dispositivos se actualizaron
+      if (mainWindow?.webContents) {
+        mainWindow.webContents.send('devices-updated')
+      }
+      
       log.info('ensureLocalDevices completo', { count: list.length, savedToTable: list.length })
     } catch (error) {
       log.error('ensureLocalDevices error al obtener dispositivos del backend', error?.message || error)
@@ -2763,10 +2762,6 @@ async function refreshTokenFromSession (session) {
   }
 }
 
-// Flag to prevent multiple migration executions
-let migrationInProgress = false
-let migrationCompleted = false
-let migrationCompletionResolve = null // Promise resolver para esperar la migración
 let syncCompletionResolve = null // Promise resolver para esperar el sync
 
 ipcMain.on('set-auth-token', async (event, token) => {
@@ -2803,44 +2798,20 @@ ipcMain.on('set-auth-token', async (event, token) => {
       type: 'SET_CONFIG',
       config: configToSend
     })
-    
-    // Run migration once: clear local history and load from server (non-blocking)
-    // Verificar si la migración ya se ejecutó (guardado en DB local)
-    const migrationCompletedInDB = db.getConfig('migration_completed')
-    if (migrationCompletedInDB === 'true') {
-      migrationCompleted = true
-      return // No ejecutar migración si ya se completó
-    }
-    
-    if (!migrationInProgress && !migrationCompleted) {
-      // console.log('[MAIN] ==========================================')
-      // console.log('[MAIN] Requesting migration from daemon...')
-      // console.log('[MAIN] Device name:', getCurrentDeviceName())
-      // console.log('[MAIN] Daemon connected:', syncDaemon && syncDaemon.connected)
-      // console.log('[MAIN] ==========================================')
-      migrationInProgress = true
-      const deviceName = getCurrentDeviceName()
-      if (syncDaemon && syncDaemon.connected) {
-        syncDaemon.send({
-          type: 'MIGRATION_START',
-          deviceName: deviceName
-        })
-        // console.log('[MAIN] Migration request sent to daemon')
-      } else {
-        // console.error('[MAIN] Cannot send migration: daemon not connected')
-        migrationInProgress = false
-      }
-    } else if (migrationInProgress) {
-      // console.log('[MAIN] Migration already in progress, skipping...')
-    } else if (migrationCompleted) {
-      // console.log('[MAIN] Migration already completed, skipping...')
-    }
   }
   
   // First ensure device is registered (this will call POST /devices)
   await ensureDeviceRegistered()
   
-  // Then sync using daemon
+  // Asegurarse de que el dispositivo activo sea el actual (hostname)
+  // Esto previene bugs donde se queda seleccionado otro dispositivo
+  const currentHostname = sanitizeDeviceName(os.hostname())
+  if (activeDeviceName !== currentHostname) {
+    activeDeviceName = currentHostname
+    log.info('Dispositivo activo corregido al hostname actual:', currentHostname)
+  }
+  
+  // Then sync using daemon (siempre ejecutar sync para el dispositivo actual)
   syncClipboardHistory()
   ensureLocalDevices()
   Promise.resolve(enforceHistoryLimit(1000)).catch(() => {})
@@ -2964,37 +2935,6 @@ async function resolveDeviceIdentifiers (rawName) {
   return { deviceId: null, clientId: null, name: sanitizeDeviceName(rawName) }
 }
 
-async function startMigration(deviceName) {
-  try {
-    if (!authToken) {
-      console.warn('[MAIN-MIGRATION] No auth token, skipping migration')
-      return
-    }
-    
-    if (!syncDaemon || !syncDaemon.connected) {
-      console.error('[MAIN-MIGRATION] Sync daemon not available')
-      return
-    }
-    
-    if (mainWindow?.webContents) {
-      mainWindow.webContents.send('sync-progress', { percentage: 0, message: 'Iniciando migración...', type: 'migration-start' })
-    }
-    
-    // Enviar comando de migración al daemon con el deviceName especificado
-    const targetDeviceName = deviceName ? sanitizeDeviceName(deviceName) : getCurrentDeviceName()
-    syncDaemon.send({
-      type: 'MIGRATION_START',
-      deviceName: targetDeviceName
-    })
-    
-  } catch (error) {
-    console.error('[MAIN-MIGRATION] startMigration error:', error?.message || error)
-    if (mainWindow?.webContents) {
-      mainWindow.webContents.send('sync-progress', { percentage: 100, message: 'Migración fallida', type: 'migration-error' })
-    }
-  }
-}
-
 // Handler para sincronizar manualmente (botón "Sincronizar ahora")
 ipcMain.handle('sync-now', async () => {
   try {
@@ -3057,52 +2997,30 @@ ipcMain.handle('switch-active-device', async (_, deviceName) => {
       mainWindow.webContents.send('clipboard-update', augmentHistoryWithImagePaths(history))
     }
     
-    // Verificar si el dispositivo ya fue migrado
-    const isMigrated = deviceInfo && deviceInfo.migrated === true
-    
-    if (!isMigrated && authToken) {
-      // Si no está migrado, ejecutar migración y cargar items
+    // Ejecutar sync para traer los datos del dispositivo seleccionado
+    if (authToken) {
       if (mainWindow?.webContents) {
-        mainWindow.webContents.send('sync-progress', { percentage: 0, message: 'Migrando dispositivo por primera vez...', type: 'device-migration' })
+        mainWindow.webContents.send('sync-progress', { percentage: 0, message: 'Sincronizando dispositivo...', type: 'device-sync' })
       }
       
-      const migrationWaitPromise = new Promise((resolve) => {
-        migrationCompletionResolve = resolve
-      })
-      
-      if (syncDaemon && syncDaemon.connected) {
-        syncDaemon.send({
-          type: 'MIGRATION_START',
-          deviceName: targetClientId
-        })
-      }
-      
-      const migrationTimeoutMs = 60 * 1000
-      const migrationTimeout = new Promise(resolve => setTimeout(() => {
-        if (migrationCompletionResolve) {
-          migrationCompletionResolve()
-          migrationCompletionResolve = null
-        }
-        resolve()
-      }, migrationTimeoutMs))
-      
-      await Promise.race([migrationWaitPromise, migrationTimeout])
-      
-      // Recargar historial después de la migración
-      const migratedHist = authToken 
-        ? readDeviceHistoryByName(targetClientId) 
-        : db.getAllGuest(targetClientId)
-      history = migratedHist
-      
-      if (mainWindow?.webContents) {
-        mainWindow.webContents.send('clipboard-update', augmentHistoryWithImagePaths(history))
-        mainWindow.webContents.send('sync-progress', { percentage: 100, message: 'Migración completada', type: 'device-switch-complete' })
-      }
-    } else if (isMigrated && authToken) {
-      // Si ya está migrado, ejecutar sync con el device id
       const syncWaitPromise = new Promise((resolve) => {
         syncCompletionResolve = resolve
       })
+      
+      // Verificar que el daemon esté disponible antes de intentar sync
+      if (!syncDaemon || !syncDaemon.connected) {
+        log.warn('Sync daemon no disponible al cambiar de dispositivo')
+        // Recargar historial de todas formas
+        db.reloadDatabase()
+        const updatedHist = authToken 
+          ? readDeviceHistoryByName(targetClientId) 
+          : db.getAllGuest(targetClientId)
+        history = updatedHist
+        if (mainWindow?.webContents) {
+          mainWindow.webContents.send('clipboard-update', augmentHistoryWithImagePaths(history))
+        }
+        return history
+      }
       
       syncClipboardHistory(targetClientId)
       
@@ -3117,6 +3035,9 @@ ipcMain.handle('switch-active-device', async (_, deviceName) => {
       
       await Promise.race([syncWaitPromise, timeout])
       
+      // IMPORTANTE: Recargar la base de datos desde el archivo para ver los cambios del daemon
+      db.reloadDatabase()
+      
       // Recargar historial después del sync
       const updatedHist = authToken 
         ? readDeviceHistoryByName(targetClientId) 
@@ -3125,6 +3046,7 @@ ipcMain.handle('switch-active-device', async (_, deviceName) => {
       
       if (mainWindow?.webContents) {
         mainWindow.webContents.send('clipboard-update', augmentHistoryWithImagePaths(history))
+        mainWindow.webContents.send('sync-progress', { percentage: 100, message: 'Sincronización completada', type: 'device-switch-complete' })
       }
     }
     

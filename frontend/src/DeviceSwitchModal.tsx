@@ -20,58 +20,69 @@ export default function DeviceSwitchModal({ isOpen, onClose, onApplied, onBack }
   const [progress, setProgress] = useState<number>(0)
   const [status, setStatus] = useState<string>('')
 
-  useEffect(() => {
-    if (!isOpen) return
+  const loadDevices = async () => {
     setError(null)
     setLoading(true)
-    ;(async () => {
+    try {
+      const list = await (window as any).electronAPI?.listDevices?.()
+      let names: string[] = Array.isArray(list) ? list : []
       try {
-        const list = await (window as any).electronAPI?.listDevices?.()
-        let names: string[] = Array.isArray(list) ? list : []
-        try {
-          const token = await (window as any).electronAPI?.getConfig?.('x-token')
-          if (token) {
-            const res = await fetch(`${API_BASE}/devices`, { headers: { Authorization: `Bearer ${token}` } })
-            const data = await res.json()
-            const container: any = (data && typeof data === 'object' ? (data.data ?? data) : {})
-            const arr: any[] = Array.isArray(container) ? container : (Array.isArray(container.items) ? container.items : [])
-            const apiNames = Array.isArray(arr)
-              ? arr.map((d: any) => {
-                  if (typeof d === 'string') return d
-                  const o = d || {}
-                  return String(o.clientId || o.name || '')
-                }).filter(Boolean)
-              : []
-            const clientId = await (window as any).electronAPI?.getConfig?.('clientId')
-            names = Array.from(new Set([...
-              names,
-              ...apiNames,
-              ...(clientId ? [String(clientId)] : [])
-            ])).filter(Boolean)
-          }
-        } catch {}
-        setDevices(names)
-        let initial = ''
-        try {
-          const current = await (window as any).electronAPI?.getActiveDevice?.()
-          if (typeof current === 'string' && current && Array.isArray(list) && list.includes(current)) {
-            initial = current
-          }
-        } catch {}
-        if (!initial) {
-          try {
-            const saved = await (window as any).electronAPI?.getConfig?.('clientId') || ''
-            if (saved && Array.isArray(list) && list.includes(saved)) initial = saved
-          } catch {}
+        const token = await (window as any).electronAPI?.getConfig?.('x-token')
+        if (token) {
+          const res = await fetch(`${API_BASE}/devices`, { headers: { Authorization: `Bearer ${token}` } })
+          const data = await res.json()
+          const container: any = (data && typeof data === 'object' ? (data.data ?? data) : {})
+          const arr: any[] = Array.isArray(container) ? container : (Array.isArray(container.items) ? container.items : [])
+          const apiNames = Array.isArray(arr)
+            ? arr.map((d: any) => {
+                if (typeof d === 'string') return d
+              const o = d || {}
+              return String(o.clientId || o.name || '')
+            }).filter(Boolean)
+            : []
+          const clientId = await (window as any).electronAPI?.getConfig?.('clientId')
+          names = Array.from(new Set([...
+            names,
+            ...apiNames,
+            ...(clientId ? [String(clientId)] : [])
+          ])).filter(Boolean)
         }
-        if (!initial && Array.isArray(list) && list.length) initial = list[0]
-        setSelected(initial)
-      } catch (e) {
-        setError(t('device.error_load_devices'))
-      } finally {
-        setLoading(false)
+      } catch {}
+      setDevices(names)
+      let initial = ''
+      try {
+        const current = await (window as any).electronAPI?.getActiveDevice?.()
+        if (typeof current === 'string' && current && Array.isArray(list) && list.includes(current)) {
+          initial = current
+        }
+      } catch {}
+      if (!initial) {
+        try {
+          const saved = await (window as any).electronAPI?.getConfig?.('clientId') || ''
+          if (saved && Array.isArray(list) && list.includes(saved)) initial = saved
+        } catch {}
       }
-    })()
+      if (!initial && Array.isArray(list) && list.length) initial = list[0]
+      setSelected(initial)
+    } catch (e) {
+      setError(t('device.error_load_devices'))
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  useEffect(() => {
+    if (!isOpen) return
+    loadDevices()
+  }, [isOpen])
+
+  // Escuchar eventos de actualización de dispositivos
+  useEffect(() => {
+    if (!isOpen) return
+    const cleanup = (window as any).electronAPI?.onDevicesUpdated?.(() => {
+      loadDevices()
+    })
+    return cleanup
   }, [isOpen])
 
   useEffect(() => {

@@ -27,7 +27,6 @@ const MESSAGE_TYPES = {
   SYNC_START: 'SYNC_START',
   SYNC_CANCEL: 'SYNC_CANCEL',
   SET_CONFIG: 'SET_CONFIG',
-  MIGRATION_START: 'MIGRATION_START',
   SHUTDOWN: 'SHUTDOWN',
   RELOAD_DATABASE: 'RELOAD_DATABASE',
   
@@ -35,8 +34,6 @@ const MESSAGE_TYPES = {
   SYNC_PROGRESS: 'SYNC_PROGRESS',
   SYNC_ERROR: 'SYNC_ERROR',
   SYNC_DONE: 'SYNC_DONE',
-  MIGRATION_DONE: 'MIGRATION_DONE',
-  MIGRATION_ERROR: 'MIGRATION_ERROR',
   TOKEN_REFRESHED: 'TOKEN_REFRESHED',
   READY: 'READY'
 }
@@ -55,8 +52,6 @@ let config = {
 }
 let syncInProgress = false
 let syncCanceled = false
-let migrationInProgress = false
-let migrationCompleted = false
 
 // ============================================================================
 // INICIALIZACIÓN DE SQLite
@@ -225,13 +220,16 @@ function getDeviceByClientId(clientId) {
     let result = null
     if (stmt.step()) {
       const r = stmt.getAsObject()
+      // Leer lastSyncAt directamente - si existe, usarlo
+      const lastSyncAtValue = r.lastSyncAt ? String(r.lastSyncAt).trim() : null
+      
       result = {
         id: String(r.id || ''),
         userId: String(r.userId || ''),
         clientId: String(r.clientId || ''),
         name: String(r.name || ''),
         createdAt: String(r.createdAt || ''),
-        lastSyncAt: r.lastSyncAt ? String(r.lastSyncAt) : null,
+        lastSyncAt: lastSyncAtValue,
         migrated: r.migrated ? (r.migrated === 1 || r.migrated === '1' || r.migrated === true) : false
       }
     }
@@ -458,6 +456,18 @@ function updateItemFromServer(serverItem, device) {
   } catch (error) {
     return false
   }
+}
+
+function sanitizeDeviceName(name) {
+  if (!name || typeof name !== 'string') return 'device'
+  return String(name)
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/\.{2,}/g, '.')
+    .replace(/^\.+|\.+$/g, '')
+    .slice(0, 64) || 'device'
 }
 
 function getConfig(key) {
@@ -912,180 +922,6 @@ function clearDeviceHistory(device) {
   }
 }
 
-// ============================================================================
-// MIGRACIÓN - Clear local history and reload from server
-// ============================================================================
-
-async function performMigration(deviceName) {
-  // Verificar si la migración ya se ejecutó (guardado en DB)
-  const migrationCompletedInDB = getConfig('migration_completed')
-  if (migrationCompletedInDB === 'true') {
-    migrationCompleted = true
-    return
-  }
-  
-  if (migrationInProgress) {
-    return
-  }
-  
-  if (migrationCompleted) {
-    return
-  }
-  
-  migrationInProgress = true
-  
-  try {
-    sendMessage(MESSAGE_TYPES.SYNC_PROGRESS, {
-      percentage: 0,
-      message: 'Iniciando migración...',
-      stage: 'migration'
-    })
-    
-    if (!config.authToken || !config.backendUrl) {
-      throw new Error('No auth token or backend URL configured')
-    }
-    
-    // Ensure device is registered
-    sendMessage(MESSAGE_TYPES.SYNC_PROGRESS, {
-      percentage: 5,
-      message: 'Registrando dispositivo...',
-      stage: 'migration'
-    })
-    
-    // Primero intentar obtener el dispositivo por clientId (deviceName)
-    let device = getDeviceByClientId(deviceName)
-    
-    // Si no se encuentra, intentar registrar/obtener el dispositivo
-    if (!device || !device.id) {
-      device = await ensureDeviceRegistered()
-      if (!device || !device.id) {
-        throw new Error('Device registration failed')
-      }
-    }
-    
-    const clientId = device.clientId || deviceName
-    const deviceId = device.id
-    
-    // Usar el clientId del dispositivo para guardar los items (puede ser diferente al deviceName)
-    const targetDeviceName = clientId || deviceName
-    
-    // Step 1: Clear local history for the selected device only
-    sendMessage(MESSAGE_TYPES.SYNC_PROGRESS, {
-      percentage: 10,
-      message: 'Limpiando historial del dispositivo...',
-      stage: 'migration'
-    })
-    
-    // Clear history only for the selected device (usar clientId si está disponible)
-    clearDeviceHistory(targetDeviceName)
-    
-    // Step 2: Fetch all items from server
-    sendMessage(MESSAGE_TYPES.SYNC_PROGRESS, {
-      percentage: 20,
-      message: 'Descargando items del servidor...',
-      stage: 'migration'
-    })
-    
-    const axiosInstance = getAxiosInstance()
-    const url = '/clipboard'
-    const params = { clientId, deviceId }
-    
-    const res = await axiosInstance.get(url, { params })
-    
-    const data = res?.data
-    const items = (data && typeof data === 'object' && data.data?.items)
-      ? data.data.items
-      : (Array.isArray(data?.data) ? data.data : [])
-    
-    const mappedItems = Array.isArray(items)
-      ? items.map(it => ({
-          id: it.id,
-          uuid: it.uuid || it.id,
-          deviceId: it.deviceId,
-          clientId: it.clientId,
-          type: it.type || 'text',
-          value: String(it.value || ''),
-          favorite: !!it.favorite,
-          version: it.version || 1,
-          createdAt: it.createdAt,
-          updatedAt: it.updatedAt || it.createdAt
-        }))
-      : []
-    
-    // Step 3: Save all items to local database (in batches)
-    sendMessage(MESSAGE_TYPES.SYNC_PROGRESS, {
-      percentage: 30,
-      message: `Guardando ${mappedItems.length} items...`,
-      stage: 'migration'
-    })
-    
-    const BATCH_SIZE = 100
-    let saved = 0
-    let failed = 0
-    
-    // Procesar en batches
-    for (let batchStart = 0; batchStart < mappedItems.length; batchStart += BATCH_SIZE) {
-      const batchEnd = Math.min(batchStart + BATCH_SIZE, mappedItems.length)
-      const batch = mappedItems.slice(batchStart, batchEnd)
-      
-      // Procesar todo el batch en paralelo con Promise.all
-      const batchPromises = batch.map(async (item) => {
-        try {
-          updateItemFromServer(item, targetDeviceName)
-          return { success: true }
-        } catch (itemError) {
-          return { success: false }
-        }
-      })
-      
-      // Esperar a que todo el batch termine en paralelo
-      const results = await Promise.all(batchPromises)
-      results.forEach(result => {
-        if (result.success) {
-          saved++
-        } else {
-          failed++
-        }
-      })
-      
-      // Actualizar progreso después de cada batch
-      const percentage = 30 + Math.round((batchEnd / mappedItems.length) * 60)
-      sendMessage(MESSAGE_TYPES.SYNC_PROGRESS, {
-        percentage: percentage,
-        message: `Guardando ${batchEnd}/${mappedItems.length} items...`,
-        stage: 'migration'
-      })
-      
-      // Liberar event loop brevemente entre batches
-      if (batchEnd < mappedItems.length) {
-        await new Promise(resolve => setImmediate(resolve))
-      }
-    }
-    
-    // Mark device as migrated
-    markDeviceAsMigrated(targetDeviceName)
-    
-    // Mark as completed y guardar en DB
-    migrationCompleted = true
-    migrationInProgress = false
-    setConfig('migration_completed', 'true')
-    
-    sendMessage(MESSAGE_TYPES.MIGRATION_DONE, {
-      percentage: 100,
-      message: `Migración completada: ${saved} items guardados`,
-      saved,
-      failed,
-      total: mappedItems.length
-    })
-    
-  } catch (error) {
-    migrationInProgress = false
-    sendMessage(MESSAGE_TYPES.MIGRATION_ERROR, {
-      error: error.message,
-      details: error.stack
-    })
-  }
-}
 
 // ============================================================================
 // FLUJO DE SYNC PRINCIPAL
@@ -1120,14 +956,145 @@ async function performSync(deviceName) {
       stage: 'device'
     })
     
+    // IMPORTANTE: Recargar la base de datos ANTES de buscar el dispositivo
+    // Esto es CRÍTICO porque el main process puede haber actualizado el lastSyncAt
+    // y necesitamos ver esos cambios antes de buscar el dispositivo
+    console.log('[DAEMON-SYNC] Recargando base de datos antes de buscar dispositivo inicial...')
+    const reloadResult = reloadDatabase()
+    console.log('[DAEMON-SYNC] Base de datos recargada:', reloadResult ? 'Éxito' : 'Falló')
+    
     // Primero intentar obtener el dispositivo por clientId (deviceName)
     let device = getDeviceByClientId(deviceName)
+    console.log('[DAEMON-SYNC] Dispositivo inicial encontrado por clientId:', device ? 'Sí' : 'No')
+    if (device) {
+      console.log('[DAEMON-SYNC] Dispositivo inicial - id:', device.id, 'clientId:', device.clientId, 'lastSyncAt:', device.lastSyncAt)
+    } else {
+      console.log('[DAEMON-SYNC] Dispositivo NO encontrado por clientId:', deviceName)
+    }
     
-    // Si no se encuentra, intentar registrar/obtener el dispositivo
+    // Si no se encuentra por clientId, intentar buscar por name
     if (!device || !device.id) {
-      device = await ensureDeviceRegistered()
-      if (!device || !device.id) {
-        throw new Error('Device registration failed')
+      if (!db) return
+      try {
+        const stmt = db.prepare('SELECT id, userId, clientId, name, createdAt, lastSyncAt, migrated FROM devices WHERE name=? LIMIT 1')
+        stmt.bind([deviceName])
+        if (stmt.step()) {
+          const r = stmt.getAsObject()
+          console.log('[DAEMON-SYNC] Dispositivo encontrado por name - lastSyncAt (raw):', r.lastSyncAt)
+          
+          // Leer lastSyncAt correctamente
+          let lastSyncAtValue = null
+          if (r.lastSyncAt != null && r.lastSyncAt !== undefined) {
+            const lastSyncStr = String(r.lastSyncAt).trim()
+            if (lastSyncStr && lastSyncStr !== 'null' && lastSyncStr !== 'undefined') {
+              lastSyncAtValue = lastSyncStr
+            }
+          }
+          
+          device = {
+            id: String(r.id || ''),
+            userId: String(r.userId || ''),
+            clientId: String(r.clientId || ''),
+            name: String(r.name || ''),
+            createdAt: String(r.createdAt || ''),
+            lastSyncAt: lastSyncAtValue,
+            migrated: r.migrated ? (r.migrated === 1 || r.migrated === '1' || r.migrated === true) : false
+          }
+          console.log('[DAEMON-SYNC] Dispositivo encontrado por name - lastSyncAt (procesado):', device.lastSyncAt)
+        }
+        stmt.free()
+      } catch (error) {
+        console.log('[DAEMON-SYNC] Error buscando por name:', error.message)
+      }
+    }
+    
+    console.log('[DAEMON-SYNC] Buscando dispositivo:', deviceName)
+    console.log('[DAEMON-SYNC] Dispositivo encontrado en DB local:', device ? 'Sí' : 'No')
+    if (device) {
+      console.log('[DAEMON-SYNC] Dispositivo encontrado - clientId:', device.clientId, 'name:', device.name, 'lastSyncAt:', device.lastSyncAt)
+    }
+    
+    // Guardar el lastSyncAt existente si el dispositivo ya está en la DB local
+    let existingLastSyncAt = null
+    if (device && device.lastSyncAt) {
+      existingLastSyncAt = device.lastSyncAt
+      console.log('[DAEMON-SYNC] lastSyncAt existente preservado:', existingLastSyncAt)
+    }
+    
+    // Si no se encuentra, intentar registrar/obtener el dispositivo con el deviceName especificado
+    if (!device || !device.id) {
+      // Intentar obtener el dispositivo del backend usando el deviceName
+      try {
+        const axiosInstance = getAxiosInstance()
+        const res = await axiosInstance.get('/devices')
+        const data = res?.data
+        const container = (data && typeof data === 'object' ? (data.data ?? data) : {})
+        const list = Array.isArray(container) ? container : (Array.isArray(container.items) ? container.items : [])
+        
+        // Buscar el dispositivo en la lista del backend
+        const foundDevice = Array.isArray(list) ? list.find(d => {
+          const dClientId = d.clientId || d.client_id || d.name || ''
+          return sanitizeDeviceName(dClientId) === deviceName || sanitizeDeviceName(d.name) === deviceName
+        }) : null
+        
+        if (foundDevice && foundDevice.id) {
+          // Guardar el dispositivo encontrado en la DB local
+          // Preservar el lastSyncAt existente si existe, sino usar el del backend
+          const lastSyncAtToUse = existingLastSyncAt || foundDevice.lastSyncAt || foundDevice.last_sync_at || null
+          const deviceInfo = {
+            id: foundDevice.id,
+            userId: foundDevice.userId || foundDevice.user_id || '',
+            clientId: foundDevice.clientId || foundDevice.client_id || deviceName,
+            name: foundDevice.name || deviceName,
+            createdAt: foundDevice.createdAt || foundDevice.created_at || new Date().toISOString(),
+            lastSyncAt: lastSyncAtToUse
+          }
+          saveDevice(deviceInfo)
+          device = deviceInfo
+        } else {
+          // Si no se encuentra en el backend, registrar uno nuevo con el deviceName especificado
+          const hostname = require('os').hostname()
+          const osName = process.platform === 'win32' ? 'Windows' : (process.platform === 'darwin' ? 'macOS' : 'Linux')
+          const payload = {
+            clientId: deviceName, // Usar el deviceName que se pasó, no el hostname
+            name: deviceName,
+            metadata: { os: osName }
+          }
+          const res2 = await axiosInstance.post('/devices', payload)
+          const data2 = res2?.data
+          const newDevice = (data2 && data2.data && data2.data.device)
+            ? data2.data.device
+            : (data2 && data2.device)
+              ? data2.device
+              : (data2 && typeof data2 === 'object' && data2.id ? data2 : null)
+          
+          if (newDevice && newDevice.id) {
+            // Preservar el lastSyncAt existente si existe
+            const deviceInfo = {
+              id: newDevice.id,
+              userId: newDevice.userId || '',
+              clientId: newDevice.clientId || deviceName,
+              name: newDevice.name || deviceName,
+              createdAt: newDevice.createdAt || new Date().toISOString(),
+              lastSyncAt: existingLastSyncAt || null
+            }
+            saveDevice(deviceInfo)
+            device = deviceInfo
+          } else {
+            throw new Error('Failed to register device')
+          }
+        }
+      } catch (error) {
+        // Si falla, intentar con ensureDeviceRegistered como fallback
+        device = await ensureDeviceRegistered()
+        if (!device || !device.id) {
+          throw new Error('Device registration failed')
+        }
+        // Preservar el lastSyncAt existente si existe
+        if (existingLastSyncAt && device) {
+          device.lastSyncAt = existingLastSyncAt
+          saveDevice(device)
+        }
       }
     }
     
@@ -1137,23 +1104,110 @@ async function performSync(deviceName) {
     // Usar el clientId del dispositivo para guardar los items (puede ser diferente al deviceName)
     const targetDeviceName = clientId || deviceName
     
+    // IMPORTANTE: Recargar la base de datos nuevamente después de obtener el dispositivo
+    // para asegurar que tenemos el lastSyncAt más reciente (puede haber sido actualizado por el main process)
+    // Esto es CRÍTICO porque el main process puede haber actualizado el lastSyncAt después del último sync
+    console.log('[DAEMON-SYNC] Recargando base de datos nuevamente antes de buscar dispositivo refrescado...')
+    reloadDatabase()
+    console.log('[DAEMON-SYNC] Base de datos recargada nuevamente')
+    
+    // IMPORTANTE: Buscar el dispositivo por deviceId directamente, ya que es el identificador más confiable
+    // El deviceId es único y no cambia, mientras que clientId puede variar
+    let refreshedDevice = null
+    if (db && deviceId) {
+      try {
+        const stmt = db.prepare('SELECT id, userId, clientId, name, createdAt, lastSyncAt, migrated FROM devices WHERE id=? LIMIT 1')
+        stmt.bind([deviceId])
+        if (stmt.step()) {
+          const r = stmt.getAsObject()
+          
+          // Leer lastSyncAt - verificar todos los casos posibles
+          let lastSyncAtValue = null
+          if (r.lastSyncAt !== null && r.lastSyncAt !== undefined) {
+            const lastSyncStr = String(r.lastSyncAt).trim()
+            if (lastSyncStr && lastSyncStr !== 'null' && lastSyncStr !== 'undefined' && lastSyncStr !== '') {
+              lastSyncAtValue = lastSyncStr
+            }
+          }
+          
+          refreshedDevice = {
+            id: String(r.id || ''),
+            userId: String(r.userId || ''),
+            clientId: String(r.clientId || ''),
+            name: String(r.name || ''),
+            createdAt: String(r.createdAt || ''),
+            lastSyncAt: lastSyncAtValue,
+            migrated: r.migrated ? (r.migrated === 1 || r.migrated === '1' || r.migrated === true) : false
+          }
+          
+          console.log('[DAEMON-SYNC] Dispositivo refrescado encontrado por deviceId - lastSyncAt:', refreshedDevice.lastSyncAt)
+        } else {
+          console.log('[DAEMON-SYNC] Dispositivo NO encontrado por deviceId:', deviceId)
+        }
+        stmt.free()
+      } catch (error) {
+        console.log('[DAEMON-SYNC] Error buscando por deviceId:', error.message)
+      }
+    }
+    
+    // Si no se encuentra por deviceId, intentar por clientId
+    if (!refreshedDevice || !refreshedDevice.id) {
+      console.log('[DAEMON-SYNC] Buscando dispositivo por clientId:', clientId)
+      refreshedDevice = getDeviceByClientId(clientId)
+      if (refreshedDevice) {
+        console.log('[DAEMON-SYNC] Dispositivo encontrado por clientId - lastSyncAt:', refreshedDevice.lastSyncAt)
+      } else {
+        console.log('[DAEMON-SYNC] Dispositivo NO encontrado por clientId')
+      }
+    }
+    
+    // Si aún no se encuentra, intentar buscar por name
+    if (!refreshedDevice || !refreshedDevice.id) {
+      if (db) {
+        try {
+          const stmt = db.prepare('SELECT id, userId, clientId, name, createdAt, lastSyncAt, migrated FROM devices WHERE name=? LIMIT 1')
+          stmt.bind([deviceName])
+          if (stmt.step()) {
+            const r = stmt.getAsObject()
+            // Leer lastSyncAt - si existe y no es null/undefined, usarlo directamente
+            const lastSyncAtValue = (r.lastSyncAt != null && r.lastSyncAt !== undefined && String(r.lastSyncAt).trim() !== '') 
+              ? String(r.lastSyncAt).trim() 
+              : null
+            
+            refreshedDevice = {
+              id: String(r.id || ''),
+              userId: String(r.userId || ''),
+              clientId: String(r.clientId || ''),
+              name: String(r.name || ''),
+              createdAt: String(r.createdAt || ''),
+              lastSyncAt: lastSyncAtValue,
+              migrated: r.migrated ? (r.migrated === 1 || r.migrated === '1' || r.migrated === true) : false
+            }
+          }
+          stmt.free()
+        } catch (error) {
+          // Error buscando
+        }
+      }
+    }
+    
+    // Usar el dispositivo refrescado si está disponible, sino usar el original
+    const finalDevice = refreshedDevice || device
+    
     // Determinar desde cuándo sincronizar:
-    // - Si device.lastSyncAt es null/undefined/vacío, no se envía 'since' (full sync).
-    // - Si tiene valor, se envía ese timestamp exacto en el parámetro 'since'.
-    const lastSyncAt = (device.lastSyncAt && String(device.lastSyncAt).trim() !== 'null' && String(device.lastSyncAt).trim() !== 'undefined')
-      ? String(device.lastSyncAt)
-      : null
+    // - Si device.lastSyncAt existe, se envía como 'since'
+    // - Si es null/undefined/vacío, no se envía 'since' (full sync)
+    const lastSyncAt = finalDevice && finalDevice.lastSyncAt ? String(finalDevice.lastSyncAt).trim() : null
+    
+    console.log('[DAEMON-SYNC] lastSyncAt a enviar:', lastSyncAt)
     
     console.log('[DAEMON-SYNC] Parámetros de sync:')
     console.log('[DAEMON-SYNC]   - deviceName (original):', deviceName)
     console.log('[DAEMON-SYNC]   - targetDeviceName (usado):', targetDeviceName)
     console.log('[DAEMON-SYNC]   - clientId:', clientId)
     console.log('[DAEMON-SYNC]   - deviceId:', deviceId)
-    console.log('[DAEMON-SYNC]   - lastSyncAt usado como since:', lastSyncAt)
-    
-    // Recargar base de datos antes de hacer pull para ver los cambios más recientes del main process
-    // Esto asegura que cualquier cambio local (como favoritos marcados) se preserve
-    reloadDatabase()
+    console.log('[DAEMON-SYNC]   - finalDevice.lastSyncAt:', finalDevice.lastSyncAt)
+    console.log('[DAEMON-SYNC]   - lastSyncAt a enviar como since:', lastSyncAt)
     
     // 4. Pull (Full en primera ejecución, incremental con lastSyncAt en las siguientes)
     const pullResult = await pullItems(targetDeviceName, clientId, deviceId, lastSyncAt)
@@ -1197,7 +1251,24 @@ async function performSync(deviceName) {
     
     // 7. Guardar lastSyncAt
     const lastSyncAtNow = new Date().toISOString()
-    updateDeviceLastSyncAt(deviceId, lastSyncAtNow)
+    console.log('[DAEMON-SYNC] Guardando lastSyncAt:', lastSyncAtNow, 'para deviceId:', deviceId)
+    const updateResult = updateDeviceLastSyncAt(deviceId, lastSyncAtNow)
+    console.log('[DAEMON-SYNC] Resultado de guardar lastSyncAt:', updateResult)
+    
+    // Verificar que se guardó correctamente
+    if (db) {
+      try {
+        const verifyStmt = db.prepare('SELECT lastSyncAt FROM devices WHERE id=?')
+        verifyStmt.bind([deviceId])
+        if (verifyStmt.step()) {
+          const r = verifyStmt.getAsObject()
+          console.log('[DAEMON-SYNC] lastSyncAt verificado después de guardar:', r.lastSyncAt)
+        }
+        verifyStmt.free()
+      } catch (e) {
+        console.log('[DAEMON-SYNC] Error verificando lastSyncAt:', e.message)
+      }
+    }
     
     sendMessage(MESSAGE_TYPES.SYNC_DONE, {
       percentage: 100,
@@ -1269,12 +1340,6 @@ process.on('message', async (msg) => {
       case MESSAGE_TYPES.SYNC_START:
         if (msg.deviceName) {
           await performSync(msg.deviceName)
-        }
-        break
-        
-      case MESSAGE_TYPES.MIGRATION_START:
-        if (msg.deviceName) {
-          await performMigration(msg.deviceName)
         }
         break
         

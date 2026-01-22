@@ -111,6 +111,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
     const listener = (_, data) => callback(data)
     ipcRenderer.on('window-visibility-changed', listener)
     return () => ipcRenderer.removeListener('window-visibility-changed', listener)
+  },
+  onDevicesUpdated: (callback) => {
+    const listener = () => callback()
+    ipcRenderer.on('devices-updated', listener)
+    return () => ipcRenderer.removeListener('devices-updated', listener)
   }
 })
 
