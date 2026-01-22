@@ -649,7 +649,7 @@ async function pushPendingItems(deviceName, clientId, deviceId) {
   }
   
   sendMessage(MESSAGE_TYPES.SYNC_PROGRESS, {
-    percentage: 10,
+    percentage: 15,
     message: `Subiendo ${pendingItems.length} items...`,
     stage: 'push'
   })
@@ -755,8 +755,8 @@ async function pushPendingItems(deviceName, clientId, deviceId) {
       }
     })
     
-    // Actualizar progreso después de cada batch
-    const percentage = 10 + Math.round((batchEnd / pendingItems.length) * 40)
+    // Actualizar progreso después de cada batch (de 15% a 25%)
+    const percentage = 15 + Math.round((batchEnd / pendingItems.length) * 10)
     sendMessage(MESSAGE_TYPES.SYNC_PROGRESS, {
       percentage: percentage,
       message: `Subiendo ${batchEnd}/${pendingItems.length} items...`,
@@ -775,7 +775,7 @@ async function pushPendingItems(deviceName, clientId, deviceId) {
 async function pullItems(deviceName, clientId, deviceId, sinceOverride = null) {
   try {
     sendMessage(MESSAGE_TYPES.SYNC_PROGRESS, {
-      percentage: 50,
+      percentage: 30,
       message: 'Descargando items del servidor...',
       stage: 'pull'
     })
@@ -815,7 +815,7 @@ async function pullItems(deviceName, clientId, deviceId, sinceOverride = null) {
       : []
     
     sendMessage(MESSAGE_TYPES.SYNC_PROGRESS, {
-      percentage: 60,
+      percentage: 40,
       message: `Procesando ${mappedItems.length} items...`,
       stage: 'pull'
     })
@@ -856,8 +856,8 @@ async function pullItems(deviceName, clientId, deviceId, sinceOverride = null) {
         }
       })
       
-      // Actualizar progreso después de cada batch
-      const percentage = 60 + Math.round((batchEnd / mappedItems.length) * 30)
+      // Actualizar progreso después de cada batch (de 40% a 80%)
+      const percentage = 40 + Math.round((batchEnd / mappedItems.length) * 40)
       sendMessage(MESSAGE_TYPES.SYNC_PROGRESS, {
         percentage: percentage,
         message: `Procesando ${batchEnd}/${mappedItems.length} items...`,
@@ -936,11 +936,15 @@ async function performSync(deviceName) {
   syncCanceled = false
   
   try {
+    // Enviar mensaje inicial INMEDIATAMENTE para que el frontend muestre el loading
     sendMessage(MESSAGE_TYPES.SYNC_PROGRESS, {
       percentage: 0,
       message: 'Iniciando sincronización...',
       stage: 'start'
     })
+    
+    // Pequeño delay para asegurar que el mensaje se procese
+    await new Promise(resolve => setImmediate(resolve))
     
     // 1. Refresh token si es necesario (se hace automáticamente en getAxiosInstance)
     
@@ -951,7 +955,7 @@ async function performSync(deviceName) {
     
     // 3. Asegurar dispositivo registrado
     sendMessage(MESSAGE_TYPES.SYNC_PROGRESS, {
-      percentage: 5,
+      percentage: 10,
       message: 'Registrando dispositivo...',
       stage: 'device'
     })

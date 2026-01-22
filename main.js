@@ -2946,12 +2946,18 @@ ipcMain.handle('sync-now', async () => {
       return { success: false, error: 'Sincronización en progreso' }
     }
     
+    // Verificar si ya hay un sync en progreso
+    if (syncLock) {
+      return { success: false, error: 'Sincronización en progreso' }
+    }
+    
     // Crear una promesa que se resuelve cuando el sync termine
     const syncWaitPromise = new Promise((resolve) => {
       syncCompletionResolve = resolve
     })
     
     // Iniciar el sync (usa el dispositivo actual)
+    // IMPORTANTE: syncClipboardHistory ya establece syncLock = true, así que no lo establecemos aquí
     syncClipboardHistory()
     
     // Esperar a que el sync termine (con timeout)
@@ -2999,8 +3005,9 @@ ipcMain.handle('switch-active-device', async (_, deviceName) => {
     
     // Ejecutar sync para traer los datos del dispositivo seleccionado
     if (authToken) {
+      // Enviar mensaje de progreso INMEDIATAMENTE para que el frontend muestre el loading
       if (mainWindow?.webContents) {
-        mainWindow.webContents.send('sync-progress', { percentage: 0, message: 'Sincronizando dispositivo...', type: 'device-sync' })
+        mainWindow.webContents.send('sync-progress', { percentage: 0, message: 'Iniciando sincronización...', type: 'device-sync' })
       }
       
       const syncWaitPromise = new Promise((resolve) => {
@@ -3021,6 +3028,9 @@ ipcMain.handle('switch-active-device', async (_, deviceName) => {
         }
         return history
       }
+      
+      // Pequeño delay para asegurar que el mensaje inicial se procese antes de iniciar el sync
+      await new Promise(resolve => setImmediate(resolve))
       
       syncClipboardHistory(targetClientId)
       

@@ -58,6 +58,7 @@ function App () {
   const [token, setToken] = useState<string | null>(null)
   const [globalLoading, setGlobalLoading] = useState(false)
   const [userAvatar, setUserAvatar] = useState<string | null>(null)
+  const lastSyncNotificationRef = useRef<string | null>(null)
 
   // Función para cargar más resultados (infinite scroll)
   const loadMoreResults = useCallback(() => {
@@ -615,11 +616,26 @@ function App () {
           const pct = (data && typeof data === 'object') ? Number(data.percentage || 0) : 0
           setSyncing(pct > 0 && pct < 100)
           setSyncPct(pct)
-          if (pct === 100) {
-            if (msg.toLowerCase().includes('fallida')) {
-              toast.error(t('notifications.sync_failed'))
-            } else {
-              toast.success(t('notifications.sync_completed'))
+          
+          // Solo mostrar notificación si el tipo es 'sync-done' para evitar duplicados
+          // El tipo 'device-switch-complete' y otros no deben mostrar notificación aquí
+          const syncType = (data && typeof data === 'object') ? String(data.type || '') : ''
+          
+          // Usar un ref para evitar mostrar la notificación múltiples veces en el mismo sync
+          if (pct === 100 && syncType === 'sync-done') {
+            const notificationKey = `${syncType}-${Date.now()}`
+            // Solo mostrar si no hemos mostrado una notificación en los últimos 2 segundos
+            const now = Date.now()
+            const lastNotification = lastSyncNotificationRef.current
+            if (!lastNotification || (now - parseInt(lastNotification.split('-')[1] || '0')) > 2000) {
+              lastSyncNotificationRef.current = notificationKey
+              
+              // Solo mostrar si no es un error
+              if (msg.toLowerCase().includes('fallida') || msg.toLowerCase().includes('error')) {
+                toast.error(t('notifications.sync_failed'))
+              } else if (msg.toLowerCase().includes('completada') || msg.toLowerCase().includes('completado')) {
+                toast.success(t('notifications.sync_completed'))
+              }
             }
           }
         } catch {}
