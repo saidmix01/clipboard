@@ -48,5 +48,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
     const listener = (_, data) => cb(data)
     ipcRenderer.on('download-progress', listener)
     return () => ipcRenderer.removeListener('download-progress', listener)
-  }
+  },
+
+  // Devices
+  getCurrentDevice: () => ipcRenderer.invoke('get-current-device'),
+  getAllDevices: () => ipcRenderer.invoke('get-all-devices'),
+  registerNewDevice: (name) => ipcRenderer.invoke('register-new-device', name),
+  setActiveDevice: (id) => ipcRenderer.invoke('set-active-device', id),
+  getHostname: () => ipcRenderer.invoke('get-hostname'),
 })

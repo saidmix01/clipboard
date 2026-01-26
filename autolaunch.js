@@ -3,12 +3,7 @@ const { app } = require('electron')
 const path = require('path')
 const os = require('os')
 const fs = require('fs')
-const electronLog = require('electron-log')
-const log = {
-  info: () => {},
-  error: () => {},
-  warn: () => {}
-}
+const log = require('electron-log')
 
 function configureAutoLaunch() {
   // Evitar configurar autostart en desarrollo salvo que se fuerce

@@ -18,6 +18,7 @@ const fs = require('fs')
 const os = require('os')
 const crypto = require('crypto')
 const db = require('./db')
+const { configureAutoLaunch } = require('./autolaunch')
 const electronLog = require('electron-log')
 const { exec, execFile, spawnSync } = require('child_process')
 
@@ -538,6 +539,10 @@ ipcMain.handle('get-current-device', () => {
     return db.getDevice()
 })
 
+ipcMain.handle('get-all-devices', () => {
+    return db.getDevices()
+})
+
 ipcMain.handle('register-new-device', (_, name) => {
     const id = crypto.randomUUID()
     db.registerDevice({
@@ -554,9 +559,14 @@ ipcMain.handle('register-new-device', (_, name) => {
     return { id, name }
 })
 
+ipcMain.handle('set-active-device', (_, id) => {
+    return db.setActiveDevice(id)
+})
+
 // App Lifecycle
 app.whenReady().then(async () => {
   await db.init(app)
+  configureAutoLaunch()
   
   // Register device locally
   const hostname = os.hostname()

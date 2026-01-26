@@ -77,7 +77,8 @@
     "error_password_length": "La contraseña debe tener al menos 8 caracteres",
     "error_connection": "Error de conexión",
     "error_login": "Error en login",
-    "error_register": "Error en registro"
+    "error_register": "Error en registro",
+    "error_credentials": "Credenciales inválidas"
   },
   "user": {
     "title": "Datos del usuario",

@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import DetailsModal from './DetailsModal'
-import { ArrowPathIcon, MoonIcon, SunIcon, TrashIcon, InformationCircleIcon, Cog6ToothIcon, ChevronLeftIcon, GlobeAltIcon } from '@heroicons/react/24/outline'
+import { ArrowPathIcon, MoonIcon, SunIcon, TrashIcon, InformationCircleIcon, Cog6ToothIcon, ChevronLeftIcon, GlobeAltIcon, ComputerDesktopIcon } from '@heroicons/react/24/outline'
 import { useTranslation } from 'react-i18next'
 
 type Props = {
@@ -15,7 +15,7 @@ type Props = {
   onSyncNow?: () => void // Optional or removed
 }
 
-export default function SettingsMenu({ open, darkMode, onClose, onForceUpdate, onToggleDark, onClearHistory, onOpenAbout }: Props) {
+export default function SettingsMenu({ open, darkMode, onClose, onForceUpdate, onToggleDark, onClearHistory, onOpenAbout, onChangeDevice }: Props) {
   const { t, i18n } = useTranslation()
   const [view, setView] = useState<'main' | 'general'>('main')
   const [startMinimized, setStartMinimized] = useState(false)
@@ -216,6 +216,10 @@ export default function SettingsMenu({ open, darkMode, onClose, onForceUpdate, o
           <>
             <h3 className="m-0 text-[color:var(--color-text)]">{t('settings.title')}</h3>
             <div className="flex flex-col mt-2">
+              <button className={menuBtnClass} onMouseEnter={MouseOver} onMouseLeave={MouseOut} onClick={onChangeDevice}>
+                <ComputerDesktopIcon className="w-5 h-5" />
+                <span>{t('device.title')}</span>
+              </button>
               <button className={menuBtnClass} onMouseEnter={MouseOver} onMouseLeave={MouseOut} onClick={() => setView('general')}>
                 <Cog6ToothIcon className="w-5 h-5" />
                 <span>{t('settings.general')}</span>

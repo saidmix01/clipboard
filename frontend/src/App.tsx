@@ -18,7 +18,21 @@ import ContextMenu from './components/ContextMenu'
 import DeleteModal from './components/DeleteModal'
 import OCRModal from './components/OCRModal'
 import DeviceRegistrationModal from './components/DeviceRegistrationModal'
+import DeviceSelectionModal from './components/DeviceSelectionModal'
 import type { HistoryItem, FilterType } from './types'
+import { API_BASE } from './config'
+
+const resolveAvatar = (s?: string | null): string | null => {
+  if (!s) return null
+  let v = String(s)
+  v = v.replace(/\\/g, '/')
+  if (v.startsWith('http://') || v.startsWith('https://') || v.startsWith('data:')) return v
+  if (v.startsWith('localhost:') || v.startsWith('127.0.0.1:')) return `http://${v}`
+  if (v.startsWith('/')) return `${API_BASE}${v}`
+  if (v.startsWith('uploads/')) return `${API_BASE}/${v}`
+  if (v.includes('/uploads/')) return `${API_BASE}${v.substring(v.indexOf('/uploads/'))}`
+  return `${API_BASE}/uploads/${v}`
+}
 
 function App () {
   const [filter, setFilter] = useState<FilterType>('text')
@@ -47,6 +61,30 @@ function App () {
   const [itemToDelete, setItemToDelete] = useState<HistoryItem | null>(null)
   const [deletingLoading, setDeletingLoading] = useState<boolean>(false)
   const [ocrImage, setOcrImage] = useState<string | null>(null)
+  const [userAvatar, setUserAvatar] = useState<string | null>(null)
+  const [showDeviceSelection, setShowDeviceSelection] = useState<boolean>(false)
+
+  const loadSession = useCallback(async () => {
+    try {
+      const sessionStr = await (window as any).electronAPI?.getConfig?.('session')
+      if (sessionStr) {
+        const session = JSON.parse(sessionStr)
+        if (session?.token) {
+          setToken(session.token)
+          ;(window as any).electronAPI?.setAuthToken?.(session.token)
+          if (session.user?.avatarUrl) {
+            setUserAvatar(resolveAvatar(session.user.avatarUrl))
+          } else {
+            setUserAvatar(null)
+          }
+        }
+      }
+    } catch {}
+  }, [])
+
+  useEffect(() => {
+    loadSession()
+  }, [loadSession])
 
   // Centralized Data Fetching
   const fetchData = useCallback(async (isLoadMore = false) => {
@@ -186,9 +224,15 @@ function App () {
     toast.success(t('notifications.session_closed'))
   }
 
-  const handleLoginSuccess = (newToken: string) => {
+  const handleLoginSuccess = (newToken: string, user?: any) => {
     setToken(newToken)
     ;(window as any).electronAPI?.setAuthToken?.(newToken)
+    if (user?.avatarUrl) {
+      console.log('Setting avatar from login:', user.avatarUrl)
+      setUserAvatar(resolveAvatar(user.avatarUrl))
+    } else {
+      loadSession()
+    }
   }
 
 
@@ -203,7 +247,7 @@ function App () {
             open={settingsOpen}
             darkMode={darkMode}
             onClose={() => setSettingsOpen(false)}
-            onChangeDevice={() => { /* Removed */ }}
+            onChangeDevice={() => { setSettingsOpen(false); setShowDeviceSelection(true) }}
             onForceUpdate={() => { /* Removed */ }}
             onToggleDark={() => { setSettingsOpen(false); setDarkMode(prev => !prev) }}
             onClearHistory={() => { setSettingsOpen(false); (window as any).electronAPI?.clearHistory?.(); toast.success(t('notifications.history_cleared')) }}
@@ -261,10 +305,12 @@ function App () {
                 // But the user specifically said "clic en el ojo".
                 // So onCopy (main click) should probably just copy the image as before.
                 ;(window as any).electronAPI?.copyImage?.(item.value)
-                setTimeout(() => { ;(window as any).electronAPI?.hideWindow?.() }, 500)
+                ;(window as any).electronAPI?.pasteText?.()
+                setTimeout(() => { ;(window as any).electronAPI?.hideWindow?.() }, 100)
               } else {
                 ;(window as any).electronAPI?.copyText(item.value)
-                setTimeout(() => { ;(window as any).electronAPI?.hideWindow?.() }, 500)
+                ;(window as any).electronAPI?.pasteText?.()
+                setTimeout(() => { ;(window as any).electronAPI?.hideWindow?.() }, 100)
               }
             }}
             onDelete={(item) => {
@@ -286,7 +332,7 @@ function App () {
                 { label: 'Registrarse', icon: <UserPlusIcon className="w-5 h-5" />, onClick: () => setShowRegister(true) }
               ])
             ]}
-            userAvatar={null} // Local only
+            userAvatar={userAvatar}
             filter={filter}
             onChangeFilter={(f) => setFilter(f)}
             disabledFavorites={false}
@@ -297,6 +343,15 @@ function App () {
           <DeviceRegistrationModal onSuccess={() => {
               // Refresh or just close
           }} />
+
+          <DeviceSelectionModal
+            open={showDeviceSelection}
+            onClose={() => setShowDeviceSelection(false)}
+            onSuccess={() => {
+                // Refresh data if needed
+                fetchData(false)
+            }}
+          />
 
           <OnboardingTour
             open={showTour}

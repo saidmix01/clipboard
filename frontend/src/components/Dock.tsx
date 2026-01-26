@@ -17,7 +17,7 @@ type Props = {
   hasAuth?: boolean
 }
 
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 
 export default function Dock({ items, userAvatar, filter, onChangeFilter, disabledFavorites, hasAuth = false }: Props) {
   const [avatarError, setAvatarError] = useState(false)

@@ -366,6 +366,50 @@ function getDevice() {
     }
 }
 
+function getDevices() {
+    try {
+        // Force check table existence first
+        const checkTable = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='Devices'")
+        if (!checkTable.step()) {
+            return []
+        }
+
+        const stmt = db.prepare("SELECT * FROM Devices ORDER BY UpdatedAt DESC")
+        const devices = []
+        while (stmt.step()) {
+            devices.push(stmt.getAsObject())
+        }
+        stmt.free()
+        return devices
+    } catch (e) {
+        console.error('getDevices error:', e)
+        return []
+    }
+}
+
+function setActiveDevice(id) {
+    // This is a logical operation, maybe we don't need to persist it in DB if it's just for the session?
+    // But if we want it to persist across restarts, we might need a field in AppSettings or a flag in Devices.
+    // For simplicity, let's just ensure the device exists.
+    // The frontend logic handles "switching" by calling this.
+    // If we want to mark it as "active", we could add an IsActive column to Devices.
+    // Or just assume the last registered/updated one is active?
+    // Let's add an IsActive flag logic if needed, but for now, 
+    // the user just wants to "switch".
+    // I'll update the 'UpdatedAt' to make it the most recent one.
+    try {
+        const now = new Date().toISOString()
+        const stmt = db.prepare("UPDATE Devices SET UpdatedAt = ? WHERE Id = ?")
+        stmt.bind([now, id])
+        stmt.step()
+        stmt.free()
+        persist()
+        return true
+    } catch(e) {
+        return false
+    }
+}
+
 function updateAllItemsDevice(deviceId) {
     try {
         db.run("UPDATE ClipboardItem SET DeviceId = ?", [deviceId])
@@ -418,6 +462,8 @@ module.exports = {
   updateSettings,
   registerDevice,
   getDevice,
+  getDevices,
+  setActiveDevice,
   updateAllItemsDevice,
   // Aliases for compatibility during transition (if any old code persists)
   insert: (device, value, remoteId, type) => insertItem(value, type, device), 

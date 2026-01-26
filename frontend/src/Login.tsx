@@ -2,6 +2,7 @@ import { useState } from 'react'
 import DetailsModal from './components/DetailsModal'
 import { useTranslation } from 'react-i18next'
 import { ChevronLeftIcon } from '@heroicons/react/24/outline'
+import { API_BASE } from './config'
 
 type LoginModalProps = {
   isOpen: boolean
@@ -56,37 +57,52 @@ export default function LoginModal({
         }
       }
 
-      // Simulate local login
-      setTimeout(async () => {
-        const tokenResp = 'local-token-' + Date.now()
-        const userResp = {
+      // Real login
+      const response = await fetch(`${API_BASE}/auth/login`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
             email: emailTrim,
-            name: nameTrim || emailTrim.split('@')[0],
-            id: 'local-user'
-        }
+            password: passTrim
+        })
+      })
 
-        try {
-          const session: any = {
-            token: tokenResp,
-            refreshToken: 'local-refresh',
-            email: (userResp?.email ?? emailTrim),
-            name: (userResp?.name ?? (mode === 'register' ? nameTrim : undefined)),
-            user: userResp
-          }
-          
-          await (window as any).electronAPI?.setConfig?.('session', JSON.stringify(session))
-          await (window as any).electronAPI?.saveSession?.(session)
-        } catch (e) {
-          // Error saving session
+      if (!response.ok) {
+        throw new Error('Login failed')
+      }
+
+      const data = await response.json()
+
+      if (data.success && data.data && data.data.token) {
+        const { user, token, refreshToken } = data.data
+        
+        const session: any = {
+          token: token,
+          refreshToken: refreshToken,
+          email: user.email,
+          name: user.name,
+          user: user
         }
-        onLoginSuccess(tokenResp)
+        
+        await (window as any).electronAPI?.setConfig?.('session', JSON.stringify(session))
+        await (window as any).electronAPI?.saveSession?.(session)
+        await (window as any).electronAPI?.setConfig?.('x-token', token)
+        
+        onLoginSuccess(token, user)
         onClose()
-        setLoading(false)
-        if (onGlobalLoading) onGlobalLoading(false)
-      }, 500)
+      } else {
+        console.error('Login failed data check:', data)
+        setError(t('auth.error_credentials') || 'Invalid credentials')
+      }
 
-    } catch {
-      setError(t('auth.error_connection'))
+      setLoading(false)
+      if (onGlobalLoading) onGlobalLoading(false)
+
+    } catch (e) {
+      console.error('Login exception:', e)
+      setError(t('auth.error_credentials') || 'Invalid credentials')
       setLoading(false)
       if (onGlobalLoading) onGlobalLoading(false)
     }

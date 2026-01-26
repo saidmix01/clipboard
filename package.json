@@ -36,6 +36,7 @@
       "db.js",
       "preload.js",
       "config.js",
+      "autolaunch.js",
       "sync-daemon.js",
       "viewer/**/*",
       "public/**/*",
