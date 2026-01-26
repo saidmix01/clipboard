@@ -1,7 +1,6 @@
 import { useState } from 'react'
 import DetailsModal from './components/DetailsModal'
 import { useTranslation } from 'react-i18next'
-import { API_BASE } from './config'
 import { ChevronLeftIcon } from '@heroicons/react/24/outline'
 
 type LoginModalProps = {
@@ -57,39 +56,19 @@ export default function LoginModal({
         }
       }
 
-      if (passTrim.length < 8) {
-        setError(t('auth.error_password_length'))
-        setLoading(false)
-        if (onGlobalLoading) onGlobalLoading(false)
-        return
-      }
-      const url =
-        mode === 'login'
-          ? `${API_BASE}/auth/login`
-          : `${API_BASE}/auth/register`
-      const res = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(
-          mode === 'login'
-            ? { email: emailTrim, password: passTrim }
-            : { email: emailTrim, password: passTrim, name: nameTrim }
-        )
-      })
-      const data = await res.json()
-      const success = res.ok
-      const payload = (typeof data === 'object' ? (data.data ?? data) : {}) as any
-      const tokenResp = payload?.token
-      const refreshResp = payload?.refreshToken
-      const userResp = payload?.user
+      // Simulate local login
+      setTimeout(async () => {
+        const tokenResp = 'local-token-' + Date.now()
+        const userResp = {
+            email: emailTrim,
+            name: nameTrim || emailTrim.split('@')[0],
+            id: 'local-user'
+        }
 
-      if (!success || !tokenResp) {
-        setError((data && (data.message || data.msg)) || (mode === 'login' ? t('auth.error_login') : t('auth.error_register')))
-      } else {
         try {
           const session: any = {
             token: tokenResp,
-            refreshToken: refreshResp || null,
+            refreshToken: 'local-refresh',
             email: (userResp?.email ?? emailTrim),
             name: (userResp?.name ?? (mode === 'register' ? nameTrim : undefined)),
             user: userResp
@@ -98,14 +77,16 @@ export default function LoginModal({
           await (window as any).electronAPI?.setConfig?.('session', JSON.stringify(session))
           await (window as any).electronAPI?.saveSession?.(session)
         } catch (e) {
-          // Error al guardar sesión
+          // Error saving session
         }
         onLoginSuccess(tokenResp)
         onClose()
-      }
+        setLoading(false)
+        if (onGlobalLoading) onGlobalLoading(false)
+      }, 500)
+
     } catch {
       setError(t('auth.error_connection'))
-    } finally {
       setLoading(false)
       if (onGlobalLoading) onGlobalLoading(false)
     }
@@ -135,19 +116,7 @@ export default function LoginModal({
           )}
           <input type='email' placeholder={t('auth.email_placeholder')} value={email} onChange={e => setEmail(e.target.value)} required className="w-full px-3 py-2 rounded-md border border-[color:var(--color-border)] bg-transparent text-[color:var(--color-text)] outline-none focus:ring-2 focus:ring-[color:var(--color-primary)]" />
           <input type='password' placeholder={t('auth.password_placeholder')} value={password} onChange={e => setPassword(e.target.value)} required className="w-full px-3 py-2 rounded-md border border-[color:var(--color-border)] bg-transparent text-[color:var(--color-text)] outline-none focus:ring-2 focus:ring-[color:var(--color-primary)]" />
-          {mode === 'login' && (
-            <div className="w-full text-right">
-              <a
-                href="https://copyfy.lat/"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="text-sm text-[color:var(--color-primary)] hover:underline"
-                onClick={(e) => { e.preventDefault(); try { (window as any).electronAPI?.openExternalUrl?.('https://copyfy.lat/') } catch {} }}
-              >
-                {t('auth.recover_password')}
-              </a>
-            </div>
-          )}
+          
           <button type='submit' disabled={loading} className="w-full px-3 py-2 rounded-md text-white" style={{ backgroundColor: 'var(--color-primary)', opacity: loading ? 0.7 : 1 }}>{loading ? (mode === 'login' ? t('auth.logging_in') : t('auth.registering')) : (mode === 'login' ? t('auth.login_button') : t('auth.register_button'))}</button>
           {error && <p className="text-sm" style={{ color: 'var(--color-accent)' }}>{error}</p>}
         </form>

@@ -118,14 +118,28 @@ function Card({ item, selected, onCopy, onToggleFavorite, onDelete, highlightMat
       <div
         className="-mx-2 -mb-2 mt-2 flex items-center justify-between text-xs py-1 px-2 border-t border-[color:var(--color-border)] bg-[color:var(--color-surface)]"
       >
-        {(item.value.length > 300 || isImage) && (
+        {(item.value.length > 300 || isImage || isCode) && (
           <button
             className="p-1 rounded-md hover:bg-[color:var(--color-bg)] transition-colors"
             title={expanded ? t('see_less') : t('see_more')}
             onClick={(e) => {
               e.stopPropagation()
-              if (canOpenModal && isImage) { (window as any).electronAPI?.openImageViewer?.(item.value); return }
-              if (canOpenModal) { (window as any).electronAPI?.openCodeEditor?.(item.value); return }
+              if (canOpenModal && isImage) {
+                 // Open OCR Window
+                 // Resolve path logic similar to above
+                 let path = item.value
+                 if (item.value.startsWith('[LOCAL_IMAGE]:')) {
+                     path = `local-image://${item.value.replace('[LOCAL_IMAGE]:', '')}`
+                 } else if ((item as any).imagePath) {
+                     path = `local-image://${(item as any).imagePath}`
+                 }
+                 (window as any).electronAPI?.openOCRWindow?.(path)
+                 return 
+              }
+              if (canOpenModal || isCode) { 
+                  (window as any).electronAPI?.openCodeEditor?.(item.value); 
+                  return 
+              }
               setExpanded(!expanded)
             }}
             style={{ color: 'var(--color-text)' }}

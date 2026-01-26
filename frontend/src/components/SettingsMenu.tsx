@@ -1,21 +1,21 @@
 import { useState, useEffect } from 'react'
 import DetailsModal from './DetailsModal'
-import { ComputerDesktopIcon, ArrowPathIcon, MoonIcon, SunIcon, TrashIcon, CloudArrowDownIcon, InformationCircleIcon, Cog6ToothIcon, ChevronLeftIcon, GlobeAltIcon } from '@heroicons/react/24/outline'
+import { ArrowPathIcon, MoonIcon, SunIcon, TrashIcon, InformationCircleIcon, Cog6ToothIcon, ChevronLeftIcon, GlobeAltIcon } from '@heroicons/react/24/outline'
 import { useTranslation } from 'react-i18next'
 
 type Props = {
   open: boolean
   darkMode: boolean
   onClose: () => void
-  onChangeDevice: () => void
   onForceUpdate: () => void
   onToggleDark: () => void
   onClearHistory: () => void
-  onSyncNow: () => void
   onOpenAbout: () => void
+  onChangeDevice?: () => void // Optional or removed
+  onSyncNow?: () => void // Optional or removed
 }
 
-export default function SettingsMenu({ open, darkMode, onClose, onChangeDevice, onForceUpdate, onToggleDark, onClearHistory, onSyncNow, onOpenAbout }: Props) {
+export default function SettingsMenu({ open, darkMode, onClose, onForceUpdate, onToggleDark, onClearHistory, onOpenAbout }: Props) {
   const { t, i18n } = useTranslation()
   const [view, setView] = useState<'main' | 'general'>('main')
   const [startMinimized, setStartMinimized] = useState(false)
@@ -37,8 +37,18 @@ export default function SettingsMenu({ open, darkMode, onClose, onChangeDevice, 
       try {
         ;(window as any).electronAPI?.getPreferences?.().then((prefs: any) => {
           setStartMinimized(!!prefs?.startMinimized)
-          if (prefs?.shortcutModifier) setShortcutModifier(prefs.shortcutModifier)
-          if (prefs?.shortcutKey) setShortcutKey(prefs.shortcutKey)
+          if (prefs?.globalShortcut) {
+            const parts = prefs.globalShortcut.split('+')
+            if (parts.length >= 2) {
+                setShortcutKey(parts[parts.length - 1])
+                // Approximate modifier logic
+                const mods = parts.slice(0, parts.length - 1)
+                // Prefer last modifier if multiple? Or show composite?
+                // The UI only shows one modifier button.
+                // Let's just pick the first one or 'Alt'
+                setShortcutModifier(mods[0])
+            }
+          }
           if (prefs?.colorPrimary) setColorPrimary(prefs.colorPrimary)
           else {
             const v = getComputedStyle(document.documentElement).getPropertyValue('--color-primary').trim()
@@ -93,7 +103,8 @@ export default function SettingsMenu({ open, darkMode, onClose, onChangeDevice, 
           let mod = key
           if (mod === 'Meta') mod = 'Command'
           setShortcutModifier(mod)
-          await (window as any).electronAPI?.setPreferences?.({ shortcutModifier: mod })
+          const newShortcut = `${mod}+${shortcutKey}`
+          await (window as any).electronAPI?.setPreferences?.({ globalShortcut: newShortcut })
           setRecording(null)
         }
       } else if (recording === 'key') {
@@ -102,7 +113,8 @@ export default function SettingsMenu({ open, darkMode, onClose, onChangeDevice, 
           let k = key.toUpperCase()
           if (key === ' ') k = 'Space'
           setShortcutKey(k)
-          await (window as any).electronAPI?.setPreferences?.({ shortcutKey: k })
+          const newShortcut = `${shortcutModifier}+${k}`
+          await (window as any).electronAPI?.setPreferences?.({ globalShortcut: newShortcut })
           setRecording(null)
         }
       }
@@ -110,7 +122,7 @@ export default function SettingsMenu({ open, darkMode, onClose, onChangeDevice, 
 
     window.addEventListener('keydown', handler, { capture: true })
     return () => window.removeEventListener('keydown', handler, { capture: true })
-  }, [recording])
+  }, [recording]) // Correcto, quitamos las dependencias que no cambian dentro del efecto
 
   const toggleStartMinimized = async () => {
     const newVal = !startMinimized
@@ -207,14 +219,6 @@ export default function SettingsMenu({ open, darkMode, onClose, onChangeDevice, 
               <button className={menuBtnClass} onMouseEnter={MouseOver} onMouseLeave={MouseOut} onClick={() => setView('general')}>
                 <Cog6ToothIcon className="w-5 h-5" />
                 <span>{t('settings.general')}</span>
-              </button>
-              <button className={menuBtnClass} onMouseEnter={MouseOver} onMouseLeave={MouseOut} onClick={onSyncNow}>
-                <CloudArrowDownIcon className="w-5 h-5" />
-                <span>{t('settings.sync_now')}</span>
-              </button>
-              <button className={menuBtnClass} onMouseEnter={MouseOver} onMouseLeave={MouseOut} onClick={onChangeDevice}>
-                <ComputerDesktopIcon className="w-5 h-5" />
-                <span>{t('settings.change_device')}</span>
               </button>
               <button className={menuBtnClass} onMouseEnter={MouseOver} onMouseLeave={MouseOut} onClick={onForceUpdate}>
                 <ArrowPathIcon className="w-5 h-5" />
