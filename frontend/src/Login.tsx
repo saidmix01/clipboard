@@ -7,7 +7,7 @@ import { API_BASE } from './config'
 type LoginModalProps = {
   isOpen: boolean
   onClose: () => void
-  onLoginSuccess: (token: string) => void
+  onLoginSuccess: (token: string, user?: any) => void
   mode?: 'login' | 'register'
   onGlobalLoading?: (loading: boolean) => void
   onBack?: () => void
@@ -91,6 +91,14 @@ export default function LoginModal({
         await (window as any).electronAPI?.setConfig?.('x-token', token)
         
         onLoginSuccess(token, user)
+        
+        // Notify backend to start sync
+        try {
+            await (window as any).electronAPI?.notifyLoginSuccess?.()
+        } catch (e) {
+            console.error('Failed to notify login success', e)
+        }
+
         onClose()
       } else {
         console.error('Login failed data check:', data)

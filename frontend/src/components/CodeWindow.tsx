@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import Editor from '@monaco-editor/react'
-import { ClipboardDocumentIcon, MoonIcon, SunIcon } from '@heroicons/react/24/outline'
+import { ClipboardDocumentIcon } from '@heroicons/react/24/outline'
 import { Toaster, toast } from 'react-hot-toast'
 import WindowShell from './WindowShell'
 

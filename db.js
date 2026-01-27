@@ -104,6 +104,7 @@ function createTables() {
       OsName TEXT,
       Name TEXT,
       VersionApp TEXT,
+      Synced BOOLEAN DEFAULT 0,
       CreatedAt DATETIME,
       UpdatedAt DATETIME
     );
@@ -120,6 +121,7 @@ function createTables() {
       Language TEXT,
       UiScale REAL,
       GlobalShortcut TEXT,
+      SelectedDeviceId TEXT,
       CreatedAt DATETIME,
       UpdatedAt DATETIME
     );
@@ -130,6 +132,16 @@ function createTables() {
       db.run("ALTER TABLE AppSettings ADD COLUMN GlobalShortcut TEXT")
   } catch (e) {
       // Ignore error if column exists
+  }
+  try {
+      // Check if column exists first to avoid error spam or silent failures
+      const info = db.exec("PRAGMA table_info(AppSettings)")[0].values;
+      const hasCol = info.some(col => col[1] === 'SelectedDeviceId');
+      if (!hasCol) {
+          db.run("ALTER TABLE AppSettings ADD COLUMN SelectedDeviceId TEXT")
+      }
+  } catch (e) {
+      console.error('Migration error for SelectedDeviceId:', e)
   }
 
   // Indexes
@@ -293,12 +305,13 @@ function updateSettings(settings) {
     if (settings.AccessToken !== undefined) { fields.push("AccessToken = ?"); values.push(settings.AccessToken); }
     if (settings.RefreshToken !== undefined) { fields.push("RefreshToken = ?"); values.push(settings.RefreshToken); }
     if (settings.GlobalShortcut !== undefined) { fields.push("GlobalShortcut = ?"); values.push(settings.GlobalShortcut); }
+    if (settings.SelectedDeviceId !== undefined) { fields.push("SelectedDeviceId = ?"); values.push(settings.SelectedDeviceId); }
     
     if (fields.length === 0) return current
 
     fields.push("UpdatedAt = ?")
     values.push(now)
-    values.push(current.id)
+    values.push(current.id) // <--- Check capitalization of ID in normalizeSettings
 
     const stmt = db.prepare(`UPDATE AppSettings SET ${fields.join(', ')} WHERE Id = ?`)
     stmt.bind(values)
@@ -315,26 +328,70 @@ function updateSettings(settings) {
 // Devices
 
 function registerDevice(deviceInfo) {
-    // deviceInfo: { OsName, Name, VersionApp }
+    // deviceInfo: { OsName, Name, VersionApp, Id }
     try {
-        const id = deviceInfo.Id || crypto.randomUUID()
+        let id = deviceInfo.Id || crypto.randomUUID()
         const now = new Date().toISOString()
         
-        // Check if exists
-        const check = db.prepare("SELECT Id FROM Devices WHERE Id = ?")
-        check.bind([id])
-        if (check.step()) {
+        // 1. Check if exists by ID (Primary Key)
+        const checkId = db.prepare("SELECT Id FROM Devices WHERE Id = ?")
+        checkId.bind([id])
+        const existsById = checkId.step()
+        checkId.free()
+
+        if (existsById) {
+            // Update existing by ID
             const stmt = db.prepare("UPDATE Devices SET Name = ?, VersionApp = ?, UpdatedAt = ? WHERE Id = ?")
             stmt.bind([deviceInfo.Name, deviceInfo.VersionApp, now, id])
             stmt.step()
             stmt.free()
         } else {
-            const stmt = db.prepare("INSERT INTO Devices (Id, OsName, Name, VersionApp, CreatedAt, UpdatedAt) VALUES (?, ?, ?, ?, ?, ?)")
-            stmt.bind([id, deviceInfo.OsName, deviceInfo.Name, deviceInfo.VersionApp, now, now])
-            stmt.step()
-            stmt.free()
+            // 2. Check if exists by (Name + OsName) to prevent semantic duplicates
+            // This is crucial for syncing: if backend sends a device that matches our local one by name/OS but has different ID,
+            // we should probably merge/adopt the backend ID.
+            
+            const checkName = db.prepare("SELECT Id FROM Devices WHERE Name = ? AND OsName = ? LIMIT 1")
+            checkName.bind([deviceInfo.Name, deviceInfo.OsName])
+            if (checkName.step()) {
+                const existing = checkName.getAsObject()
+                const oldId = existing.Id
+                
+                // If we are registering with a specific ID (e.g. from backend) and it differs from local ID
+                if (deviceInfo.Id && deviceInfo.Id !== oldId) {
+                    console.log(`[DB] Merging device ${oldId} into ${deviceInfo.Id} (Name match: ${deviceInfo.Name})`)
+                    
+                    // Migrate related data
+                    db.run("UPDATE ClipboardItem SET DeviceId = ? WHERE DeviceId = ?", [deviceInfo.Id, oldId])
+                    db.run("UPDATE AppSettings SET SelectedDeviceId = ? WHERE SelectedDeviceId = ?", [deviceInfo.Id, oldId])
+                    
+                    // Delete old device record
+                    db.run("DELETE FROM Devices WHERE Id = ?", [oldId])
+                    
+                    // Insert new device record with the correct (new) ID
+                    const stmt = db.prepare("INSERT INTO Devices (Id, OsName, Name, VersionApp, CreatedAt, UpdatedAt) VALUES (?, ?, ?, ?, ?, ?)")
+                    stmt.bind([deviceInfo.Id, deviceInfo.OsName, deviceInfo.Name, deviceInfo.VersionApp, now, now])
+                    stmt.step()
+                    stmt.free()
+                    
+                    id = deviceInfo.Id // Return the new ID
+                } else {
+                    // Just update the existing one if no specific ID was requested or it's just a name collision on local creation
+                    // If deviceInfo.Id was null (local creation), we reuse the existing ID.
+                    id = oldId
+                    const stmt = db.prepare("UPDATE Devices SET VersionApp = ?, UpdatedAt = ? WHERE Id = ?")
+                    stmt.bind([deviceInfo.VersionApp, now, id])
+                    stmt.step()
+                    stmt.free()
+                }
+            } else {
+                // 3. Insert absolutely new
+                const stmt = db.prepare("INSERT INTO Devices (Id, OsName, Name, VersionApp, CreatedAt, UpdatedAt) VALUES (?, ?, ?, ?, ?, ?)")
+                stmt.bind([id, deviceInfo.OsName, deviceInfo.Name, deviceInfo.VersionApp, now, now])
+                stmt.step()
+                stmt.free()
+            }
+            checkName.free()
         }
-        check.free()
         
         // Clean up legacy 'local-device' if we just registered a real one
         if (id !== 'local-device') {
@@ -344,6 +401,7 @@ function registerDevice(deviceInfo) {
         persist()
         return id
     } catch(e) {
+        console.error('[DB] registerDevice error:', e)
         return null
     }
 }
@@ -388,24 +446,31 @@ function getDevices() {
 }
 
 function setActiveDevice(id) {
-    // This is a logical operation, maybe we don't need to persist it in DB if it's just for the session?
-    // But if we want it to persist across restarts, we might need a field in AppSettings or a flag in Devices.
-    // For simplicity, let's just ensure the device exists.
-    // The frontend logic handles "switching" by calling this.
-    // If we want to mark it as "active", we could add an IsActive column to Devices.
-    // Or just assume the last registered/updated one is active?
-    // Let's add an IsActive flag logic if needed, but for now, 
-    // the user just wants to "switch".
-    // I'll update the 'UpdatedAt' to make it the most recent one.
     try {
         const now = new Date().toISOString()
-        const stmt = db.prepare("UPDATE Devices SET UpdatedAt = ? WHERE Id = ?")
-        stmt.bind([now, id])
-        stmt.step()
-        stmt.free()
+        
+        // 1. Verify AppSettings row exists
+        const stmtGet = db.prepare("SELECT Id FROM AppSettings LIMIT 1")
+        if (!stmtGet.step()) {
+            stmtGet.free()
+            return false
+        }
+        const row = stmtGet.getAsObject()
+        const settingsId = row.Id
+        stmtGet.free()
+
+        // 2. Perform Update
+        db.run("UPDATE AppSettings SET SelectedDeviceId = ?, UpdatedAt = ? WHERE Id = ?", [String(id), now, settingsId])
+        
+        // 3. Update Device UpdatedAt
+        db.run("UPDATE Devices SET UpdatedAt = ? WHERE Id = ?", [now, id])
+        
+        // 4. Persist to Disk
         persist()
+        
         return true
     } catch(e) {
+        console.error('Error setting active device:', e)
         return false
     }
 }
@@ -413,6 +478,16 @@ function setActiveDevice(id) {
 function updateAllItemsDevice(deviceId) {
     try {
         db.run("UPDATE ClipboardItem SET DeviceId = ?", [deviceId])
+        persist()
+        return true
+    } catch (e) {
+        return false
+    }
+}
+
+function markDeviceSynced(id) {
+    try {
+        db.run("UPDATE Devices SET Synced = 1 WHERE Id = ?", [id])
         persist()
         return true
     } catch (e) {
@@ -443,7 +518,8 @@ function normalizeSettings(row) {
         theme: row.Theme,
         language: row.Language,
         uiScale: row.UiScale,
-        globalShortcut: row.GlobalShortcut || 'Alt+X'
+        globalShortcut: row.GlobalShortcut || 'Alt+X',
+        selectedDeviceId: row.SelectedDeviceId
     }
 }
 
@@ -465,20 +541,26 @@ module.exports = {
   getDevices,
   setActiveDevice,
   updateAllItemsDevice,
+  markDeviceSynced,
   // Aliases for compatibility during transition (if any old code persists)
   insert: (device, value, remoteId, type) => insertItem(value, type, device), 
   getAll: (device) => getItems(100), // simplistic mapping
   search: (device, query, filter) => getItems(100, 0, { search: query, type: filter === 'image' ? 'image' : undefined }),
   getConfig: (key) => {
       const s = getSettings()
-      if (key === 'session') return s.accessToken ? JSON.stringify({ token: s.accessToken }) : null
+      if (key === 'session') {
+          return s.accessToken ? JSON.stringify({ 
+              token: s.accessToken,
+              refreshToken: s.refreshToken 
+          }) : null
+      }
       return null
   }, 
   setConfig: (key, value) => {
       if (key === 'session') {
           try {
               const v = JSON.parse(value)
-              updateSettings({ AccessToken: v.token })
+              updateSettings({ AccessToken: v.token, RefreshToken: v.refreshToken })
           } catch(e) {}
       }
   }

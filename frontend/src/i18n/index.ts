@@ -3,17 +3,7 @@ import { initReactI18next } from 'react-i18next';
 import en from './en.json';
 import es from './es.json';
 
-// Extend window object to include copyfy
-declare global {
-  interface Window {
-    copyfy: {
-      getSystemLocale: () => Promise<string>;
-    };
-    electronAPI?: {
-      getPreferences: () => Promise<any>;
-    }
-  }
-}
+// Global declarations moved to vite-env.d.ts
 
 const resources = {
   en: { translation: en },

@@ -10,7 +10,6 @@ import AppShell from './components/AppShell'
 import TopBar from './components/TopBar'
 import Dock from './components/Dock'
 import HistoryList from './components/HistoryList'
-import SearchQuickSwitcher from './components/SearchQuickSwitcher'
 import SettingsMenu from './components/SettingsMenu'
 import AboutModal from './components/AboutModal'
 import OnboardingTour from './components/OnboardingTour'
@@ -21,6 +20,7 @@ import DeviceRegistrationModal from './components/DeviceRegistrationModal'
 import DeviceSelectionModal from './components/DeviceSelectionModal'
 import type { HistoryItem, FilterType } from './types'
 import { API_BASE } from './config'
+import { backendRequest } from './api/backend'
 
 const resolveAvatar = (s?: string | null): string | null => {
   if (!s) return null
@@ -37,7 +37,7 @@ const resolveAvatar = (s?: string | null): string | null => {
 function App () {
   const [filter, setFilter] = useState<FilterType>('text')
   const [displayed, setDisplayed] = useState<HistoryItem[]>([])
-  const [listLoading, setListLoading] = useState<boolean>(false)
+  const [, setListLoading] = useState<boolean>(false)
   const [hasMore, setHasMore] = useState<boolean>(true)
   const [isLoadingMore, setIsLoadingMore] = useState<boolean>(false)
   const [page, setPage] = useState<number>(0)
@@ -71,11 +71,31 @@ function App () {
         const session = JSON.parse(sessionStr)
         if (session?.token) {
           setToken(session.token)
+          // Also set legacy stub if needed, though backend request handles it via main process
           ;(window as any).electronAPI?.setAuthToken?.(session.token)
-          if (session.user?.avatarUrl) {
-            setUserAvatar(resolveAvatar(session.user.avatarUrl))
-          } else {
-            setUserAvatar(null)
+          
+          // Fetch user profile from backend since local storage only has tokens now
+          try {
+             // We use the raw fetch here or backendRequest? 
+             // backendRequest uses IPC to Main -> Axios
+             const userData: any = await backendRequest('/users/me')
+             // Response might be { success: true, data: { user: ... } } or just the user object depending on API
+             // Based on UserModal, it seems response is { data: { user: ... } } or { user: ... }
+             // UserModal: const payload = (data && typeof data === 'object' ? (data.data ?? data) : {}) as any
+             // backendRequest returns response.data directly.
+             
+             const payload = (userData && typeof userData === 'object' ? (userData.data ?? userData) : {}) as any
+             const u = payload?.user
+             
+             if (u && u.avatarUrl) {
+                setUserAvatar(resolveAvatar(u.avatarUrl))
+             } else {
+                setUserAvatar(null)
+             }
+          } catch (err) {
+             console.error('Failed to load user profile', err)
+             // If 401, it might be cleared by now or we should clear it
+             // But backendDaemon handles refresh.
           }
         }
       }
@@ -217,6 +237,18 @@ function App () {
   useEffect(() => {
     ;(window as any).electronAPI?.getAppVersion?.().then(setAppVersion)
   }, [])
+
+  // Sync Listener
+  useEffect(() => {
+    if ((window as any).electronAPI?.onDevicesSyncComplete) {
+      const off = (window as any).electronAPI.onDevicesSyncComplete((devices: any[]) => {
+          console.log('Devices sync complete:', devices)
+          setShowDeviceSelection(true)
+          toast.success(t('device.sync_complete') || 'Sincronización de dispositivos completada')
+      })
+      return () => { try { off?.() } catch {} }
+    }
+  }, [t])
 
   const logout = async () => {
     setToken(null)

@@ -1,0 +1,26 @@
+{
+  "compilerOptions": {
+    "target": "ES2020",
+    "module": "commonjs",
+    "moduleResolution": "node",
+    "outDir": ".",
+    "esModuleInterop": true,
+    "strict": false,
+    "noImplicitAny": false,
+    "allowJs": true,
+    "baseUrl": ".",
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true
+  },
+  "include": [
+    "./main.ts",
+    "./preload.ts",
+    "./backend/**/*.ts"
+  ],
+  "exclude": [
+    "node_modules",
+    "frontend",
+    "dist",
+    "build"
+  ]
+}

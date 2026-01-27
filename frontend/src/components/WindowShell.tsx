@@ -1,5 +1,5 @@
-import { ReactNode, useEffect, useState } from 'react'
-import { XMarkIcon, MinusIcon } from '@heroicons/react/24/outline'
+import { useEffect, useState, type ReactNode } from 'react'
+import { XMarkIcon } from '@heroicons/react/24/outline'
 
 type Props = {
   children: ReactNode
@@ -26,14 +26,6 @@ export default function WindowShell({ children, title, onClose }: Props) {
   const handleClose = () => {
       if (onClose) onClose()
       else (window as any).electronAPI?.closeWindow?.()
-  }
-
-  const handleMinimize = () => {
-      // We don't have direct minimize exposed in preload for secondary windows usually, 
-      // but we can add it or just ignore for now.
-      // Let's assume standard window controls if we could, but we are in a renderer.
-      // Ideally we need ipc to minimize.
-      // For now, let's just have Close.
   }
 
   return (

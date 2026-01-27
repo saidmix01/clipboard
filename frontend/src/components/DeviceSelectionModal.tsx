@@ -30,7 +30,6 @@ export default function DeviceSelectionModal({ open, onClose, onSuccess }: Props
       const all = await (window as any).electronAPI?.getAllDevices?.()
       const current = await (window as any).electronAPI?.getCurrentDevice?.()
       
-      console.log('Loaded devices:', all)
       setDevices(all || [])
       if (current) setCurrentDeviceId(current.Id)
     } catch (e) {
@@ -49,6 +48,10 @@ export default function DeviceSelectionModal({ open, onClose, onSuccess }: Props
       setLoading(true)
       // We are calling setActiveDevice which we need to implement in backend
       await (window as any).electronAPI?.setActiveDevice?.(device.Id)
+      
+      // Update local state immediately to reflect change in UI
+      setCurrentDeviceId(device.Id)
+      
       toast.success(t('device.apply'))
       onSuccess()
       onClose()
