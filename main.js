@@ -15,9 +15,9 @@ const { configureAutoLaunch } = require('./autolaunch');
 const electronLog = require('electron-log');
 const { exec, execFile, spawnSync } = require('child_process');
 const log = {
-    info: (...args) => console.log('[MAIN]', ...args),
+    info: () => { },
     error: (...args) => console.error('[MAIN]', ...args),
-    warn: (...args) => console.warn('[MAIN]', ...args),
+    warn: () => { },
     debug: () => { }
 };
 let mainWindow;
@@ -93,7 +93,7 @@ function createWindow() {
     mainWindow.once('ready-to-show', () => {
         const settings = db.getSettings();
         mainWindow.show();
-        mainWindow.webContents.send('clipboard-update', normalizeForIPC(db.getItems()));
+        // mainWindow.webContents.send('clipboard-update', normalizeForIPC(db.getItems())); // Let frontend fetch initial
     });
     mainWindow.on('blur', () => {
         // Optional: hide on blur
@@ -259,10 +259,11 @@ ipcMain.on('notification-action', (_, action) => {
             const filename = `${Date.now()}-${hash.substring(0, 8)}.png`;
             const filePath = path.join(imagesDir, filename);
             fs.writeFileSync(filePath, image.toPNG());
-            db.insertItem(`[LOCAL_IMAGE]:${filePath}`, 'image');
-            if (mainWindow && !mainWindow.isDestroyed()) {
-                mainWindow.webContents.send('clipboard-update', normalizeForIPC(db.getItems()));
-            }
+            // db.insertItem(`[LOCAL_IMAGE]:${filePath}`, 'image');
+            BackendDaemon_1.BackendDaemon.getInstance().saveClipboardItem(`[LOCAL_IMAGE]:${filePath}`, 'image');
+            // if (mainWindow && !mainWindow.isDestroyed()) {
+            //    mainWindow.webContents.send('clipboard-update');
+            // }
         }
         catch (e) {
             log.error('Error saving image:', e);
@@ -282,10 +283,11 @@ function startClipboardWatcher() {
             const text = clipboard.readText();
             if (text && text.trim() !== '' && text !== lastText) {
                 lastText = text;
-                db.insertItem(text, 'text');
-                if (mainWindow && !mainWindow.isDestroyed()) {
-                    mainWindow.webContents.send('clipboard-update', normalizeForIPC(db.getItems()));
-                }
+                // db.insertItem(text, 'text'); <-- OLD
+                // Use BackendDaemon to save with active device
+                BackendDaemon_1.BackendDaemon.getInstance().saveClipboardItem(text, 'text');
+                // BackendDaemon broadcasts 'clipboard-update', so we don't need to send it here manually
+                // if mainWindow && ...
             }
             const image = clipboard.readImage();
             if (!image.isEmpty()) {
@@ -305,14 +307,15 @@ function startClipboardWatcher() {
 }
 // IPC Handlers
 ipcMain.handle('get-clipboard-history', (_, { limit = 20, offset = 0, filter = {} } = {}) => {
-    return normalizeForIPC(db.getItems(limit, offset, filter));
+    // Redirect to BackendDaemon active device logic
+    const items = BackendDaemon_1.BackendDaemon.getInstance().getItemsByActiveDevice(limit, offset, filter);
+    return normalizeForIPC(items);
 });
 ipcMain.handle('delete-history-item', (_, id) => {
     db.deleteItem(id);
-    const items = normalizeForIPC(db.getItems(100));
     if (mainWindow)
-        mainWindow.webContents.send('clipboard-update', items);
-    return items;
+        mainWindow.webContents.send('clipboard-update');
+    return [];
 });
 ipcMain.handle('search-history', (_, payload) => {
     const filter = {};
@@ -329,7 +332,7 @@ ipcMain.handle('clear-history', () => {
 ipcMain.on('toggle-favorite', (_, { id, isFavorite }) => {
     db.setFavorite(id, isFavorite);
     if (mainWindow)
-        mainWindow.webContents.send('clipboard-update', normalizeForIPC(db.getItems()));
+        mainWindow.webContents.send('clipboard-update');
 });
 ipcMain.on('copy-to-clipboard', (_, text) => {
     lastText = text;
@@ -480,13 +483,14 @@ app.whenReady().then(async () => {
     BackendDaemon_1.BackendDaemon.getInstance();
     log.info('Backend Daemon Initialized');
     // --- Integration End ---
-    const device = db.getDevice();
-    let deviceId = device ? device.Id : null;
+    const deviceId = db.ensureLocalDevice();
+    const device = db.getDevice(); // This will now return the local device thanks to ensureLocalDevice()
+
     if (deviceId) {
         db.registerDevice({
             Id: deviceId,
             OsName: process.platform,
-            Name: device.Name,
+            Name: device ? device.Name : os.hostname(), // Use existing name or fallback to hostname
             VersionApp: app.getVersion()
         });
     }
@@ -527,7 +531,7 @@ app.whenReady().then(async () => {
                 }
             });
             if (!ret) {
-                console.log('Registration failed for shortcut:', accelerator);
+                // console.log('Registration failed for shortcut:', accelerator);
             }
         }
         catch (e) {

@@ -1,6 +1,7 @@
 const path = require('path')
 const fs = require('fs')
 const crypto = require('crypto')
+const os = require('os')
 const initSqlJs = require('sql.js')
 
 let SQL = null
@@ -9,7 +10,7 @@ let dbFilePath = null
 
 async function init(app) {
   const dir = app.getPath('userData')
-  dbFilePath = path.join(dir, 'copyfy.sqlite')
+  dbFilePath = path.join(dir, 'copyfy-v2.sqlite')
 
   if (!SQL) {
     const isPackaged = app.isPackaged
@@ -38,23 +39,6 @@ async function init(app) {
   // Let's try to open it first.
   let dbExists = fs.existsSync(dbFilePath)
   
-  if (dbExists) {
-     // Check if it's the old DB by checking for 'history' table with old columns or just force reset.
-     // User said: "Eliminar completamente la base de datos anterior".
-     // But we only want to do this ONCE or if the schema is incompatible.
-     // For now, let's assume if the file exists, we want to keep it, unless it's corrupt.
-     // I'll remove the auto-delete logic because it wipes history on every restart.
-  }
-
-  // Force delete if we really want to reset (manual intervention)
-  // For the purpose of "no salio el modal", maybe the user wants me to force a reset.
-  // But I can't do that safely on every boot.
-  // The user can delete the file manually.
-  // Wait, I failed to delete the file because of permission error in "AppData".
-  // The app uses `app.getPath('userData')`. 
-  // On Windows this is usually `%APPDATA%\<app-name>`.
-  // My previous tool failed because of permission/allowlist issues.
-
   try {
     if (dbExists) {
         // Load existing DB
@@ -144,6 +128,14 @@ function createTables() {
       console.error('Migration error for SelectedDeviceId:', e)
   }
 
+  try {
+      const info = db.exec("PRAGMA table_info(AppSettings)")[0].values;
+      const hasCol = info.some(col => col[1] === 'LocalDeviceId');
+      if (!hasCol) {
+          db.run("ALTER TABLE AppSettings ADD COLUMN LocalDeviceId TEXT")
+      }
+  } catch (e) {}
+
   // Indexes
   db.run(`CREATE INDEX IF NOT EXISTS idx_clipboard_created ON ClipboardItem(CreatedAt DESC);`)
   db.run(`CREATE INDEX IF NOT EXISTS idx_clipboard_favorite ON ClipboardItem(IsFavorite);`)
@@ -163,22 +155,88 @@ function persist() {
 
 // ClipboardItem
 
+function ensureLocalDevice() {
+    try {
+        const settings = getSettings()
+        if (settings.localDeviceId) {
+            // Verify it exists in Devices table
+            const stmt = db.prepare("SELECT Id FROM Devices WHERE Id = ?")
+            stmt.bind([settings.localDeviceId])
+            if (stmt.step()) {
+                stmt.free()
+                return settings.localDeviceId
+            }
+            stmt.free()
+        }
+
+        // If not set or invalid, find or create one
+        const hostname = os.hostname()
+        const platform = process.platform
+        const now = new Date().toISOString()
+
+        // 1. Try to match by name and OS (most reliable for existing setups)
+        const checkName = db.prepare("SELECT Id FROM Devices WHERE Name = ? AND OsName = ? LIMIT 1")
+        checkName.bind([hostname, platform])
+        if (checkName.step()) {
+            const dev = checkName.getAsObject()
+            checkName.free()
+            // Set this as local
+            updateSettings({ LocalDeviceId: dev.Id })
+            return dev.Id
+        }
+        checkName.free()
+
+        // 2. If no match, check if we have ANY device. If so, pick the most recently updated one?
+        // This is risky if user synced other devices.
+        // Better: Create a new one for THIS machine.
+        
+        const newId = crypto.randomUUID()
+        const stmt = db.prepare("INSERT INTO Devices (Id, OsName, Name, VersionApp, CreatedAt, UpdatedAt) VALUES (?, ?, ?, ?, ?, ?)")
+        // We don't have app version here easily without passing it, but it's okay.
+        stmt.bind([newId, platform, hostname, '1.0.0', now, now])
+        stmt.step()
+        stmt.free()
+        
+        updateSettings({ LocalDeviceId: newId })
+        persist()
+        
+        return newId
+    } catch (e) {
+        console.error('Error ensuring local device:', e)
+        return 'unknown'
+    }
+}
+
 function insertItem(value, type = 'text', deviceId = null) {
   try {
-    const id = crypto.randomUUID()
     const now = new Date().toISOString()
     
     // Resolve deviceId if not provided
     if (!deviceId) {
-        const dev = getDevice()
-        deviceId = dev ? dev.Id : 'unknown'
+        deviceId = ensureLocalDevice()
     }
     
-    // Check for duplicates? User didn't explicitly say, but usually clipboard avoids exact duplicates on top.
-    // "Copiar algo -> se guarda en ClipboardItem"
-    // I'll check if the latest item is the same to avoid spamming, or just insert.
-    // Let's insert new.
+    // Deduplicación por (Value, Type, DeviceId) ignorando eliminados
+    const check = db.prepare(`
+      SELECT Id, CreatedAt FROM ClipboardItem
+      WHERE Value = ? AND Type = ? AND DeviceId = ? AND IsDeleted = 0
+      LIMIT 1
+    `)
+    check.bind([value, type, deviceId])
+    if (check.step()) {
+      const existing = check.getAsObject()
+      check.free()
+      const upd = db.prepare(`UPDATE ClipboardItem SET UpdatedAt = ? WHERE Id = ?`)
+      upd.bind([now, existing.Id])
+      upd.step()
+      upd.free()
+      persist()
+      return { id: existing.Id, value, type, createdAt: existing.CreatedAt }
+    }
+    check.free()
     
+    // Insertar nuevo si no existe
+    const id = crypto.randomUUID()
     const stmt = db.prepare(`
       INSERT INTO ClipboardItem (Id, Value, Type, IsFavorite, CreatedAt, UpdatedAt, IsDeleted, Pending, DeviceId, Version)
       VALUES (?, ?, ?, 0, ?, ?, 0, 0, ?, 1)
@@ -214,9 +272,14 @@ function getItems(limit = 20, offset = 0, filter = {}) {
       params.push(`%${filter.search}%`)
     }
 
+    if (filter.deviceId) {
+      query += " AND DeviceId = ?"
+      params.push(filter.deviceId)
+    }
+
     query += " ORDER BY CreatedAt DESC LIMIT ? OFFSET ?"
     params.push(limit, offset)
-
+    
     const stmt = db.prepare(query)
     stmt.bind(params)
     
@@ -276,7 +339,8 @@ function getSettings() {
   try {
     const stmt = db.prepare("SELECT * FROM AppSettings LIMIT 1")
     if (stmt.step()) {
-      return normalizeSettings(stmt.getAsObject())
+      const row = stmt.getAsObject()
+      return normalizeSettings(row)
     }
     // Create default if not exists
     const id = crypto.randomUUID()
@@ -306,6 +370,7 @@ function updateSettings(settings) {
     if (settings.RefreshToken !== undefined) { fields.push("RefreshToken = ?"); values.push(settings.RefreshToken); }
     if (settings.GlobalShortcut !== undefined) { fields.push("GlobalShortcut = ?"); values.push(settings.GlobalShortcut); }
     if (settings.SelectedDeviceId !== undefined) { fields.push("SelectedDeviceId = ?"); values.push(settings.SelectedDeviceId); }
+    if (settings.LocalDeviceId !== undefined) { fields.push("LocalDeviceId = ?"); values.push(settings.LocalDeviceId); }
     
     if (fields.length === 0) return current
 
@@ -358,7 +423,6 @@ function registerDevice(deviceInfo) {
                 
                 // If we are registering with a specific ID (e.g. from backend) and it differs from local ID
                 if (deviceInfo.Id && deviceInfo.Id !== oldId) {
-                    console.log(`[DB] Merging device ${oldId} into ${deviceInfo.Id} (Name match: ${deviceInfo.Name})`)
                     
                     // Migrate related data
                     db.run("UPDATE ClipboardItem SET DeviceId = ? WHERE DeviceId = ?", [deviceInfo.Id, oldId])
@@ -408,16 +472,19 @@ function registerDevice(deviceInfo) {
 
 function getDevice() {
     try {
-        // Force check table existence first to avoid error on fresh DB
-        const checkTable = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='Devices'")
-        if (!checkTable.step()) {
-            return null
-        }
+        // Return the PINNED local device if possible
+        const localId = ensureLocalDevice()
         
-        const stmt = db.prepare("SELECT * FROM Devices LIMIT 1")
+        const stmt = db.prepare("SELECT * FROM Devices WHERE Id = ?")
+        stmt.bind([localId])
         if (stmt.step()) {
-            return stmt.getAsObject()
+            const dev = stmt.getAsObject()
+            stmt.free()
+            return dev
         }
+        stmt.free()
+        
+        // Fallback (should be covered by ensureLocalDevice logic)
         return null
     } catch (e) {
         return null
@@ -477,10 +544,23 @@ function setActiveDevice(id) {
 
 function updateAllItemsDevice(deviceId) {
     try {
-        db.run("UPDATE ClipboardItem SET DeviceId = ?", [deviceId])
+        // Only update items that do not have a DeviceId yet (orphans)
+        // or items that belonged to the previous local identifier?
+        // To be safe, we only update NULLs.
+        db.run("UPDATE ClipboardItem SET DeviceId = ? WHERE DeviceId IS NULL", [deviceId])
         persist()
         return true
     } catch (e) {
+        return false
+    }
+}
+
+function claimOrphanItems(deviceId) {
+    try {
+        db.run("UPDATE ClipboardItem SET DeviceId = ? WHERE DeviceId IS NULL", [deviceId])
+        persist()
+        return true
+    } catch(e) {
         return false
     }
 }
@@ -510,16 +590,23 @@ function normalizeItem(row) {
 }
 
 function normalizeSettings(row) {
+    // Case-insensitive lookup helper
+    const getVal = (key) => {
+        const k = Object.keys(row).find(k => k.toLowerCase() === key.toLowerCase())
+        return k ? row[k] : undefined
+    }
+
     return {
-        id: row.Id,
-        accessToken: row.AccessToken,
-        refreshToken: row.RefreshToken,
-        isDarkMode: !!row.IsDarkMode,
-        theme: row.Theme,
-        language: row.Language,
-        uiScale: row.UiScale,
-        globalShortcut: row.GlobalShortcut || 'Alt+X',
-        selectedDeviceId: row.SelectedDeviceId
+        id: getVal('Id'),
+        accessToken: getVal('AccessToken'),
+        refreshToken: getVal('RefreshToken'),
+        isDarkMode: !!getVal('IsDarkMode'),
+        theme: getVal('Theme'),
+        language: getVal('Language'),
+        uiScale: getVal('UiScale'),
+        globalShortcut: getVal('GlobalShortcut') || 'Alt+X',
+        selectedDeviceId: getVal('SelectedDeviceId'),
+        localDeviceId: getVal('LocalDeviceId')
     }
 }
 
@@ -541,27 +628,7 @@ module.exports = {
   getDevices,
   setActiveDevice,
   updateAllItemsDevice,
+  claimOrphanItems,
   markDeviceSynced,
-  // Aliases for compatibility during transition (if any old code persists)
-  insert: (device, value, remoteId, type) => insertItem(value, type, device), 
-  getAll: (device) => getItems(100), // simplistic mapping
-  search: (device, query, filter) => getItems(100, 0, { search: query, type: filter === 'image' ? 'image' : undefined }),
-  getConfig: (key) => {
-      const s = getSettings()
-      if (key === 'session') {
-          return s.accessToken ? JSON.stringify({ 
-              token: s.accessToken,
-              refreshToken: s.refreshToken 
-          }) : null
-      }
-      return null
-  }, 
-  setConfig: (key, value) => {
-      if (key === 'session') {
-          try {
-              const v = JSON.parse(value)
-              updateSettings({ AccessToken: v.token, RefreshToken: v.refreshToken })
-          } catch(e) {}
-      }
-  }
+  ensureLocalDevice
 }

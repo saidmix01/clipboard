@@ -104,6 +104,8 @@ function App () {
 
   useEffect(() => {
     loadSession()
+    // Signal main process that UI is ready to receive updates
+    ;(window as any).electronAPI?.signalAppReady?.()
   }, [loadSession])
 
   // Centralized Data Fetching
@@ -136,26 +138,18 @@ function App () {
           if (search.trim()) {
              queryOpts.filter.search = search
              // User said: "buscar si busque en todo" (search everything)
-             // But also "menos en los eliminados" (db.js already handles IsDeleted=0)
-             // And previously "solo buscar en los tipo texto"
-             // Let's stick to searching EVERYTHING if no tab is strict, OR respect the tab?
-             // "el buscar si busque en todo" implies ignoring the tab filter?
-             // Usually search overrides tabs or filters within tabs.
-             // If I type "hello", I want to see text with "hello". Images don't have text usually (unless OCR).
-             // Let's assume search filters within the current view OR global.
-             // "buscar si busque en todo" -> Global search?
-             // If global, we remove the type filter.
-             // But earlier user said "solo buscar en los tipo texto".
-             // Let's assume: Search = Text search across all non-deleted items.
-             
              // Override type filter for search if we want "search everything"
-             // But images don't match text search usually.
-             // Let's keep it safe: Search looks at 'Value'.
-             // We will NOT restrict by type if searching, unless user wants to.
-             // "buscar en todo" -> Remove type filter?
              delete queryOpts.filter.type 
-             // But we probably only want text results for text search.
-             // Let's leave it open.
+          }
+
+          // Get current selected device to filter history
+          try {
+            const currentDevice = await (window as any).electronAPI?.getCurrentDevice?.()
+            if (currentDevice && currentDevice.Id) {
+                queryOpts.filter.deviceId = currentDevice.Id
+            }
+          } catch (e) {
+            console.error('Error getting current device for filter:', e)
           }
 
           const results = await (window as any).electronAPI?.getClipboardHistory?.(queryOpts)
@@ -196,10 +190,10 @@ function App () {
   // Simplest is to re-fetch page 0.
   useEffect(() => {
     if ((window as any).electronAPI?.onClipboardUpdate) {
-      const off = (window as any).electronAPI.onClipboardUpdate(() => {
-          // If we are at the top, refresh.
-          // If we scrolled down, this might be annoying.
-          // For now, let's refresh page 0.
+      const off = (window as any).electronAPI.onClipboardUpdate((_data: any) => {
+          // Always fetch data from source to respect current filters (deviceId, search, etc.)
+          // The data coming from backend broadcast might be unfiltered or stale regarding current view context.
+          console.log('Clipboard update signal received, refreshing list...')
           fetchData(false)
       })
       return () => { try { off?.() } catch {} }
@@ -238,11 +232,40 @@ function App () {
     ;(window as any).electronAPI?.getAppVersion?.().then(setAppVersion)
   }, [])
 
+  // Active Device Check & Listener
+  useEffect(() => {
+    // 1. Check on startup if we need to select a device
+    const checkDevice = async () => {
+        const active = await (window as any).electronAPI?.getActiveDevice?.()
+        if (!active) {
+            const all = await (window as any).electronAPI?.getAllDevices?.()
+            if (all && all.length > 1) {
+                setShowDeviceSelection(true)
+            } else if (all && all.length === 1) {
+                 // Should be auto-selected by backend, but just in case
+                 await (window as any).electronAPI?.setActiveDevice?.(all[0].Id)
+            }
+        }
+    }
+    checkDevice()
+
+    // 2. Listen for changes
+    if ((window as any).electronAPI?.onDeviceChanged) {
+        const off = (window as any).electronAPI.onDeviceChanged((dev: any) => {
+            console.log('Device changed to:', dev?.Name)
+            // Refresh history immediately
+            setDisplayed([])
+            setGlobalLoading(true)
+            fetchData(false).finally(() => setGlobalLoading(false))
+        })
+        return () => { try { off?.() } catch {} }
+    }
+  }, [fetchData])
+
   // Sync Listener
   useEffect(() => {
     if ((window as any).electronAPI?.onDevicesSyncComplete) {
       const off = (window as any).electronAPI.onDevicesSyncComplete((devices: any[]) => {
-          console.log('Devices sync complete:', devices)
           setShowDeviceSelection(true)
           toast.success(t('device.sync_complete') || 'Sincronización de dispositivos completada')
       })
@@ -260,7 +283,6 @@ function App () {
     setToken(newToken)
     ;(window as any).electronAPI?.setAuthToken?.(newToken)
     if (user?.avatarUrl) {
-      console.log('Setting avatar from login:', user.avatarUrl)
       setUserAvatar(resolveAvatar(user.avatarUrl))
     } else {
       loadSession()
@@ -380,8 +402,11 @@ function App () {
             open={showDeviceSelection}
             onClose={() => setShowDeviceSelection(false)}
             onSuccess={() => {
-                // Refresh data if needed
-                fetchData(false)
+                setDisplayed([]) // Clear current list to verify update
+                setGlobalLoading(true)
+                setTimeout(() => {
+                    fetchData(false).finally(() => setGlobalLoading(false))
+                }, 500) // Small delay to ensure DB persistence if needed
             }}
           />
 

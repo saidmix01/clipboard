@@ -32,11 +32,20 @@ contextBridge.exposeInMainWorld('electronAPI', {
   setPreferences: (prefs: any) => ipcRenderer.invoke('set-preferences', prefs),
 
   // --- Devices ---
-  getCurrentDevice: () => ipcRenderer.invoke('get-current-device'),
+  getCurrentDevice: () => ipcRenderer.invoke('devices:get-active'), // Updated to use new logic
   getAllDevices: () => ipcRenderer.invoke('get-all-devices'),
   registerNewDevice: (name: string) => ipcRenderer.invoke('register-new-device', name),
-  setActiveDevice: (id: string) => ipcRenderer.invoke('set-active-device', id),
+  setActiveDevice: (id: string) => ipcRenderer.invoke('devices:set-active', id), // Updated
   
+  // New Active Device Logic
+  getActiveDevice: () => ipcRenderer.invoke('devices:get-active'),
+  onDeviceChanged: (callback: (device: any) => void) => {
+      const listener = (_: any, device: any) => callback(device);
+      ipcRenderer.on('device:changed', listener);
+      return () => ipcRenderer.removeListener('device:changed', listener);
+  },
+  getClipboardItems: () => ipcRenderer.invoke('clipboard:get-items'),
+
   // Sync
   notifyLoginSuccess: () => ipcRenderer.send('auth:login-success'),
   onDevicesSyncStart: (callback: () => void) => {
@@ -80,6 +89,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
       return () => ipcRenderer.removeListener('notification-load-image', listener)
   },
   sendNotificationAction: (action: string) => ipcRenderer.send('notification-action', action),
+  
+  // App Lifecycle
+  signalAppReady: () => ipcRenderer.send('app-ready'),
 
   // Deprecated / Stubs
   syncNow: () => {},

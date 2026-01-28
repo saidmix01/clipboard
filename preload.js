@@ -6,7 +6,13 @@ const electron_1 = require("electron");
 electron_1.contextBridge.exposeInMainWorld('electronAPI', {
     // --- Clipboard & Core ---
     onClipboardUpdate: (callback) => electron_1.ipcRenderer.on('clipboard-update', (_, data) => callback(data)),
-    getClipboardHistory: (opts) => electron_1.ipcRenderer.invoke('get-clipboard-history', opts),
+    getClipboardHistory: (opts) => electron_1.ipcRenderer.invoke('clipboard:get-items', opts), // Updated to use BackendDaemon logic via new channel or keep old name if redirected in main
+    // Note: In main.js I redirected 'get-clipboard-history' to BackendDaemon.getItemsByActiveDevice
+    // So calling 'get-clipboard-history' is actually fine and correct!
+    // But I also added 'clipboard:get-items' in BackendDaemon setupIPC just in case.
+    // Let's stick to 'get-clipboard-history' for backward compat, or update to 'clipboard:get-items' if we want clean split.
+    // My previous edit in preload.ts used 'clipboard:get-items' for getClipboardItems but 'get-clipboard-history' for getClipboardHistory.
+    
     copyText: (text) => electron_1.ipcRenderer.send('copy-to-clipboard', text),
     copyImage: (dataUrl) => electron_1.ipcRenderer.send('copy-image', dataUrl),
     pasteText: () => electron_1.ipcRenderer.send('paste-text'),
@@ -26,11 +32,22 @@ electron_1.contextBridge.exposeInMainWorld('electronAPI', {
     removeConfig: (key) => electron_1.ipcRenderer.invoke('remove-config', key),
     getPreferences: () => electron_1.ipcRenderer.invoke('get-preferences'),
     setPreferences: (prefs) => electron_1.ipcRenderer.invoke('set-preferences', prefs),
+    
     // --- Devices ---
-    getCurrentDevice: () => electron_1.ipcRenderer.invoke('get-current-device'),
+    getCurrentDevice: () => electron_1.ipcRenderer.invoke('devices:get-active'), // Updated
     getAllDevices: () => electron_1.ipcRenderer.invoke('get-all-devices'),
     registerNewDevice: (name) => electron_1.ipcRenderer.invoke('register-new-device', name),
-    setActiveDevice: (id) => electron_1.ipcRenderer.invoke('set-active-device', id),
+    setActiveDevice: (id) => electron_1.ipcRenderer.invoke('devices:set-active', id), // Updated
+    
+    // New Active Device Logic
+    getActiveDevice: () => electron_1.ipcRenderer.invoke('devices:get-active'),
+    onDeviceChanged: (callback) => {
+        const listener = (_, device) => callback(device);
+        electron_1.ipcRenderer.on('device:changed', listener);
+        return () => electron_1.ipcRenderer.removeListener('device:changed', listener);
+    },
+    getClipboardItems: () => electron_1.ipcRenderer.invoke('clipboard:get-items'),
+
     // Sync
     notifyLoginSuccess: () => electron_1.ipcRenderer.send('auth:login-success'),
     onDevicesSyncStart: (callback) => {
@@ -71,6 +88,9 @@ electron_1.contextBridge.exposeInMainWorld('electronAPI', {
         return () => electron_1.ipcRenderer.removeListener('notification-load-image', listener);
     },
     sendNotificationAction: (action) => electron_1.ipcRenderer.send('notification-action', action),
+    // App Lifecycle
+    signalAppReady: () => electron_1.ipcRenderer.send('app-ready'),
+    
     // Deprecated / Stubs
     syncNow: () => { },
     listDevices: () => Promise.resolve([]),

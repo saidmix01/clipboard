@@ -53,7 +53,10 @@ export default function DeviceSelectionModal({ open, onClose, onSuccess }: Props
       setCurrentDeviceId(device.Id)
       
       toast.success(t('device.apply'))
-      onSuccess()
+      
+      // Force reload via parent
+      if (onSuccess) onSuccess()
+      
       onClose()
     } catch (e) {
       console.error(e)

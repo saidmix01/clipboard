@@ -50,7 +50,7 @@ const gotTheLock = app.requestSingleInstanceLock()
 if (!gotTheLock) {
   app.quit()
 } else {
-  app.on('second-instance', (event, commandLine, workingDirectory) => {
+  app.on('second-instance', (event: any, commandLine: any, workingDirectory: any) => {
     if (mainWindow) {
       if (mainWindow.isMinimized()) mainWindow.restore()
       if (!mainWindow.isVisible()) mainWindow.show()
@@ -70,6 +70,25 @@ function normalizeForIPC(items: any[]) {
     imagePath: i.type === 'image' && i.value.startsWith('[LOCAL_IMAGE]:') ? i.value.replace('[LOCAL_IMAGE]:', '') : null
   }))
 }
+
+// Helper: Broadcast update to main window with correct filtering
+function broadcastUpdate() {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+        const settings = db.getSettings()
+        log.info(`[Main] broadcastUpdate settings.selectedDeviceId: ${settings.selectedDeviceId}`)
+        
+        const filter: any = {}
+        if (settings.selectedDeviceId) {
+            filter.deviceId = settings.selectedDeviceId
+        }
+        
+        const items = db.getItems(20, 0, filter)
+        log.info(`[Main] broadcastUpdate sending ${items.length} items (Device: ${filter.deviceId || 'ALL'})`)
+        mainWindow.webContents.send('clipboard-update', normalizeForIPC(items))
+    }
+}
+
+let cachedSelectedDeviceId: string | null = null
 
 // Window Creation
 function createWindow() {
@@ -112,7 +131,7 @@ function createWindow() {
   mainWindow.once('ready-to-show', () => {
     const settings = db.getSettings()
     mainWindow.show()
-    mainWindow.webContents.send('clipboard-update', normalizeForIPC(db.getItems()))
+    broadcastUpdate()
   })
 
   mainWindow.on('blur', () => {
@@ -287,6 +306,11 @@ ipcMain.on('code-window-ready', (event: any) => {
     }
 })
 
+ipcMain.on('app-ready', () => {
+    log.info('[Main] Received app-ready signal from renderer')
+    broadcastUpdate()
+})
+
 ipcMain.on('notification-window-ready', () => {
     if (notificationWindow && pendingNotificationImage) {
         const dataUrl = pendingNotificationImage.image.toDataURL()
@@ -306,9 +330,7 @@ ipcMain.on('notification-action', (_: any, action: string) => {
             
             db.insertItem(`[LOCAL_IMAGE]:${filePath}`, 'image')
             
-            if (mainWindow && !mainWindow.isDestroyed()) {
-                mainWindow.webContents.send('clipboard-update', normalizeForIPC(db.getItems()))
-            }
+            broadcastUpdate()
         } catch(e) {
             log.error('Error saving image:', e)
         }
@@ -331,9 +353,7 @@ function startClipboardWatcher() {
       if (text && text.trim() !== '' && text !== lastText) {
         lastText = text
         db.insertItem(text, 'text')
-        if (mainWindow && !mainWindow.isDestroyed()) {
-          mainWindow.webContents.send('clipboard-update', normalizeForIPC(db.getItems()))
-        }
+        broadcastUpdate()
       }
 
       const image = clipboard.readImage()
@@ -353,21 +373,46 @@ function startClipboardWatcher() {
 }
 
 // IPC Handlers
-ipcMain.handle('get-clipboard-history', (_: any, { limit = 20, offset = 0, filter = {} } = {}) => {
-  return normalizeForIPC(db.getItems(limit, offset, filter))
+ipcMain.handle('get-clipboard-history', (_: any, { limit = 20, offset = 0, filter = {} }: any = {}) => {
+  // Automatically apply selected device filter if not explicitly requesting something else?
+  // User wants strict filtering by selected device.
+  const settings = db.getSettings()
+  // log.info(`[IPC] get-clipboard-history settings:`, JSON.stringify(settings))
+  
+  // Ensure filter is not overwritten if passed by frontend (e.g. searching)
+  // But we want to enforce device scope.
+  if (settings.selectedDeviceId) {
+      // log.info(`[IPC] get-clipboard-history filtering by device: ${settings.selectedDeviceId}`)
+      filter.deviceId = settings.selectedDeviceId
+      cachedSelectedDeviceId = settings.selectedDeviceId // Update cache
+  } else if (cachedSelectedDeviceId) {
+      log.warn(`[IPC] using CACHED device id: ${cachedSelectedDeviceId}`)
+      filter.deviceId = cachedSelectedDeviceId
+  } else {
+      log.warn(`[IPC] get-clipboard-history settings.selectedDeviceId IS MISSING/NULL!`)
+  }
+  const items = db.getItems(limit, offset, filter)
+  // log.info(`[IPC] get-clipboard-history returning ${items.length} items`)
+  return normalizeForIPC(items)
 })
 
 ipcMain.handle('delete-history-item', (_: any, id: string) => {
   db.deleteItem(id)
-  const items = normalizeForIPC(db.getItems(100))
-  if (mainWindow) mainWindow.webContents.send('clipboard-update', items)
-  return items
+  broadcastUpdate()
+  return [] // Return empty or updated list? Frontend seems to expect list but usually re-fetches or uses broadcast
 })
 
 ipcMain.handle('search-history', (_: any, payload: any) => {
     const filter: any = {}
     if (payload && payload.query) filter.search = payload.query
     if (payload && payload.type) filter.type = payload.type
+    
+    // Apply selected device filter
+    const settings = db.getSettings()
+    if (settings.selectedDeviceId) {
+        filter.deviceId = settings.selectedDeviceId
+    }
+    
     return normalizeForIPC(db.getItems(100, 0, filter))
 })
 
@@ -378,7 +423,7 @@ ipcMain.handle('clear-history', () => {
 
 ipcMain.on('toggle-favorite', (_: any, { id, isFavorite }: any) => {
     db.setFavorite(id, isFavorite)
-    if (mainWindow) mainWindow.webContents.send('clipboard-update', normalizeForIPC(db.getItems()))
+    broadcastUpdate()
 })
 
 ipcMain.on('copy-to-clipboard', (_: any, text: string) => {
@@ -516,6 +561,7 @@ ipcMain.handle('register-new-device', (_: any, name: string) => {
     })
     
     if (resId) {
+        // Update items to belong to this new device if they were orphans
         db.updateAllItemsDevice(resId)
         return { id: resId, name }
     }
@@ -524,7 +570,34 @@ ipcMain.handle('register-new-device', (_: any, name: string) => {
 
 ipcMain.handle('set-active-device', (_: any, id: string) => {
     log.info('IPC set-active-device called with:', id)
-    return db.setActiveDevice(id)
+    const result = db.setActiveDevice(id)
+    
+    // Verify persistence
+    const settings = db.getSettings()
+    // log.info(`[IPC] db.getSettings() result:`, JSON.stringify(settings))
+    // log.info(`[IPC] Device set to: ${settings.selectedDeviceId} (Requested: ${id})`)
+    
+    // Update cache
+    cachedSelectedDeviceId = id
+
+    // Force a fresh filter application on broadcast
+    if (mainWindow && !mainWindow.isDestroyed()) {
+        const filter: any = {}
+        
+        // Use the ID we just set, because DB might be slow to return it in getSettings() immediately
+        // or there is a race condition.
+        // We TRUST the ID passed to this function.
+        filter.deviceId = id
+        
+        // log.info(`[IPC] Forcing update with device filter: ${filter.deviceId}`)
+        const items = db.getItems(20, 0, filter)
+        // log.info(`[IPC] Found ${items.length} items for device`)
+        
+        mainWindow.webContents.send('clipboard-update', normalizeForIPC(items))
+    }
+    
+    // broadcastUpdate() // Replaced by explicit block above for debugging
+    return result
 })
 
 // App Lifecycle
@@ -548,6 +621,14 @@ app.whenReady().then(async () => {
           Name: device.Name,
           VersionApp: app.getVersion()
       })
+      
+      // Claim orphan items (legacy items with NULL deviceId) for this local device
+      db.claimOrphanItems(deviceId)
+
+      // Ensure we have a selected device in settings (default to local)
+      if (!db.getSettings().selectedDeviceId) {
+          db.setActiveDevice(deviceId)
+      }
   }
 
   protocol.registerFileProtocol('local-image', (request: any, callback: any) => {
