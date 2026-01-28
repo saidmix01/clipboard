@@ -38,6 +38,7 @@
       "config.js",
       "autolaunch.js",
       "sync-daemon.js",
+      "backend/**/*",
       "viewer/**/*",
       "public/**/*",
       "helpers/**/*",
