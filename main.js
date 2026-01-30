@@ -135,7 +135,7 @@ function createOCRWindow(imagePath) {
         : 'http://localhost:5173';
     const url = `${indexPath}?mode=ocr&img=${encodeURIComponent(imagePath)}`;
     if (app.isPackaged) {
-        ocrWindow.loadFile(indexPath).then(() => {
+        ocrWindow.loadFile(indexPath, { search: `mode=ocr&img=${encodeURIComponent(imagePath)}` }).then(() => {
             ocrWindow.webContents.send('ocr-load-image', imagePath);
         });
     }
@@ -184,7 +184,7 @@ function createCodeWindow(codeContent) {
         : 'http://localhost:5173';
     const url = `${indexPath}?mode=code`;
     if (app.isPackaged) {
-        codeWindow.loadFile(indexPath).then(() => {
+        codeWindow.loadFile(indexPath, { search: 'mode=code' }).then(() => {
         });
     }
     else {
@@ -227,7 +227,7 @@ function createNotificationWindow() {
         : 'http://localhost:5173';
     const url = `${indexPath}?mode=notification`;
     if (app.isPackaged) {
-        notificationWindow.loadFile(indexPath).then(() => {
+        notificationWindow.loadFile(indexPath, { search: 'mode=notification' }).then(() => {
         });
     }
     else {
@@ -277,6 +277,42 @@ ipcMain.on('notification-action', (_, action) => {
 // Clipboard Watcher
 let lastText = '';
 let lastImageHash = '';
+
+function readClipboardFiles() {
+    const files = [];
+    if (process.platform === 'win32') {
+        try {
+            // Windows: 'FileNameW' provides the path of the first file (UCS-2/UTF-16LE encoded)
+            const raw = clipboard.readBuffer('FileNameW');
+            if (raw.length > 0) {
+                let filePath = raw.toString('ucs2');
+                filePath = filePath.replace(new RegExp('\0', 'g'), '');
+                if (filePath && fs.existsSync(filePath)) {
+                    files.push(filePath);
+                }
+            }
+        } catch (e) {
+            log.error('Error reading clipboard files (Windows):', e);
+        }
+    } else if (process.platform === 'darwin') {
+        try {
+            const plist = clipboard.read('NSFilenamesPboardType');
+            if (plist) {
+                const matches = plist.match(/<string>(.*?)<\/string>/g);
+                if (matches) {
+                    matches.forEach(match => {
+                        const path = match.replace(/<\/?string>/g, '');
+                        if (fs.existsSync(path)) files.push(path);
+                    });
+                }
+            }
+        } catch (e) {
+            log.error('Error reading clipboard files (Mac):', e);
+        }
+    }
+    return files;
+}
+
 function startClipboardWatcher() {
     setInterval(() => {
         try {
@@ -297,6 +333,31 @@ function startClipboardWatcher() {
                     lastImageHash = hash;
                     pendingNotificationImage = { image, hash };
                     createNotificationWindow();
+                }
+            } else {
+                // Try to read files (e.g. copied from Explorer)
+                const files = readClipboardFiles();
+                if (files.length > 0) {
+                    const imageExtensions = ['.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp'];
+                    for (const file of files) {
+                        const ext = path.extname(file).toLowerCase();
+                        if (imageExtensions.includes(ext)) {
+                            try {
+                                const fileImage = nativeImage.createFromPath(file);
+                                if (!fileImage.isEmpty()) {
+                                    const dataUrl = fileImage.toDataURL();
+                                    const hash = crypto.createHash('md5').update(dataUrl).digest('hex');
+                                    if (hash !== lastImageHash) {
+                                        lastImageHash = hash;
+                                        pendingNotificationImage = { image: fileImage, hash };
+                                        createNotificationWindow();
+                                    }
+                                }
+                            } catch (err) {
+                                log.error('Error processing image file from clipboard:', err);
+                            }
+                        }
+                    }
                 }
             }
         }
