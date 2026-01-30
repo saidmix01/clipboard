@@ -265,7 +265,7 @@ function App () {
   // Sync Listener
   useEffect(() => {
     if ((window as any).electronAPI?.onDevicesSyncComplete) {
-      const off = (window as any).electronAPI.onDevicesSyncComplete((devices: any[]) => {
+      const off = (window as any).electronAPI.onDevicesSyncComplete(() => {
           setShowDeviceSelection(true)
           toast.success(t('device.sync_complete') || 'Sincronización de dispositivos completada')
       })
