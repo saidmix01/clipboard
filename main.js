@@ -296,14 +296,35 @@ function readClipboardFiles() {
         }
     } else if (process.platform === 'darwin') {
         try {
-            const plist = clipboard.read('NSFilenamesPboardType');
-            if (plist) {
-                const matches = plist.match(/<string>(.*?)<\/string>/g);
-                if (matches) {
-                    matches.forEach(match => {
-                        const path = match.replace(/<\/?string>/g, '');
-                        if (fs.existsSync(path)) files.push(path);
-                    });
+            const formats = clipboard.availableFormats();
+            let raw = '';
+            if (formats.includes('public.file-url')) raw = clipboard.read('public.file-url');
+            else if (formats.includes('text/uri-list')) raw = clipboard.read('text/uri-list');
+            else if (formats.includes('public.url')) raw = clipboard.read('public.url');
+            if (raw && raw.trim() !== '') {
+                raw.split('\n').filter(Boolean).forEach(urlStr => {
+                    try {
+                        const u = new URL(urlStr.trim());
+                        let p = decodeURI(u.pathname);
+                        if (p && fs.existsSync(p)) {
+                            files.push(p);
+                        } else if (p && p.startsWith('/.file/id=')) {
+                            const res = spawnSync('osascript', ['-e', 'try\nset theItem to (the clipboard as alias)\nPOSIX path of theItem\non error\nreturn ""\nend try'], { encoding: 'utf8' });
+                            const aliasPath = res.stdout ? res.stdout.trim() : '';
+                            if (aliasPath && fs.existsSync(aliasPath)) files.push(aliasPath);
+                        }
+                    } catch {}
+                });
+            } else {
+                const plist = clipboard.read('NSFilenamesPboardType');
+                if (plist) {
+                    const matches = plist.match(/<string>(.*?)<\/string>/g);
+                    if (matches) {
+                        matches.forEach(match => {
+                            const path = match.replace(/<\/?string>/g, '');
+                            if (fs.existsSync(path)) files.push(path);
+                        });
+                    }
                 }
             }
         } catch (e) {
@@ -568,7 +589,12 @@ app.whenReady().then(async () => {
     createWindow();
     const iconPath = path.join(__dirname, 'frontend', 'media', '64x64.png');
     if (fs.existsSync(iconPath)) {
-        tray = new Tray(nativeImage.createFromPath(iconPath));
+        let trayImage = nativeImage.createFromPath(iconPath);
+        if (process.platform === 'darwin') {
+            trayImage = trayImage.resize({ width: 18, height: 18 });
+            trayImage.setTemplateImage(false);
+        }
+        tray = new Tray(trayImage);
         const contextMenu = Menu.buildFromTemplate([
             { label: 'Show', click: () => mainWindow.show() },
             { label: 'Quit', click: () => { isQuitting = true; app.quit(); } }
