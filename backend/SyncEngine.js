@@ -262,7 +262,8 @@ class SyncEngine {
                 const payload = {
                     id: item.id, // Siempre enviar el UUID local
                     type: item.type,
-                    clientId: item.deviceId, // Usar deviceId como clientId
+                    deviceId: item.deviceId, // UUID del dispositivo local
+                    clientId: item.deviceId, // Usar deviceId como clientId también
                     favorite: item.favorite || false,
                     meta: item.meta || null,
                     createdAt: item.createdAt || new Date().toISOString()

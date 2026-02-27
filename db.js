@@ -136,6 +136,18 @@ function createTables() {
       }
   } catch (e) {}
 
+  // Add Meta column to ClipboardItem for conflict resolution
+  try {
+      const info = db.exec("PRAGMA table_info(ClipboardItem)")[0].values;
+      const hasCol = info.some(col => col[1] === 'Meta');
+      if (!hasCol) {
+          db.run("ALTER TABLE ClipboardItem ADD COLUMN Meta TEXT")
+          console.log('[DB] Added Meta column to ClipboardItem')
+      }
+  } catch (e) {
+      console.error('Migration error for Meta column:', e)
+  }
+
   // SyncQueue table for persistent queue
   db.run(`
     CREATE TABLE IF NOT EXISTS SyncQueue (
