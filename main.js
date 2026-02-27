@@ -9,15 +9,16 @@ const crypto = require('crypto');
 // Assuming TypeScript compilation or ts-node
 // If using plain JS, this would be: const { BackendDaemon } = require('./backend/BackendDaemon')
 const BackendDaemon_1 = require("./backend/BackendDaemon");
+const SyncEngine_1 = require("./backend/SyncEngine");
 // --- Integration End ---
 const db = require('./db');
 const { configureAutoLaunch } = require('./autolaunch');
 const electronLog = require('electron-log');
 const { exec, execFile, spawnSync } = require('child_process');
 const log = {
-    info: () => { },
+    info: (...args) => console.log('[MAIN]', ...args),
     error: (...args) => console.error('[MAIN]', ...args),
-    warn: () => { },
+    warn: (...args) => console.warn('[MAIN]', ...args),
     debug: () => { }
 };
 let mainWindow;
@@ -55,6 +56,26 @@ function normalizeForIPC(items) {
         imagePath: i.type === 'image' && i.value.startsWith('[LOCAL_IMAGE]:') ? i.value.replace('[LOCAL_IMAGE]:', '') : null
     }));
 }
+// Helper: Broadcast update to main window with correct filtering
+function broadcastUpdate() {
+    if (mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents) {
+        const settings = db.getSettings();
+        log.info(`[Main] broadcastUpdate settings.selectedDeviceId: ${settings.selectedDeviceId}`);
+        const filter = {};
+        if (settings.selectedDeviceId) {
+            filter.deviceId = settings.selectedDeviceId;
+        }
+        const items = db.getItems(20, 0, filter);
+        log.info(`[Main] broadcastUpdate sending ${items.length} items (Device: ${filter.deviceId || 'ALL'})`);
+        try {
+            mainWindow.webContents.send('clipboard-update', normalizeForIPC(items));
+        }
+        catch (e) {
+            log.error('[Main] Failed to send clipboard-update:', e);
+        }
+    }
+}
+let cachedSelectedDeviceId = null;
 // Window Creation
 function createWindow() {
     const display = screen.getPrimaryDisplay();
@@ -93,7 +114,7 @@ function createWindow() {
     mainWindow.once('ready-to-show', () => {
         const settings = db.getSettings();
         mainWindow.show();
-        // mainWindow.webContents.send('clipboard-update', normalizeForIPC(db.getItems())); // Let frontend fetch initial
+        broadcastUpdate();
     });
     mainWindow.on('blur', () => {
         // Optional: hide on blur
@@ -135,7 +156,7 @@ function createOCRWindow(imagePath) {
         : 'http://localhost:5173';
     const url = `${indexPath}?mode=ocr&img=${encodeURIComponent(imagePath)}`;
     if (app.isPackaged) {
-        ocrWindow.loadFile(indexPath, { search: `mode=ocr&img=${encodeURIComponent(imagePath)}` }).then(() => {
+        ocrWindow.loadFile(indexPath).then(() => {
             ocrWindow.webContents.send('ocr-load-image', imagePath);
         });
     }
@@ -184,7 +205,7 @@ function createCodeWindow(codeContent) {
         : 'http://localhost:5173';
     const url = `${indexPath}?mode=code`;
     if (app.isPackaged) {
-        codeWindow.loadFile(indexPath, { search: 'mode=code' }).then(() => {
+        codeWindow.loadFile(indexPath).then(() => {
         });
     }
     else {
@@ -227,7 +248,7 @@ function createNotificationWindow() {
         : 'http://localhost:5173';
     const url = `${indexPath}?mode=notification`;
     if (app.isPackaged) {
-        notificationWindow.loadFile(indexPath, { search: 'mode=notification' }).then(() => {
+        notificationWindow.loadFile(indexPath).then(() => {
         });
     }
     else {
@@ -242,6 +263,10 @@ ipcMain.on('code-window-ready', (event) => {
     if (codeWindow && pendingCodeContent) {
         codeWindow.webContents.send('code-load-content', pendingCodeContent);
     }
+});
+ipcMain.on('app-ready', () => {
+    log.info('[Main] Received app-ready signal from renderer');
+    broadcastUpdate();
 });
 ipcMain.on('notification-window-ready', () => {
     if (notificationWindow && pendingNotificationImage) {
@@ -259,11 +284,17 @@ ipcMain.on('notification-action', (_, action) => {
             const filename = `${Date.now()}-${hash.substring(0, 8)}.png`;
             const filePath = path.join(imagesDir, filename);
             fs.writeFileSync(filePath, image.toPNG());
-            // db.insertItem(`[LOCAL_IMAGE]:${filePath}`, 'image');
-            BackendDaemon_1.BackendDaemon.getInstance().saveClipboardItem(`[LOCAL_IMAGE]:${filePath}`, 'image');
-            // if (mainWindow && !mainWindow.isDestroyed()) {
-            //    mainWindow.webContents.send('clipboard-update');
-            // }
+            // Usar BackendDaemon para guardar con deviceId
+            const backendDaemon = BackendDaemon_1.BackendDaemon.getInstance();
+            const result = backendDaemon.saveClipboardItem(`[LOCAL_IMAGE]:${filePath}`, 'image');
+            if (result) {
+                broadcastUpdate();
+                // Encolar para sincronización
+                const syncEngine = SyncEngine_1.SyncEngine.getInstance();
+                syncEngine.enqueueItem(result.id, 'CREATE').catch(err => {
+                    log.error('Failed to enqueue image for sync:', err);
+                });
+            }
         }
         catch (e) {
             log.error('Error saving image:', e);
@@ -277,74 +308,28 @@ ipcMain.on('notification-action', (_, action) => {
 // Clipboard Watcher
 let lastText = '';
 let lastImageHash = '';
-
-function readClipboardFiles() {
-    const files = [];
-    if (process.platform === 'win32') {
-        try {
-            // Windows: 'FileNameW' provides the path of the first file (UCS-2/UTF-16LE encoded)
-            const raw = clipboard.readBuffer('FileNameW');
-            if (raw.length > 0) {
-                let filePath = raw.toString('ucs2');
-                filePath = filePath.replace(new RegExp('\0', 'g'), '');
-                if (filePath && fs.existsSync(filePath)) {
-                    files.push(filePath);
-                }
-            }
-        } catch (e) {
-            log.error('Error reading clipboard files (Windows):', e);
-        }
-    } else if (process.platform === 'darwin') {
-        try {
-            const formats = clipboard.availableFormats();
-            let raw = '';
-            if (formats.includes('public.file-url')) raw = clipboard.read('public.file-url');
-            else if (formats.includes('text/uri-list')) raw = clipboard.read('text/uri-list');
-            else if (formats.includes('public.url')) raw = clipboard.read('public.url');
-            if (raw && raw.trim() !== '') {
-                raw.split('\n').filter(Boolean).forEach(urlStr => {
-                    try {
-                        const u = new URL(urlStr.trim());
-                        let p = decodeURI(u.pathname);
-                        if (p && fs.existsSync(p)) {
-                            files.push(p);
-                        } else if (p && p.startsWith('/.file/id=')) {
-                            const res = spawnSync('osascript', ['-e', 'try\nset theItem to (the clipboard as alias)\nPOSIX path of theItem\non error\nreturn ""\nend try'], { encoding: 'utf8' });
-                            const aliasPath = res.stdout ? res.stdout.trim() : '';
-                            if (aliasPath && fs.existsSync(aliasPath)) files.push(aliasPath);
-                        }
-                    } catch {}
-                });
-            } else {
-                const plist = clipboard.read('NSFilenamesPboardType');
-                if (plist) {
-                    const matches = plist.match(/<string>(.*?)<\/string>/g);
-                    if (matches) {
-                        matches.forEach(match => {
-                            const path = match.replace(/<\/?string>/g, '');
-                            if (fs.existsSync(path)) files.push(path);
-                        });
-                    }
-                }
-            }
-        } catch (e) {
-            log.error('Error reading clipboard files (Mac):', e);
-        }
-    }
-    return files;
-}
-
+let clipboardWatcherInterval = null;
 function startClipboardWatcher() {
-    setInterval(() => {
+    // Prevenir múltiples watchers
+    if (clipboardWatcherInterval) {
+        return;
+    }
+    clipboardWatcherInterval = setInterval(() => {
         try {
             const text = clipboard.readText();
             if (text && text.trim() !== '' && text !== lastText) {
                 lastText = text;
-                // db.insertItem(text, 'text'); <-- OLD
-                // Use BackendDaemon to save with active device
-                BackendDaemon_1.BackendDaemon.getInstance().saveClipboardItem(text, 'text');
-                // BackendDaemon broadcasts 'clipboard-update', so we don't need to send it here manually
-                // if mainWindow && ...
+                // Usar BackendDaemon para guardar (incluye deviceId automáticamente)
+                const backendDaemon = BackendDaemon_1.BackendDaemon.getInstance();
+                const result = backendDaemon.saveClipboardItem(text, 'text');
+                if (result) {
+                    broadcastUpdate();
+                    // Encolar para sincronización
+                    const syncEngine = SyncEngine_1.SyncEngine.getInstance();
+                    syncEngine.enqueueItem(result.id, 'CREATE').catch(err => {
+                        log.error('Failed to enqueue item for sync:', err);
+                    });
+                }
             }
             const image = clipboard.readImage();
             if (!image.isEmpty()) {
@@ -355,31 +340,6 @@ function startClipboardWatcher() {
                     pendingNotificationImage = { image, hash };
                     createNotificationWindow();
                 }
-            } else {
-                // Try to read files (e.g. copied from Explorer)
-                const files = readClipboardFiles();
-                if (files.length > 0) {
-                    const imageExtensions = ['.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp'];
-                    for (const file of files) {
-                        const ext = path.extname(file).toLowerCase();
-                        if (imageExtensions.includes(ext)) {
-                            try {
-                                const fileImage = nativeImage.createFromPath(file);
-                                if (!fileImage.isEmpty()) {
-                                    const dataUrl = fileImage.toDataURL();
-                                    const hash = crypto.createHash('md5').update(dataUrl).digest('hex');
-                                    if (hash !== lastImageHash) {
-                                        lastImageHash = hash;
-                                        pendingNotificationImage = { image: fileImage, hash };
-                                        createNotificationWindow();
-                                    }
-                                }
-                            } catch (err) {
-                                log.error('Error processing image file from clipboard:', err);
-                            }
-                        }
-                    }
-                }
             }
         }
         catch (e) {
@@ -387,17 +347,41 @@ function startClipboardWatcher() {
         }
     }, 1000);
 }
+function stopClipboardWatcher() {
+    if (clipboardWatcherInterval) {
+        clearInterval(clipboardWatcherInterval);
+        clipboardWatcherInterval = null;
+        log.info('[Main] Clipboard watcher stopped');
+    }
+}
 // IPC Handlers
 ipcMain.handle('get-clipboard-history', (_, { limit = 20, offset = 0, filter = {} } = {}) => {
-    // Redirect to BackendDaemon active device logic
-    const items = BackendDaemon_1.BackendDaemon.getInstance().getItemsByActiveDevice(limit, offset, filter);
+    // Automatically apply selected device filter if not explicitly requesting something else?
+    // User wants strict filtering by selected device.
+    const settings = db.getSettings();
+    // log.info(`[IPC] get-clipboard-history settings:`, JSON.stringify(settings))
+    // Ensure filter is not overwritten if passed by frontend (e.g. searching)
+    // But we want to enforce device scope.
+    if (settings.selectedDeviceId) {
+        // log.info(`[IPC] get-clipboard-history filtering by device: ${settings.selectedDeviceId}`)
+        filter.deviceId = settings.selectedDeviceId;
+        cachedSelectedDeviceId = settings.selectedDeviceId; // Update cache
+    }
+    else if (cachedSelectedDeviceId) {
+        log.warn(`[IPC] using CACHED device id: ${cachedSelectedDeviceId}`);
+        filter.deviceId = cachedSelectedDeviceId;
+    }
+    else {
+        log.warn(`[IPC] get-clipboard-history settings.selectedDeviceId IS MISSING/NULL!`);
+    }
+    const items = db.getItems(limit, offset, filter);
+    // log.info(`[IPC] get-clipboard-history returning ${items.length} items`)
     return normalizeForIPC(items);
 });
 ipcMain.handle('delete-history-item', (_, id) => {
     db.deleteItem(id);
-    if (mainWindow)
-        mainWindow.webContents.send('clipboard-update');
-    return [];
+    broadcastUpdate();
+    return []; // Return empty or updated list? Frontend seems to expect list but usually re-fetches or uses broadcast
 });
 ipcMain.handle('search-history', (_, payload) => {
     const filter = {};
@@ -405,6 +389,11 @@ ipcMain.handle('search-history', (_, payload) => {
         filter.search = payload.query;
     if (payload && payload.type)
         filter.type = payload.type;
+    // Apply selected device filter
+    const settings = db.getSettings();
+    if (settings.selectedDeviceId) {
+        filter.deviceId = settings.selectedDeviceId;
+    }
     return normalizeForIPC(db.getItems(100, 0, filter));
 });
 ipcMain.handle('clear-history', () => {
@@ -413,8 +402,7 @@ ipcMain.handle('clear-history', () => {
 });
 ipcMain.on('toggle-favorite', (_, { id, isFavorite }) => {
     db.setFavorite(id, isFavorite);
-    if (mainWindow)
-        mainWindow.webContents.send('clipboard-update');
+    broadcastUpdate();
 });
 ipcMain.on('copy-to-clipboard', (_, text) => {
     lastText = text;
@@ -547,6 +535,7 @@ ipcMain.handle('register-new-device', (_, name) => {
         VersionApp: app.getVersion()
     });
     if (resId) {
+        // Update items to belong to this new device if they were orphans
         db.updateAllItemsDevice(resId);
         return { id: resId, name };
     }
@@ -554,7 +543,27 @@ ipcMain.handle('register-new-device', (_, name) => {
 });
 ipcMain.handle('set-active-device', (_, id) => {
     log.info('IPC set-active-device called with:', id);
-    return db.setActiveDevice(id);
+    const result = db.setActiveDevice(id);
+    // Verify persistence
+    const settings = db.getSettings();
+    // log.info(`[IPC] db.getSettings() result:`, JSON.stringify(settings))
+    // log.info(`[IPC] Device set to: ${settings.selectedDeviceId} (Requested: ${id})`)
+    // Update cache
+    cachedSelectedDeviceId = id;
+    // Force a fresh filter application on broadcast
+    if (mainWindow && !mainWindow.isDestroyed()) {
+        const filter = {};
+        // Use the ID we just set, because DB might be slow to return it in getSettings() immediately
+        // or there is a race condition.
+        // We TRUST the ID passed to this function.
+        filter.deviceId = id;
+        // log.info(`[IPC] Forcing update with device filter: ${filter.deviceId}`)
+        const items = db.getItems(20, 0, filter);
+        // log.info(`[IPC] Found ${items.length} items for device`)
+        mainWindow.webContents.send('clipboard-update', normalizeForIPC(items));
+    }
+    // broadcastUpdate() // Replaced by explicit block above for debugging
+    return result;
 });
 // App Lifecycle
 app.whenReady().then(async () => {
@@ -564,17 +573,26 @@ app.whenReady().then(async () => {
     // Initialize the BackendDaemon which sets up the request handling and IPC
     BackendDaemon_1.BackendDaemon.getInstance();
     log.info('Backend Daemon Initialized');
+    // Initialize SyncEngine and start hourly scheduler
+    const syncEngine = SyncEngine_1.SyncEngine.getInstance();
+    syncEngine.startScheduler();
+    log.info('Sync Engine Initialized - Hourly sync enabled');
     // --- Integration End ---
-    const deviceId = db.ensureLocalDevice();
-    const device = db.getDevice(); // This will now return the local device thanks to ensureLocalDevice()
-
+    const device = db.getDevice();
+    let deviceId = device ? device.Id : null;
     if (deviceId) {
         db.registerDevice({
             Id: deviceId,
             OsName: process.platform,
-            Name: device ? device.Name : os.hostname(), // Use existing name or fallback to hostname
+            Name: device.Name,
             VersionApp: app.getVersion()
         });
+        // Claim orphan items (legacy items with NULL deviceId) for this local device
+        db.claimOrphanItems(deviceId);
+        // Ensure we have a selected device in settings (default to local)
+        if (!db.getSettings().selectedDeviceId) {
+            db.setActiveDevice(deviceId);
+        }
     }
     protocol.registerFileProtocol('local-image', (request, callback) => {
         const url = request.url.replace('local-image://', '');
@@ -589,12 +607,7 @@ app.whenReady().then(async () => {
     createWindow();
     const iconPath = path.join(__dirname, 'frontend', 'media', '64x64.png');
     if (fs.existsSync(iconPath)) {
-        let trayImage = nativeImage.createFromPath(iconPath);
-        if (process.platform === 'darwin') {
-            trayImage = trayImage.resize({ width: 18, height: 18 });
-            trayImage.setTemplateImage(false);
-        }
-        tray = new Tray(trayImage);
+        tray = new Tray(nativeImage.createFromPath(iconPath));
         const contextMenu = Menu.buildFromTemplate([
             { label: 'Show', click: () => mainWindow.show() },
             { label: 'Quit', click: () => { isQuitting = true; app.quit(); } }
@@ -618,7 +631,7 @@ app.whenReady().then(async () => {
                 }
             });
             if (!ret) {
-                // console.log('Registration failed for shortcut:', accelerator);
+                console.log('Registration failed for shortcut:', accelerator);
             }
         }
         catch (e) {
@@ -635,6 +648,12 @@ app.on('window-all-closed', () => {
 });
 app.on('before-quit', () => {
     isQuitting = true;
+    // Cleanup: Detener clipboard watcher
+    stopClipboardWatcher();
+    // Cleanup: Detener SyncEngine
+    const syncEngine = SyncEngine_1.SyncEngine.getInstance();
+    syncEngine.destroy();
+    log.info('[Main] App cleanup completed');
 });
 ipcMain.on('open-image-viewer', (_, dataUrl) => {
     if (dataUrl.startsWith('[LOCAL_IMAGE]:')) {

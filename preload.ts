@@ -58,6 +58,20 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.on('devices:sync-complete', listener);
       return () => ipcRenderer.removeListener('devices:sync-complete', listener);
   },
+  
+  // Sync Engine APIs
+  syncNow: () => ipcRenderer.invoke('sync:now'),
+  getSyncStats: () => ipcRenderer.invoke('sync:get-stats'),
+  onSyncStats: (callback: (stats: any) => void) => {
+      const listener = (_: any, stats: any) => callback(stats);
+      ipcRenderer.on('sync:stats', listener);
+      return () => ipcRenderer.removeListener('sync:stats', listener);
+  },
+  onNetworkStatus: (callback: (status: { online: boolean }) => void) => {
+      const listener = (_: any, status: any) => callback(status);
+      ipcRenderer.on('sync:network-status', listener);
+      return () => ipcRenderer.removeListener('sync:network-status', listener);
+  },
 
   // --- Backend Daemon API (New) ---
   backend: {
@@ -93,13 +107,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // App Lifecycle
   signalAppReady: () => ipcRenderer.send('app-ready'),
 
-  // Deprecated / Stubs
-  syncNow: () => {},
-  listDevices: () => Promise.resolve([]),
-  registerDevice: () => Promise.resolve(),
-  authLogin: () => Promise.resolve({ token: 'local-token' }),
-  setAuthToken: () => {},
-  readSession: () => Promise.resolve(null),
+  // Deprecated / Stubs - REMOVED
+  // syncNow, listDevices, registerDevice, authLogin, setAuthToken, readSession
+  // Use new APIs above instead
 });
 
 contextBridge.exposeInMainWorld('copyfy', {

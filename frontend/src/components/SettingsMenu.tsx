@@ -1,7 +1,8 @@
 import { useState, useEffect } from 'react'
 import DetailsModal from './DetailsModal'
-import { ArrowPathIcon, MoonIcon, SunIcon, TrashIcon, InformationCircleIcon, Cog6ToothIcon, ChevronLeftIcon, GlobeAltIcon, ComputerDesktopIcon } from '@heroicons/react/24/outline'
+import { ArrowPathIcon, MoonIcon, SunIcon, TrashIcon, InformationCircleIcon, Cog6ToothIcon, ChevronLeftIcon, GlobeAltIcon, ComputerDesktopIcon, CloudArrowUpIcon } from '@heroicons/react/24/outline'
 import { useTranslation } from 'react-i18next'
+import toast from 'react-hot-toast'
 
 type Props = {
   open: boolean
@@ -11,8 +12,8 @@ type Props = {
   onToggleDark: () => void
   onClearHistory: () => void
   onOpenAbout: () => void
-  onChangeDevice?: () => void // Optional or removed
-  onSyncNow?: () => void // Optional or removed
+  onChangeDevice?: () => void
+  onSyncNow?: () => void
 }
 
 export default function SettingsMenu({ open, darkMode, onClose, onForceUpdate, onToggleDark, onClearHistory, onOpenAbout, onChangeDevice }: Props) {
@@ -22,6 +23,10 @@ export default function SettingsMenu({ open, darkMode, onClose, onForceUpdate, o
   const [shortcutModifier, setShortcutModifier] = useState('Alt')
   const [shortcutKey, setShortcutKey] = useState('X')
   const [recording, setRecording] = useState<'modifier' | 'key' | null>(null)
+  
+  // Sync state
+  const [isSyncing, setIsSyncing] = useState(false)
+  const [syncStats, setSyncStats] = useState<any>(null)
   
   const [colorPrimary, setColorPrimary] = useState('#0a84ff')
   const [colorSecondary, setColorSecondary] = useState('#34c759')
@@ -34,6 +39,10 @@ export default function SettingsMenu({ open, darkMode, onClose, onForceUpdate, o
     if (open) {
       setView('main')
       setRecording(null)
+      
+      // Load sync stats
+      loadSyncStats()
+      
       try {
         ;(window as any).electronAPI?.getPreferences?.().then((prefs: any) => {
           setStartMinimized(!!prefs?.startMinimized)
@@ -41,11 +50,7 @@ export default function SettingsMenu({ open, darkMode, onClose, onForceUpdate, o
             const parts = prefs.globalShortcut.split('+')
             if (parts.length >= 2) {
                 setShortcutKey(parts[parts.length - 1])
-                // Approximate modifier logic
                 const mods = parts.slice(0, parts.length - 1)
-                // Prefer last modifier if multiple? Or show composite?
-                // The UI only shows one modifier button.
-                // Let's just pick the first one or 'Alt'
                 setShortcutModifier(mods[0])
             }
           }
@@ -84,6 +89,87 @@ export default function SettingsMenu({ open, darkMode, onClose, onForceUpdate, o
       } catch {}
     }
   }, [open])
+
+  // Listen to sync stats updates
+  useEffect(() => {
+    if (!open) return
+    
+    const unsubscribe = (window as any).electronAPI?.onSyncStats?.((stats: any) => {
+      setSyncStats(stats)
+      setIsSyncing(stats.isRunning)
+    })
+    
+    return () => {
+      if (unsubscribe) unsubscribe()
+    }
+  }, [open])
+
+  const loadSyncStats = async () => {
+    try {
+      const stats = await (window as any).electronAPI?.getSyncStats?.()
+      if (stats) {
+        setSyncStats(stats)
+        setIsSyncing(stats.isRunning)
+      }
+    } catch (e) {
+      console.error('Error loading sync stats:', e)
+    }
+  }
+
+  const handleSyncNow = async () => {
+    try {
+      setIsSyncing(true)
+      toast.loading(t('settings.syncing'), { id: 'sync-toast' })
+      
+      // Verificar que la API existe
+      if (!(window as any).electronAPI?.syncNow) {
+        throw new Error('Sync API not available')
+      }
+      
+      // Timeout de 30 segundos
+      const timeoutPromise = new Promise((_, reject) => {
+        setTimeout(() => reject(new Error('Sync timeout')), 30000)
+      })
+      
+      const syncPromise = (window as any).electronAPI.syncNow()
+      
+      const result = await Promise.race([syncPromise, timeoutPromise])
+      
+      if (result) {
+        setSyncStats(result)
+        toast.success(t('notifications.sync_completed'), { id: 'sync-toast' })
+      } else {
+        toast.error(t('notifications.sync_failed'), { id: 'sync-toast' })
+      }
+    } catch (e: any) {
+      console.error('Error syncing:', e)
+      const errorMsg = e.message === 'Sync timeout' 
+        ? 'Timeout: La sincronización está tardando demasiado'
+        : e.message === 'Sync API not available'
+        ? 'API de sincronización no disponible. Recompila el proyecto.'
+        : t('notifications.sync_failed')
+      toast.error(errorMsg, { id: 'sync-toast' })
+    } finally {
+      setIsSyncing(false)
+    }
+  }
+
+  const formatLastSync = (timestamp: number | null) => {
+    if (!timestamp) return t('settings.never_synced')
+    
+    const date = new Date(timestamp)
+    const now = new Date()
+    const diffMs = now.getTime() - date.getTime()
+    const diffMins = Math.floor(diffMs / 60000)
+    
+    if (diffMins < 1) return t('settings.last_sync', { time: 'hace un momento' })
+    if (diffMins < 60) return t('settings.last_sync', { time: `hace ${diffMins} min` })
+    
+    const diffHours = Math.floor(diffMins / 60)
+    if (diffHours < 24) return t('settings.last_sync', { time: `hace ${diffHours}h` })
+    
+    return t('settings.last_sync', { time: date.toLocaleDateString() })
+  }
 
   useEffect(() => {
     if (!recording) return
@@ -216,6 +302,33 @@ export default function SettingsMenu({ open, darkMode, onClose, onForceUpdate, o
           <>
             <h3 className="m-0 text-[color:var(--color-text)]">{t('settings.title')}</h3>
             <div className="flex flex-col mt-2">
+              {/* Sync Now Button */}
+              <button 
+                className={`${menuBtnClass} ${isSyncing ? 'opacity-50 cursor-not-allowed' : ''}`}
+                onMouseEnter={!isSyncing ? MouseOver : undefined} 
+                onMouseLeave={!isSyncing ? MouseOut : undefined} 
+                onClick={handleSyncNow}
+                disabled={isSyncing}
+              >
+                <CloudArrowUpIcon className={`w-5 h-5 ${isSyncing ? 'animate-bounce' : ''}`} />
+                <div className="flex flex-col items-start flex-1">
+                  <span>{isSyncing ? t('settings.syncing') : t('settings.sync_now')}</span>
+                  {syncStats && (
+                    <span className="text-xs opacity-70">
+                      {syncStats.lastSyncAt 
+                        ? formatLastSync(syncStats.lastSyncAt)
+                        : t('settings.never_synced')
+                      }
+                    </span>
+                  )}
+                </div>
+                {syncStats && syncStats.itemsPending > 0 && (
+                  <span className="px-2 py-0.5 text-xs rounded-full bg-[color:var(--color-primary)] text-white">
+                    {syncStats.itemsPending}
+                  </span>
+                )}
+              </button>
+              
               <button className={menuBtnClass} onMouseEnter={MouseOver} onMouseLeave={MouseOut} onClick={onChangeDevice}>
                 <ComputerDesktopIcon className="w-5 h-5" />
                 <span>{t('device.title')}</span>

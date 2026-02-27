@@ -35,37 +35,34 @@ class BackendDaemon {
         }
         return BackendDaemon.instance;
     }
-
     initActiveDevice() {
         // Logic:
         // 1. Load devices
         // 2. Check if one is already active (in AppSettings)
         // 3. If not, and only 1 device exists -> set it active
         // 4. If multiple and none active -> wait for user selection (frontend will handle modal)
-        
         const settings = db.getSettings();
         const devices = db.getDevices();
-        
         if (!settings.selectedDeviceId) {
             if (devices.length === 1) {
                 this.setActiveDevice(devices[0].Id);
-            } else if (devices.length === 0) {
+            }
+            else if (devices.length === 0) {
                 // Should not happen if ensureLocalDevice was called in main.js
                 // But if it does, main.js ensures at least one local device exists.
                 const localId = db.ensureLocalDevice();
-                if (localId) this.setActiveDevice(localId);
+                if (localId)
+                    this.setActiveDevice(localId);
             }
         }
     }
-    
     getActiveDevice() {
         const settings = db.getSettings();
-        if (!settings.selectedDeviceId) return null;
-        
+        if (!settings.selectedDeviceId)
+            return null;
         const devices = db.getDevices();
         return devices.find((d) => d.Id === settings.selectedDeviceId) || null;
     }
-    
     setActiveDevice(deviceId) {
         const success = db.setActiveDevice(deviceId);
         if (success) {
@@ -78,37 +75,53 @@ class BackendDaemon {
         }
         return success;
     }
-    
     getItemsByActiveDevice(limit = 20, offset = 0, filter = {}) {
         const activeDevice = this.getActiveDevice();
-        if (!activeDevice) return []; // Or return all? Rule says: "mostrar solo los datos del dispositivo activo"
-        
-        // Merge filter with deviceId
-        const newFilter = Object.assign({}, filter, { deviceId: activeDevice.Id });
-        return db.getItems(limit, offset, newFilter);
+        if (!activeDevice)
+            return []; // Or return all? Rule says: "mostrar solo los datos del dispositivo activo"
+        return db.getItems(limit, offset, { ...filter, deviceId: activeDevice.Id });
     }
-    
     saveClipboardItem(value, type) {
         const activeDevice = this.getActiveDevice();
         if (!activeDevice) {
             console.warn('[BackendDaemon] No active device selected. Cannot save item.');
-            return null; 
+            return null;
             // Rule: "❌ No guardar items sin deviceId"
+            // If no active device, we might prompt user? 
+            // For now, we strictly follow: no save.
         }
-    
         const result = db.insertItem(value, type, activeDevice.Id);
         if (result) {
-            this.broadcast('clipboard:updated'); 
+            this.broadcast('clipboard:updated');
             this.broadcast('clipboard-update'); // Legacy support
         }
         return result;
     }
-    
     broadcast(channel, data) {
         const windows = electron_1.BrowserWindow.getAllWindows();
         windows.forEach(w => w.webContents.send(channel, data));
     }
-
+    /**
+     * Método público para hacer requests autenticados desde SyncEngine
+     */
+    async request(config) {
+        try {
+            const response = await this.client.request(config);
+            return {
+                success: true,
+                data: response.data,
+                status: response.status
+            };
+        }
+        catch (error) {
+            return {
+                success: false,
+                error: error.message,
+                status: error.response?.status,
+                data: error.response?.data
+            };
+        }
+    }
     /**
      * Configures Axios interceptors to handle Auth headers and Refresh Token flow
      */
@@ -208,25 +221,20 @@ class BackendDaemon {
         const sendToRenderer = (channel, data) => {
             windows.forEach(w => w.webContents.send(channel, data));
         };
-        console.log('[BackendDaemon] Starting device sync...');
         sendToRenderer('devices:sync-start');
         try {
             // 1. Create local devices on backend
             const devices = db.getDevices();
-            console.log(`[BackendDaemon] Found ${devices.length} devices locally.`);
             for (const device of devices) {
                 // Check if synced. Assuming db.js returns 'Synced' as 0 or 1 (integer)
                 if (!device.Synced) {
-                    console.log(`[BackendDaemon] Syncing local device ${device.Id} to remote...`);
                     await this.createRemoteDevice(device);
                 }
             }
             // 2. Fetch remote devices
-            console.log('[BackendDaemon] Fetching remote devices...');
             await this.fetchRemoteDevices();
             // 3. Notify
             const allDevices = db.getDevices();
-            console.log(`[BackendDaemon] Sync complete. Total devices: ${allDevices.length}`);
             sendToRenderer('devices:sync-complete', allDevices);
         }
         catch (error) {
@@ -259,7 +267,6 @@ class BackendDaemon {
     async fetchRemoteDevices() {
         try {
             const res = await this.client.get('/devices');
-            console.log('[BackendDaemon] GET /devices raw response:', JSON.stringify(res.data));
             let remoteDevices = res.data;
             // Handle potential API wrapper { success: true, data: { items: [...] } } or { success: true, data: [...] }
             if (!Array.isArray(remoteDevices)) {
@@ -277,7 +284,6 @@ class BackendDaemon {
                 }
             }
             if (Array.isArray(remoteDevices)) {
-                console.log(`[BackendDaemon] Found ${remoteDevices.length} remote devices.`);
                 for (const rd of remoteDevices) {
                     // Skip if it's the current local device (already handled)
                     // although registerDevice handles updates, so it's fine.
@@ -292,9 +298,6 @@ class BackendDaemon {
                     // Mark as synced since it came from remote
                     db.markDeviceSynced(deviceInfo.Id);
                 }
-            }
-            else {
-                console.warn('[BackendDaemon] Expected array of devices but got:', typeof remoteDevices);
             }
         }
         catch (e) {
@@ -337,18 +340,18 @@ class BackendDaemon {
         electron_1.ipcMain.handle('auth-force-refresh', async () => {
             return this.performRefreshToken();
         });
-
         // --- Active Device Logic ---
         electron_1.ipcMain.handle('devices:get-active', () => {
             return this.getActiveDevice();
         });
-
         electron_1.ipcMain.handle('devices:set-active', (_, deviceId) => {
             return this.setActiveDevice(deviceId);
         });
-
         electron_1.ipcMain.handle('clipboard:get-items', (_, { limit = 20, offset = 0, filter = {} } = {}) => {
-            // Normalize for IPC
+            // Normalize for IPC (removing potentially large data if needed, but db.getItems returns simple objects)
+            // We reuse the normalization logic from main.js if possible, or duplicate it here.
+            // main.js has normalizeForIPC. 
+            // Let's implement a simple one here or import.
             const items = this.getItemsByActiveDevice(limit, offset, filter);
             return items.map((i) => ({
                 id: i.id,
@@ -358,6 +361,16 @@ class BackendDaemon {
                 createdAt: i.createdAt,
                 imagePath: i.type === 'image' && i.value.startsWith('[LOCAL_IMAGE]:') ? i.value.replace('[LOCAL_IMAGE]:', '') : null
             }));
+        });
+        // --- Sync Engine APIs ---
+        const { SyncEngine } = require('./SyncEngine');
+        electron_1.ipcMain.handle('sync:now', async () => {
+            const syncEngine = SyncEngine.getInstance();
+            return syncEngine.syncNow();
+        });
+        electron_1.ipcMain.handle('sync:get-stats', () => {
+            const syncEngine = SyncEngine.getInstance();
+            return syncEngine.getStats();
         });
     }
 }

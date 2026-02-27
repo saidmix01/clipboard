@@ -110,11 +110,31 @@ export class BackendDaemon {
     return result;
 }
 
-private broadcast(channel: string, data?: any) {
+  private broadcast(channel: string, data?: any) {
       const windows = BrowserWindow.getAllWindows();
       windows.forEach(w => w.webContents.send(channel, data));
   }
 
+  /**
+   * Método público para hacer requests autenticados desde SyncEngine
+   */
+  public async request(config: AxiosRequestConfig): Promise<any> {
+    try {
+      const response = await this.client.request(config);
+      return {
+        success: true,
+        data: response.data,
+        status: response.status
+      };
+    } catch (error: any) {
+      return {
+        success: false,
+        error: error.message,
+        status: error.response?.status,
+        data: error.response?.data
+      };
+    }
+  }
 
   /**
    * Configures Axios interceptors to handle Auth headers and Refresh Token flow
@@ -383,6 +403,19 @@ private broadcast(channel: string, data?: any) {
             createdAt: i.createdAt,
             imagePath: i.type === 'image' && i.value.startsWith('[LOCAL_IMAGE]:') ? i.value.replace('[LOCAL_IMAGE]:', '') : null
         }));
+    });
+    
+    // --- Sync Engine APIs ---
+    const { SyncEngine } = require('./SyncEngine');
+    
+    ipcMain.handle('sync:now', async () => {
+        const syncEngine = SyncEngine.getInstance();
+        return syncEngine.syncNow();
+    });
+    
+    ipcMain.handle('sync:get-stats', () => {
+        const syncEngine = SyncEngine.getInstance();
+        return syncEngine.getStats();
     });
   }
 }

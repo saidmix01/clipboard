@@ -136,9 +136,26 @@ function createTables() {
       }
   } catch (e) {}
 
+  // SyncQueue table for persistent queue
+  db.run(`
+    CREATE TABLE IF NOT EXISTS SyncQueue (
+      Id TEXT PRIMARY KEY,
+      OperationType TEXT,
+      ItemId TEXT,
+      ItemData TEXT,
+      Timestamp INTEGER,
+      Retries INTEGER DEFAULT 0,
+      NextRetryAt INTEGER,
+      CreatedAt DATETIME
+    );
+  `)
+
   // Indexes
   db.run(`CREATE INDEX IF NOT EXISTS idx_clipboard_created ON ClipboardItem(CreatedAt DESC);`)
   db.run(`CREATE INDEX IF NOT EXISTS idx_clipboard_favorite ON ClipboardItem(IsFavorite);`)
+  db.run(`CREATE INDEX IF NOT EXISTS idx_clipboard_device ON ClipboardItem(DeviceId, CreatedAt DESC);`)
+  db.run(`CREATE INDEX IF NOT EXISTS idx_clipboard_pending ON ClipboardItem(Pending) WHERE Pending = 1;`)
+  db.run(`CREATE INDEX IF NOT EXISTS idx_syncqueue_retry ON SyncQueue(NextRetryAt);`)
 }
 
 function persist() {
@@ -148,7 +165,29 @@ function persist() {
     fs.writeFileSync(dbFilePath, Buffer.from(data))
   } catch (e) {
     console.error('Error persisting DB:', e)
+    throw e // Propagar error para que el caller lo maneje
   }
+}
+
+// Versión asíncrona de persist para operaciones no críticas
+async function persistAsync() {
+  if (!dbFilePath || !db) return
+  return new Promise((resolve, reject) => {
+    try {
+      const data = db.export()
+      fs.writeFile(dbFilePath, Buffer.from(data), (err) => {
+        if (err) {
+          console.error('Error persisting DB async:', err)
+          reject(err)
+        } else {
+          resolve()
+        }
+      })
+    } catch (e) {
+      console.error('Error exporting DB:', e)
+      reject(e)
+    }
+  })
 }
 
 // --- CRUD Operations ---
@@ -614,6 +653,173 @@ function normalizeSettings(row) {
 // The old db.js had specific exports. I will try to map them or update main.js.
 // Since I'm refactoring main.js too, I'll export clean names.
 
+// --- Sync Queue Operations ---
+
+function saveSyncQueue(operations) {
+  try {
+    // Limpiar tabla actual
+    db.run("DELETE FROM SyncQueue")
+    
+    // Insertar operaciones
+    const stmt = db.prepare(`
+      INSERT INTO SyncQueue (Id, OperationType, ItemId, ItemData, Timestamp, Retries, NextRetryAt, CreatedAt)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `)
+    
+    operations.forEach(op => {
+      const id = crypto.randomUUID()
+      stmt.bind([
+        id,
+        op.type,
+        op.itemId,
+        JSON.stringify(op.item),
+        op.timestamp,
+        op.retries,
+        op.nextRetryAt || null,
+        new Date().toISOString()
+      ])
+      stmt.step()
+      stmt.reset()
+    })
+    
+    stmt.free()
+    persist()
+  } catch (e) {
+    console.error('Error saving sync queue:', e)
+  }
+}
+
+function getPendingSyncOperations() {
+  try {
+    const stmt = db.prepare("SELECT * FROM SyncQueue ORDER BY Timestamp ASC")
+    const operations = []
+    
+    while (stmt.step()) {
+      const row = stmt.getAsObject()
+      operations.push({
+        type: row.OperationType,
+        itemId: row.ItemId,
+        item: JSON.parse(row.ItemData),
+        timestamp: row.Timestamp,
+        retries: row.Retries,
+        nextRetryAt: row.NextRetryAt
+      })
+    }
+    
+    stmt.free()
+    return operations
+  } catch (e) {
+    console.error('Error getting pending sync operations:', e)
+    return []
+  }
+}
+
+function markItemAsSynced(itemId) {
+  try {
+    const now = new Date().toISOString()
+    const stmt = db.prepare("UPDATE ClipboardItem SET Pending = 0, UpdatedAt = ? WHERE Id = ?")
+    stmt.bind([now, itemId])
+    stmt.step()
+    stmt.free()
+    persist()
+  } catch (e) {
+    console.error('Error marking item as synced:', e)
+  }
+}
+
+function updateItem(item) {
+  try {
+    const now = new Date().toISOString()
+    const stmt = db.prepare(`
+      UPDATE ClipboardItem 
+      SET Value = ?, Type = ?, IsFavorite = ?, UpdatedAt = ?, Version = ?, DeviceId = ?
+      WHERE Id = ?
+    `)
+    stmt.bind([
+      item.value,
+      item.type,
+      item.favorite ? 1 : 0,
+      now,
+      item.version || 1,
+      item.deviceId,
+      item.id
+    ])
+    stmt.step()
+    stmt.free()
+    persist()
+  } catch (e) {
+    console.error('Error updating item:', e)
+  }
+}
+
+function markAsConflicted(itemId, remoteItem) {
+  try {
+    // Guardar datos del conflicto en un campo JSON temporal
+    const remoteData = JSON.stringify(remoteItem);
+    const stmt = db.prepare("UPDATE ClipboardItem SET Pending = 2, Meta = ? WHERE Id = ?")
+    stmt.bind([remoteData, itemId])
+    stmt.step()
+    stmt.free()
+    persist()
+    
+    // Pending = 2 significa "conflicto detectado"
+    // Meta almacena temporalmente los datos remotos
+    console.log(`[DB] Marked item ${itemId} as conflicted`)
+  } catch (e) {
+    console.error('Error marking as conflicted:', e)
+  }
+}
+
+function getConflictedItems() {
+  try {
+    const stmt = db.prepare("SELECT * FROM ClipboardItem WHERE Pending = 2")
+    const items = []
+    
+    while (stmt.step()) {
+      const row = stmt.getAsObject()
+      const localItem = normalizeItem(row);
+      
+      // Intentar parsear los datos remotos del campo Meta
+      let remoteItem = {};
+      try {
+        if (row.Meta) {
+          remoteItem = JSON.parse(row.Meta);
+        }
+      } catch (e) {
+        console.error('[DB] Failed to parse remote item from Meta:', e);
+      }
+      
+      items.push({
+        local: localItem,
+        remote: remoteItem
+      })
+    }
+    
+    stmt.free()
+    return items
+  } catch (e) {
+    console.error('Error getting conflicted items:', e)
+    return []
+  }
+}
+
+function clearConflict(itemId) {
+  if (!itemId) {
+    console.error('Error clearing conflict: itemId is required')
+    return
+  }
+  try {
+    // Limpiar el estado de conflicto y el campo Meta
+    const stmt = db.prepare("UPDATE ClipboardItem SET Pending = 0, Meta = NULL WHERE Id = ?")
+    stmt.bind([itemId])
+    stmt.step()
+    stmt.free()
+    persist()
+  } catch (e) {
+    console.error('Error clearing conflict:', e)
+  }
+}
+
 module.exports = {
   init,
   insertItem,
@@ -630,5 +836,14 @@ module.exports = {
   updateAllItemsDevice,
   claimOrphanItems,
   markDeviceSynced,
-  ensureLocalDevice
+  ensureLocalDevice,
+  // Sync operations
+  saveSyncQueue,
+  getPendingSyncOperations,
+  markItemAsSynced,
+  updateItem,
+  markAsConflicted,
+  getConflictedItems,
+  clearConflict,
+  persistAsync
 }

@@ -22,6 +22,7 @@ const crypto = require('crypto')
 // Assuming TypeScript compilation or ts-node
 // If using plain JS, this would be: const { BackendDaemon } = require('./backend/BackendDaemon')
 import { BackendDaemon } from './backend/BackendDaemon';
+import { SyncEngine } from './backend/SyncEngine';
 // --- Integration End ---
 
 const db = require('./db')
@@ -73,7 +74,7 @@ function normalizeForIPC(items: any[]) {
 
 // Helper: Broadcast update to main window with correct filtering
 function broadcastUpdate() {
-    if (mainWindow && !mainWindow.isDestroyed()) {
+    if (mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents) {
         const settings = db.getSettings()
         log.info(`[Main] broadcastUpdate settings.selectedDeviceId: ${settings.selectedDeviceId}`)
         
@@ -84,7 +85,12 @@ function broadcastUpdate() {
         
         const items = db.getItems(20, 0, filter)
         log.info(`[Main] broadcastUpdate sending ${items.length} items (Device: ${filter.deviceId || 'ALL'})`)
-        mainWindow.webContents.send('clipboard-update', normalizeForIPC(items))
+        
+        try {
+            mainWindow.webContents.send('clipboard-update', normalizeForIPC(items))
+        } catch (e) {
+            log.error('[Main] Failed to send clipboard-update:', e)
+        }
     }
 }
 
@@ -328,9 +334,19 @@ ipcMain.on('notification-action', (_: any, action: string) => {
             const filePath = path.join(imagesDir, filename)
             fs.writeFileSync(filePath, image.toPNG())
             
-            db.insertItem(`[LOCAL_IMAGE]:${filePath}`, 'image')
+            // Usar BackendDaemon para guardar con deviceId
+            const backendDaemon = BackendDaemon.getInstance()
+            const result = backendDaemon.saveClipboardItem(`[LOCAL_IMAGE]:${filePath}`, 'image')
             
-            broadcastUpdate()
+            if (result) {
+                broadcastUpdate()
+                
+                // Encolar para sincronización
+                const syncEngine = SyncEngine.getInstance()
+                syncEngine.enqueueItem(result.id, 'CREATE').catch(err => {
+                    log.error('Failed to enqueue image for sync:', err)
+                })
+            }
         } catch(e) {
             log.error('Error saving image:', e)
         }
@@ -345,15 +361,33 @@ ipcMain.on('notification-action', (_: any, action: string) => {
 // Clipboard Watcher
 let lastText = ''
 let lastImageHash = ''
+let clipboardWatcherInterval: NodeJS.Timeout | null = null
 
 function startClipboardWatcher() {
-  setInterval(() => {
+  // Prevenir múltiples watchers
+  if (clipboardWatcherInterval) {
+    return
+  }
+
+  clipboardWatcherInterval = setInterval(() => {
     try {
       const text = clipboard.readText()
       if (text && text.trim() !== '' && text !== lastText) {
         lastText = text
-        db.insertItem(text, 'text')
-        broadcastUpdate()
+        
+        // Usar BackendDaemon para guardar (incluye deviceId automáticamente)
+        const backendDaemon = BackendDaemon.getInstance()
+        const result = backendDaemon.saveClipboardItem(text, 'text')
+        
+        if (result) {
+          broadcastUpdate()
+          
+          // Encolar para sincronización
+          const syncEngine = SyncEngine.getInstance()
+          syncEngine.enqueueItem(result.id, 'CREATE').catch(err => {
+            log.error('Failed to enqueue item for sync:', err)
+          })
+        }
       }
 
       const image = clipboard.readImage()
@@ -370,6 +404,14 @@ function startClipboardWatcher() {
       log.error('Clipboard watcher error:', e)
     }
   }, 1000)
+}
+
+function stopClipboardWatcher() {
+  if (clipboardWatcherInterval) {
+    clearInterval(clipboardWatcherInterval)
+    clipboardWatcherInterval = null
+    log.info('[Main] Clipboard watcher stopped')
+  }
 }
 
 // IPC Handlers
@@ -609,6 +651,11 @@ app.whenReady().then(async () => {
   // Initialize the BackendDaemon which sets up the request handling and IPC
   BackendDaemon.getInstance();
   log.info('Backend Daemon Initialized');
+  
+  // Initialize SyncEngine and start hourly scheduler
+  const syncEngine = SyncEngine.getInstance();
+  syncEngine.startScheduler();
+  log.info('Sync Engine Initialized - Hourly sync enabled');
   // --- Integration End ---
 
   const device = db.getDevice()
@@ -691,6 +738,15 @@ app.on('window-all-closed', () => {
 
 app.on('before-quit', () => {
   isQuitting = true
+  
+  // Cleanup: Detener clipboard watcher
+  stopClipboardWatcher()
+  
+  // Cleanup: Detener SyncEngine
+  const syncEngine = SyncEngine.getInstance()
+  syncEngine.destroy()
+  
+  log.info('[Main] App cleanup completed')
 })
 
 ipcMain.on('open-image-viewer', (_: any, dataUrl: string) => {
