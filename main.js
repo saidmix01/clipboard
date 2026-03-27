@@ -117,7 +117,7 @@ function createWindow() {
     });
     const indexPath = app.isPackaged
         ? path.join(app.getAppPath(), 'frontend', 'dist', 'index.html')
-        : 'http://localhost:5173';
+        : 'http://127.0.0.1:5173';
     if (app.isPackaged) {
         mainWindow.loadFile(indexPath);
     }
@@ -166,7 +166,7 @@ function createOCRWindow(imagePath) {
     });
     const indexPath = app.isPackaged
         ? path.join(app.getAppPath(), 'frontend', 'dist', 'index.html')
-        : 'http://localhost:5173';
+        : 'http://127.0.0.1:5173';
     const url = `${indexPath}?mode=ocr&img=${encodeURIComponent(imagePath)}`;
     if (app.isPackaged) {
         ocrWindow.loadFile(indexPath, { search: `mode=ocr&img=${encodeURIComponent(imagePath)}` }).then(() => {
@@ -215,7 +215,7 @@ function createCodeWindow(codeContent) {
     });
     const indexPath = app.isPackaged
         ? path.join(app.getAppPath(), 'frontend', 'dist', 'index.html')
-        : 'http://localhost:5173';
+        : 'http://127.0.0.1:5173';
     const url = `${indexPath}?mode=code`;
     if (app.isPackaged) {
         codeWindow.loadFile(indexPath, { search: 'mode=code' }).then(() => {
@@ -258,7 +258,7 @@ function createNotificationWindow() {
     });
     const indexPath = app.isPackaged
         ? path.join(app.getAppPath(), 'frontend', 'dist', 'index.html')
-        : 'http://localhost:5173';
+        : 'http://127.0.0.1:5173';
     const url = `${indexPath}?mode=notification`;
     if (app.isPackaged) {
         notificationWindow.loadFile(indexPath, { search: 'mode=notification' }).then(() => {
@@ -906,18 +906,70 @@ ipcMain.on('open-image-viewer', (_, dataUrl) => {
     if (dataUrl.startsWith('[LOCAL_IMAGE]:')) {
         const p = dataUrl.replace('[LOCAL_IMAGE]:', '');
         createOCRWindow(`local-image://${p}`);
+        return;
     }
-    else if (dataUrl.startsWith('data:image')) {
+    if (dataUrl.startsWith('local-image://')) {
         createOCRWindow(dataUrl);
+        return;
     }
-    else if (dataUrl.startsWith('local-image://')) {
-        createOCRWindow(dataUrl);
+    if (dataUrl.startsWith('data:image')) {
+        try {
+            const match = dataUrl.match(/^data:image\/([a-zA-Z0-9.+-]+);base64,(.*)$/);
+            const ext = match && match[1] ? (match[1].includes('svg') ? 'svg' : match[1].split('+')[0].split('.').pop()) : 'png';
+            const b64 = match && match[2] ? match[2] : dataUrl.split(',')[1];
+            if (b64) {
+                const buf = Buffer.from(b64, 'base64');
+                const imagesDir = path.join(app.getPath('userData'), 'images', 'tmp');
+                if (!fs.existsSync(imagesDir))
+                    fs.mkdirSync(imagesDir, { recursive: true });
+                const filename = `view-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext || 'png'}`;
+                const filePath = path.join(imagesDir, filename);
+                fs.writeFileSync(filePath, buf);
+                createOCRWindow(`local-image://${filePath}`);
+                return;
+            }
+        }
+        catch (e) {
+            console.error('Failed to persist data URL image:', e);
+        }
     }
-    else {
-        createOCRWindow(`local-image://${dataUrl}`);
-    }
+    createOCRWindow(`local-image://${dataUrl}`);
 });
 ipcMain.on('open-ocr-window', (_, imagePath) => {
+    if (imagePath.startsWith('[LOCAL_IMAGE]:')) {
+        const p = imagePath.replace('[LOCAL_IMAGE]:', '');
+        createOCRWindow(`local-image://${p}`);
+        return;
+    }
+    if (imagePath.startsWith('local-image://')) {
+        createOCRWindow(imagePath);
+        return;
+    }
+    if (imagePath.startsWith('data:image')) {
+        try {
+            const match = imagePath.match(/^data:image\/([a-zA-Z0-9.+-]+);base64,(.*)$/);
+            const ext = match && match[1] ? (match[1].includes('svg') ? 'svg' : match[1].split('+')[0].split('.').pop()) : 'png';
+            const b64 = match && match[2] ? match[2] : imagePath.split(',')[1];
+            if (b64) {
+                const buf = Buffer.from(b64, 'base64');
+                const imagesDir = path.join(app.getPath('userData'), 'images', 'tmp');
+                if (!fs.existsSync(imagesDir))
+                    fs.mkdirSync(imagesDir, { recursive: true });
+                const filename = `view-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext || 'png'}`;
+                const filePath = path.join(imagesDir, filename);
+                fs.writeFileSync(filePath, buf);
+                createOCRWindow(`local-image://${filePath}`);
+                return;
+            }
+        }
+        catch (e) {
+            console.error('Failed to persist data URL image (OCR):', e);
+        }
+    }
+    if ((/^[a-zA-Z]:\\/.test(imagePath) || imagePath.startsWith('/')) && fs.existsSync(imagePath)) {
+        createOCRWindow(`local-image://${imagePath}`);
+        return;
+    }
     createOCRWindow(imagePath);
 });
 ipcMain.on('open-code-editor', (_, content) => {
