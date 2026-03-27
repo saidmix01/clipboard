@@ -81,6 +81,14 @@ export class BackendDaemon {
            const items = this.getItemsByActiveDevice();
            this.broadcast('clipboard:updated', items);
            this.broadcast('clipboard-update', items);
+
+           // Trigger sync immediately
+           try {
+               const { SyncEngine } = require('./SyncEngine');
+               SyncEngine.getInstance().syncNow().catch((err: any) => console.error('[BackendDaemon] Sync on device change failed:', err));
+           } catch (e) {
+               console.error('[BackendDaemon] Failed to trigger sync on device change:', e);
+           }
        }
        return success;
    }
@@ -110,6 +118,12 @@ export class BackendDaemon {
     return result;
 }
 
+  public notifyClipboardUpdate() {
+      const items = this.getItemsByActiveDevice();
+      this.broadcast('clipboard:updated', items);
+      this.broadcast('clipboard-update', items);
+  }
+
   private broadcast(channel: string, data?: any) {
       const windows = BrowserWindow.getAllWindows();
       windows.forEach(w => w.webContents.send(channel, data));
@@ -120,13 +134,20 @@ export class BackendDaemon {
    */
   public async request(config: AxiosRequestConfig): Promise<any> {
     try {
+      // console.log(`[BackendDaemon] Requesting ${config.method?.toUpperCase()} ${config.url}`);
       const response = await this.client.request(config);
+      // console.log(`[BackendDaemon] Request success: ${response.status}`);
       return {
         success: true,
         data: response.data,
         status: response.status
       };
     } catch (error: any) {
+      console.error(`[BackendDaemon] Request failed: ${config.method?.toUpperCase()} ${config.url}`, error.message);
+      if (error.response) {
+          console.error('[BackendDaemon] Error Data:', JSON.stringify(error.response.data));
+          console.error('[BackendDaemon] Error Status:', error.response.status);
+      }
       return {
         success: false,
         error: error.message,

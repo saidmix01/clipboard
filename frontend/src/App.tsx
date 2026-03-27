@@ -3,13 +3,14 @@ import type { ReactNode } from 'react'
 import { Toaster, toast } from 'react-hot-toast'
 import { useTranslation } from 'react-i18next'
 import { motion } from 'framer-motion'
-import { Cog6ToothIcon, UserCircleIcon, ArrowRightStartOnRectangleIcon, ArrowLeftEndOnRectangleIcon, UserPlusIcon } from '@heroicons/react/24/outline'
+import { Cog6ToothIcon, UserCircleIcon, ArrowRightStartOnRectangleIcon, ArrowLeftEndOnRectangleIcon, UserPlusIcon, DocumentPlusIcon } from '@heroicons/react/24/outline'
 import LoginModal from './Login'
 import UserModal from './UserModal'
 import AppShell from './components/AppShell'
 import TopBar from './components/TopBar'
 import Dock from './components/Dock'
-import HistoryList from './components/HistoryList'
+import HistoryList, { type HistoryListRef } from './components/HistoryList'
+import FileList from './components/FileList'
 import SettingsMenu from './components/SettingsMenu'
 import AboutModal from './components/AboutModal'
 import OnboardingTour from './components/OnboardingTour'
@@ -45,6 +46,7 @@ function App () {
 
   const [search, setSearch] = useState<string>('')
   const searchInputRef = useRef<HTMLInputElement>(null)
+  const historyListRef = useRef<HistoryListRef>(null)
   
   const { t } = useTranslation()
   const [darkMode, setDarkMode] = useState<boolean>(false)
@@ -63,6 +65,11 @@ function App () {
   const [ocrImage, setOcrImage] = useState<string | null>(null)
   const [userAvatar, setUserAvatar] = useState<string | null>(null)
   const [showDeviceSelection, setShowDeviceSelection] = useState<boolean>(false)
+  const [isSearchFocused, setIsSearchFocused] = useState<boolean>(false)
+
+  // Files state
+  const [files, setFiles] = useState<any[]>([])
+  const [storage, setStorage] = useState<any>(null)
 
   const loadSession = useCallback(async () => {
     try {
@@ -108,8 +115,100 @@ function App () {
     ;(window as any).electronAPI?.signalAppReady?.()
   }, [loadSession])
 
+  // Reset UI state when window is shown (on open)
+  useEffect(() => {
+    if ((window as any).electronAPI?.onUiReset) {
+      const off = (window as any).electronAPI.onUiReset(() => {
+        console.log('UI Reset triggered by window show')
+        
+        // Reset search completely
+        setSearch('')
+        setIsSearchFocused(false)
+        if (searchInputRef.current) {
+          searchInputRef.current.blur()
+          searchInputRef.current.value = '' // Force clear
+        }
+
+        // Close all modals
+        setSettingsOpen(false)
+        setAboutOpen(false)
+        setShowLogin(false)
+        setShowRegister(false)
+        setShowUserModal(false)
+        setContextMenu(null)
+        setItemToDelete(null)
+        setOcrImage(null)
+        setShowDeviceSelection(false)
+        setShowTour(false)
+      })
+      return () => { try { off?.() } catch {} }
+    }
+  }, [])
+
+  // Global search shortcut (Ctrl+F / Cmd+F)
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'f') {
+        e.preventDefault()
+        if (searchInputRef.current) {
+          searchInputRef.current.focus()
+          searchInputRef.current.select()
+        }
+      }
+    }
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [])
+
+  // File fetching
+  const fetchFiles = useCallback(async () => {
+    setListLoading(true)
+    try {
+        const res = await (window as any).electronAPI?.listFiles?.()
+        console.log("Fetch files response:", res) // Debug
+        
+        if (res && typeof res === 'object') {
+            let targetData = res;
+            
+            // Check for nested "data" property (common in backend responses)
+            if (res.data) {
+                // If res.data has items, use it
+                if (res.data.items || res.data.storage) {
+                    targetData = res.data;
+                }
+                // Double nested check: res.data.data (axios response + backend response wrapper)
+                else if (res.data.data && (res.data.data.items || res.data.data.storage)) {
+                    targetData = res.data.data;
+                }
+            }
+            
+            // Ensure items is an array
+            const items = Array.isArray(targetData.items) ? targetData.items : [];
+            setFiles(items)
+            
+            if (targetData.storage) {
+                setStorage(targetData.storage)
+            }
+        } else {
+            // Handle undefined or null response
+            console.warn("listFiles returned invalid response:", res);
+            setFiles([]);
+        }
+    } catch (e) {
+        console.error(e)
+        setFiles([]);
+    } finally {
+        setListLoading(false)
+    }
+  }, [])
+
   // Centralized Data Fetching
   const fetchData = useCallback(async (isLoadMore = false) => {
+      if (filter === 'documents') {
+          fetchFiles()
+          return
+      }
+
       if (isLoadMore) {
           setIsLoadingMore(true)
       } else {
@@ -289,7 +388,39 @@ function App () {
     }
   }
 
+  const handleUpload = async () => {
+    const path = await (window as any).electronAPI?.selectFile?.()
+    if (!path) return
+    
+    const toastId = toast.loading('Subiendo archivo...')
+    try {
+        const res = await (window as any).electronAPI?.uploadFile?.(path)
+        if (res && res.success) {
+            toast.success('Archivo subido correctamente', { id: toastId })
+            fetchFiles()
+        } else {
+            toast.error('Error al subir archivo: ' + (res?.error || 'Desconocido'), { id: toastId })
+        }
+    } catch (e) {
+        toast.error('Error al subir archivo', { id: toastId })
+    }
+  }
 
+  const handleDeleteFile = async (file: any) => {
+      if (!confirm('¿Eliminar archivo?')) return
+      const toastId = toast.loading('Eliminando...')
+      try {
+          const res = await (window as any).electronAPI?.deleteFile?.(file.id)
+          if (res && res.success) {
+              toast.success('Archivo eliminado', { id: toastId })
+              setFiles(prev => prev.filter(f => f.id !== file.id))
+          } else {
+              toast.error('Error al eliminar', { id: toastId })
+          }
+      } catch (e) {
+          toast.error('Error al eliminar', { id: toastId })
+      }
+  }
 
   return (
     <>
@@ -309,15 +440,42 @@ function App () {
             onOpenAbout={() => { setSettingsOpen(false); setAboutOpen(true) }}
           />
           
-          <div className="px-3 pt-1">
+          {/* Overlay for search focus */}
+          <div 
+            className={`fixed inset-0 bg-black/60 z-40 transition-opacity duration-300 backdrop-blur-[1px]
+              ${isSearchFocused ? 'opacity-100 pointer-events-auto' : 'opacity-0 pointer-events-none'}
+            `}
+            onClick={() => {
+              setIsSearchFocused(false)
+              searchInputRef.current?.blur()
+            }}
+          />
+
+          <div className={`px-3 pt-1 transition-all duration-300 ${isSearchFocused ? 'relative z-50 scale-[1.02]' : ''}`}>
             <input
               type='text'
               placeholder={t('search_placeholder')}
               value={search}
               onChange={e => setSearch(e.target.value)}
+              onFocus={() => setIsSearchFocused(true)}
+              onBlur={() => setTimeout(() => setIsSearchFocused(false), 150)}
+              onKeyDown={(e) => {
+                if (e.key === 'Escape' || e.key === 'Enter') {
+                  e.preventDefault()
+                  setIsSearchFocused(false)
+                  searchInputRef.current?.blur()
+                  historyListRef.current?.focus()
+                }
+              }}
               ref={searchInputRef}
               autoFocus
-              className="w-full px-3 py-2 rounded-md border border-[color:var(--color-border)] bg-[color:var(--color-surface)] text-[color:var(--color-text)] outline-none focus:bg-[color:var(--color-surface)]"
+              className={`w-full px-3 py-2 rounded-md border outline-none transition-all duration-300
+                ${isSearchFocused 
+                  ? 'border-[color:var(--color-primary)] bg-[color:var(--color-surface)] text-[color:var(--color-text)]' 
+                  : 'border-[color:var(--color-border)] bg-[color:var(--color-surface)] text-[color:var(--color-text)] focus:bg-[color:var(--color-surface)]'
+                }
+              `}
+              style={isSearchFocused ? { boxShadow: '0 0 20px color-mix(in srgb, var(--color-primary), transparent 60%)' } : {}}
             />
           </div>
 
@@ -340,7 +498,30 @@ function App () {
               onClose={() => setShowUserModal(false)}
             />
 
+          {filter === 'documents' ? (
+             <div className="flex-1 flex flex-col overflow-hidden">
+                <div className="px-3 py-2 flex justify-between items-center border-b border-[color:var(--color-border)]">
+                    <span className="text-sm font-medium text-[color:var(--color-text)]">Mis Documentos</span>
+                    <button 
+                        onClick={handleUpload}
+                        className="flex items-center gap-1 px-2 py-1 bg-[color:var(--color-primary)] text-white rounded-md text-xs hover:opacity-90 transition"
+                    >
+                        <DocumentPlusIcon className="w-4 h-4" />
+                        <span>Subir</span>
+                    </button>
+                </div>
+                <FileList 
+                    items={files} 
+                    storage={storage} 
+                    onDelete={handleDeleteFile}
+                    onDownload={(item) => {
+                        (window as any).electronAPI?.downloadFile?.(item.id, item.originalName)
+                    }}
+                />
+             </div>
+          ) : (
           <HistoryList
+            ref={historyListRef}
             items={displayed}
             search={search}
             selectedIndex={-1}
@@ -374,6 +555,7 @@ function App () {
             canFavorite={true}
             canOpenModal={true}
           />
+          )}
 
           <Dock
             items={[

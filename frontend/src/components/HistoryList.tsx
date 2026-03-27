@@ -1,6 +1,10 @@
-import { useRef, useEffect } from 'react'
+import { useRef, useEffect, forwardRef, useImperativeHandle } from 'react'
 import Card from './Card'
 import type { HistoryItem } from '../types'
+
+export interface HistoryListRef {
+  focus: () => void
+}
 
 type Props = {
   items: HistoryItem[]
@@ -18,9 +22,15 @@ type Props = {
   isLoadingMore?: boolean
 }
 
-export default function HistoryList({ items, search, selectedIndex, onToggleFavorite, onCopy, onDelete, highlightMatch, canFavorite, canOpenModal, onContextMenu, hasMore = false, onLoadMore, isLoadingMore = false }: Props) {
+const HistoryList = forwardRef<HistoryListRef, Props>(({ items, search, selectedIndex, onToggleFavorite, onCopy, onDelete, highlightMatch, canFavorite, canOpenModal, onContextMenu, hasMore = false, onLoadMore, isLoadingMore = false }, ref) => {
   const containerRef = useRef<HTMLDivElement>(null)
   const itemRefs = useRef<(HTMLDivElement | null)[]>([])
+
+  useImperativeHandle(ref, () => ({
+    focus: () => {
+      containerRef.current?.focus()
+    }
+  }))
 
   useEffect(() => {
     if (items.length === 0) return
@@ -58,7 +68,7 @@ export default function HistoryList({ items, search, selectedIndex, onToggleFavo
   }, [hasMore, onLoadMore, isLoadingMore])
 
   return (
-    <div ref={containerRef} className="flex-1 overflow-auto px-2 py-2 text-[color:var(--color-text)]" style={{ scrollbarWidth: 'thin' }}>
+    <div ref={containerRef} tabIndex={-1} className="flex-1 overflow-auto px-2 py-2 text-[color:var(--color-text)] outline-none" style={{ scrollbarWidth: 'thin' }}>
       {items.length === 0 ? (
         <p className="text-center text-xs text-[color:var(--color-muted)]">Sin coincidencias</p>
       ) : (
@@ -93,4 +103,6 @@ export default function HistoryList({ items, search, selectedIndex, onToggleFavo
       )}
     </div>
   )
-}
+})
+
+export default HistoryList

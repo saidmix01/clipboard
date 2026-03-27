@@ -58,8 +58,7 @@ const FileIcon = ({ filename }: { filename: string }) => {
   if (['mp4', 'avi', 'mov', 'webm', 'mkv'].includes(ext)) return <VideoCameraIcon className={className} />
   if (['json', 'js', 'ts', 'tsx', 'jsx', 'html', 'css', 'py', 'java', 'c', 'cpp', 'sql'].includes(ext)) return <CodeBracketIcon className={className} />
   if (['zip', 'rar', '7z', 'tar', 'gz'].includes(ext)) return <ArchiveBoxIcon className={className} />
-  if (['txt', 'md', 'rtf', 'log'].includes(ext)) return <DocumentTextIcon className={className} />
-  if (['pdf'].includes(ext)) return <DocumentTextIcon className={className} />
+  if (['txt', 'md', 'rtf', 'log', 'pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx'].includes(ext)) return <DocumentTextIcon className={className} />
   
   return <DocumentIcon className={className} />
 }

@@ -85,12 +85,50 @@ electron_1.contextBridge.exposeInMainWorld('electronAPI', {
         electron_1.ipcRenderer.on('code-load-content', listener);
         return () => electron_1.ipcRenderer.removeListener('code-load-content', listener);
     },
-    signalNotificationReady: () => electron_1.ipcRenderer.send('notification-window-ready'),
-    onNotificationLoadImage: (callback) => {
-        const listener = (_, img) => callback(img);
+    // Files API
+    selectFile: () => electron_1.ipcRenderer.invoke('select-file'),
+    listFiles: (params) => electron_1.ipcRenderer.invoke('list-files', params),
+    uploadFile: (filePath) => electron_1.ipcRenderer.invoke('upload-file', filePath),
+    deleteFile: (fileId) => electron_1.ipcRenderer.invoke('delete-file', fileId),
+    downloadFile: (fileId, fileName) => electron_1.ipcRenderer.invoke('download-file', fileId, fileName),
+    openFile: (fileId) => electron_1.ipcRenderer.invoke('open-file', fileId),
+    onFileUploaded: (cb) => {
+        const listener = (_, data) => cb(data);
+        electron_1.ipcRenderer.on('file-uploaded', listener);
+        return () => electron_1.ipcRenderer.removeListener('file-uploaded', listener);
+    },
+    onFileUploadError: (cb) => {
+        const listener = (_, err) => cb(err);
+        electron_1.ipcRenderer.on('file-upload-error', listener);
+        return () => electron_1.ipcRenderer.removeListener('file-upload-error', listener);
+    },
+    onFileUploadStatus: (cb) => {
+        const listener = (_, status) => cb(status);
+        electron_1.ipcRenderer.on('file-upload-status', listener);
+        return () => electron_1.ipcRenderer.removeListener('file-upload-status', listener);
+    },
+    onDownloadProgress: (cb) => {
+        const listener = (_, progress) => cb(progress);
+        electron_1.ipcRenderer.on('download-progress', listener);
+        return () => electron_1.ipcRenderer.removeListener('download-progress', listener);
+    },
+    // Notification Window specific
+    onNotificationLoadImage: (cb) => {
+        const listener = (_, img) => cb(img);
         electron_1.ipcRenderer.on('notification-load-image', listener);
         return () => electron_1.ipcRenderer.removeListener('notification-load-image', listener);
     },
+    onNotificationLoadFile: (cb) => {
+        const listener = (_, fileInfo) => cb(fileInfo);
+        electron_1.ipcRenderer.on('notification-load-file', listener);
+        return () => electron_1.ipcRenderer.removeListener('notification-load-file', listener);
+    },
+    onNotificationError: (cb) => {
+        const listener = (_, err) => cb(err);
+        electron_1.ipcRenderer.on('notification-error', listener);
+        return () => electron_1.ipcRenderer.removeListener('notification-error', listener);
+    },
+    signalNotificationReady: () => electron_1.ipcRenderer.send('notification-window-ready'),
     sendNotificationAction: (action) => electron_1.ipcRenderer.send('notification-action', action),
     // App Lifecycle
     signalAppReady: () => electron_1.ipcRenderer.send('app-ready'),

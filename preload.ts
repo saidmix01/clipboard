@@ -96,12 +96,52 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.on('code-load-content', listener)
       return () => ipcRenderer.removeListener('code-load-content', listener)
   },
-  signalNotificationReady: () => ipcRenderer.send('notification-window-ready'),
-  onNotificationLoadImage: (callback: (img: any) => void) => {
-      const listener = (_: IpcRendererEvent, img: any) => callback(img)
-      ipcRenderer.on('notification-load-image', listener)
-      return () => ipcRenderer.removeListener('notification-load-image', listener)
+  // Files API
+  selectFile: () => ipcRenderer.invoke('select-file'),
+  listFiles: (params: any) => ipcRenderer.invoke('list-files', params),
+  uploadFile: (filePath: string) => ipcRenderer.invoke('upload-file', filePath),
+  deleteFile: (fileId: string) => ipcRenderer.invoke('delete-file', fileId),
+  downloadFile: (fileId: string, fileName: string) => ipcRenderer.invoke('download-file', fileId, fileName),
+  openFile: (fileId: string) => ipcRenderer.invoke('open-file', fileId),
+
+  onFileUploaded: (cb: (data: any) => void) => {
+    const listener = (_: any, data: any) => cb(data)
+    ipcRenderer.on('file-uploaded', listener)
+    return () => ipcRenderer.removeListener('file-uploaded', listener)
   },
+  onFileUploadError: (cb: (err: any) => void) => {
+    const listener = (_: any, err: any) => cb(err)
+    ipcRenderer.on('file-upload-error', listener)
+    return () => ipcRenderer.removeListener('file-upload-error', listener)
+  },
+  onFileUploadStatus: (cb: (status: any) => void) => {
+    const listener = (_: any, status: any) => cb(status)
+    ipcRenderer.on('file-upload-status', listener)
+    return () => ipcRenderer.removeListener('file-upload-status', listener)
+  },
+  onDownloadProgress: (cb: (progress: any) => void) => {
+    const listener = (_: any, progress: any) => cb(progress)
+    ipcRenderer.on('download-progress', listener)
+    return () => ipcRenderer.removeListener('download-progress', listener)
+  },
+
+  // Notification Window specific
+  onNotificationLoadImage: (cb: (img: string) => void) => {
+    const listener = (_: any, img: string) => cb(img)
+    ipcRenderer.on('notification-load-image', listener)
+    return () => ipcRenderer.removeListener('notification-load-image', listener)
+  },
+  onNotificationLoadFile: (cb: (fileInfo: any) => void) => {
+    const listener = (_: any, fileInfo: any) => cb(fileInfo)
+    ipcRenderer.on('notification-load-file', listener)
+    return () => ipcRenderer.removeListener('notification-load-file', listener)
+  },
+  onNotificationError: (cb: (err: string) => void) => {
+      const listener = (_: any, err: string) => cb(err)
+      ipcRenderer.on('notification-error', listener)
+      return () => ipcRenderer.removeListener('notification-error', listener)
+  },
+  signalNotificationReady: () => ipcRenderer.send('notification-window-ready'),
   sendNotificationAction: (action: string) => ipcRenderer.send('notification-action', action),
   
   // App Lifecycle

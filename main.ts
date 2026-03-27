@@ -11,12 +11,14 @@ const {
   shell,
   Notification,
   powerMonitor,
-  protocol
+  protocol,
+  dialog
 } = require('electron')
 const path = require('path')
 const fs = require('fs')
 const os = require('os')
 const crypto = require('crypto')
+const FormData = require('form-data')
 
 // --- Integration Start ---
 // Assuming TypeScript compilation or ts-node
@@ -45,6 +47,18 @@ let pendingNotificationImage: any = null
 let pendingCodeContent: any = null
 let tray: any
 let isQuitting = false
+
+// Set app name and ensure userData exists to avoid Lock file error (Error code: 3)
+app.setName('CopyFy');
+// app.setAppUserModelId('SAIDMIX.CopyFy'); // Optional if needed for notifications
+const userDataPath = app.getPath('userData');
+if (!fs.existsSync(userDataPath)) {
+    try {
+        fs.mkdirSync(userDataPath, { recursive: true });
+    } catch (e) {
+        log.error('Failed to create userData directory:', e);
+    }
+}
 
 // Single instance lock
 const gotTheLock = app.requestSingleInstanceLock()
@@ -187,7 +201,7 @@ function createOCRWindow(imagePath: string) {
     const url = `${indexPath}?mode=ocr&img=${encodeURIComponent(imagePath)}`
 
     if (app.isPackaged) {
-       ocrWindow.loadFile(indexPath).then(() => {
+       ocrWindow.loadFile(indexPath, { search: `mode=ocr&img=${encodeURIComponent(imagePath)}` }).then(() => {
            ocrWindow.webContents.send('ocr-load-image', imagePath)
        })
     } else {
@@ -244,7 +258,7 @@ function createCodeWindow(codeContent: string) {
     const url = `${indexPath}?mode=code`
 
     if (app.isPackaged) {
-       codeWindow.loadFile(indexPath).then(() => {
+       codeWindow.loadFile(indexPath, { search: 'mode=code' }).then(() => {
        })
     } else {
        codeWindow.loadURL(url)
@@ -294,7 +308,7 @@ function createNotificationWindow() {
     const url = `${indexPath}?mode=notification`
 
     if (app.isPackaged) {
-       notificationWindow.loadFile(indexPath).then(() => {
+       notificationWindow.loadFile(indexPath, { search: 'mode=notification' }).then(() => {
        })
     } else {
        notificationWindow.loadURL(url)
@@ -319,43 +333,101 @@ ipcMain.on('app-ready', () => {
 
 ipcMain.on('notification-window-ready', () => {
     if (notificationWindow && pendingNotificationImage) {
-        const dataUrl = pendingNotificationImage.image.toDataURL()
-        notificationWindow.webContents.send('notification-load-image', dataUrl)
+        if (pendingNotificationImage.type === 'image') {
+            const dataUrl = pendingNotificationImage.image.toDataURL()
+            notificationWindow.webContents.send('notification-load-image', dataUrl)
+        } else if (pendingNotificationImage.type === 'file') {
+            // Send file info instead of image
+            notificationWindow.webContents.send('notification-load-file', {
+                name: pendingNotificationImage.fileName,
+                path: pendingNotificationImage.filePath
+            })
+        }
     }
 })
 
-ipcMain.on('notification-action', (_: any, action: string) => {
+ipcMain.on('notification-action', async (_: any, action: string) => {
     if (action === 'save' && pendingNotificationImage) {
-        try {
-            const { image, hash } = pendingNotificationImage
-            const imagesDir = path.join(app.getPath('userData'), 'images')
-            if (!fs.existsSync(imagesDir)) fs.mkdirSync(imagesDir, { recursive: true })
-            const filename = `${Date.now()}-${hash.substring(0,8)}.png`
-            const filePath = path.join(imagesDir, filename)
-            fs.writeFileSync(filePath, image.toPNG())
-            
-            // Usar BackendDaemon para guardar con deviceId
-            const backendDaemon = BackendDaemon.getInstance()
-            const result = backendDaemon.saveClipboardItem(`[LOCAL_IMAGE]:${filePath}`, 'image')
-            
-            if (result) {
-                broadcastUpdate()
+        if (pendingNotificationImage.type === 'image') {
+             try {
+                const { image, hash } = pendingNotificationImage
+                const imagesDir = path.join(app.getPath('userData'), 'images')
+                if (!fs.existsSync(imagesDir)) fs.mkdirSync(imagesDir, { recursive: true })
+                const filename = `${Date.now()}-${hash.substring(0,8)}.png`
+                const filePath = path.join(imagesDir, filename)
+                fs.writeFileSync(filePath, image.toPNG())
                 
-                // Encolar para sincronización
-                const syncEngine = SyncEngine.getInstance()
-                syncEngine.enqueueItem(result.id, 'CREATE').catch(err => {
-                    log.error('Failed to enqueue image for sync:', err)
-                })
+                // Usar BackendDaemon para guardar con deviceId
+                const backendDaemon = BackendDaemon.getInstance()
+                const result = backendDaemon.saveClipboardItem(`[LOCAL_IMAGE]:${filePath}`, 'image')
+                
+                if (result) {
+                    broadcastUpdate()
+                    
+                    // Encolar para sincronización
+                    const syncEngine = SyncEngine.getInstance()
+                    syncEngine.enqueueItem(result.id, 'CREATE').catch(err => {
+                        log.error('Failed to enqueue image for sync:', err)
+                    })
+                }
+            } catch(e) {
+                log.error('Error saving image:', e)
             }
-        } catch(e) {
-            log.error('Error saving image:', e)
+        } else if (pendingNotificationImage.type === 'file') {
+             try {
+                 const { filePath } = pendingNotificationImage
+                 if (fs.existsSync(filePath)) {
+                     const backend = BackendDaemon.getInstance();
+                     const form = new FormData();
+                     form.append('file', fs.createReadStream(filePath));
+                     
+                     // Get selected device ID
+                     const deviceId = db.getSettings().selectedDeviceId;
+
+                     // Upload immediately using the correct endpoint
+                     const res = await backend.request({
+                         url: '/api/files/upload',
+                         method: 'POST',
+                         data: form,
+                         headers: { 
+                             ...form.getHeaders(),
+                             'x-device-id': deviceId
+                         }
+                     });
+                     
+                     if (res.success) {
+                         if (notificationWindow && !notificationWindow.isDestroyed()) {
+                             notificationWindow.close();
+                         }
+                         // Broadcast update so the list refreshes
+                         broadcastUpdate();
+                         if (mainWindow && !mainWindow.isDestroyed()) {
+                             mainWindow.webContents.send('file-uploaded', res.data);
+                         }
+                     } else {
+                         // Upload failed (e.g. offline)
+                         log.error('Upload failed:', res.error);
+                         if (notificationWindow && !notificationWindow.isDestroyed()) {
+                             // Send error to notification window to display
+                             notificationWindow.webContents.send('notification-error', 'Error al subir: ' + (res.error || 'Sin conexión'));
+                         }
+                     }
+                 }
+             } catch(e) {
+                 log.error('Error saving file:', e)
+                 if (notificationWindow && !notificationWindow.isDestroyed()) {
+                     notificationWindow.webContents.send('notification-error', 'Error local: ' + e.message);
+                 }
+             }
+             return; // Don't close window here, handled inside
         }
     }
     
-    pendingNotificationImage = null
-    if (notificationWindow) {
+    // Close for cancel or non-file saves (images close immediately as they save locally)
+    if (notificationWindow && !notificationWindow.isDestroyed()) {
         notificationWindow.close()
     }
+    pendingNotificationImage = null;
 })
 
 // Clipboard Watcher
@@ -372,34 +444,124 @@ function startClipboardWatcher() {
   clipboardWatcherInterval = setInterval(() => {
     try {
       const text = clipboard.readText()
+      // ... existing text logic ...
       if (text && text.trim() !== '' && text !== lastText) {
-        lastText = text
-        
-        // Usar BackendDaemon para guardar (incluye deviceId automáticamente)
-        const backendDaemon = BackendDaemon.getInstance()
-        const result = backendDaemon.saveClipboardItem(text, 'text')
-        
-        if (result) {
-          broadcastUpdate()
+          lastText = text
           
-          // Encolar para sincronización
-          const syncEngine = SyncEngine.getInstance()
-          syncEngine.enqueueItem(result.id, 'CREATE').catch(err => {
-            log.error('Failed to enqueue item for sync:', err)
-          })
-        }
+          // Usar BackendDaemon para guardar (incluye deviceId automáticamente)
+          const backendDaemon = BackendDaemon.getInstance()
+          const result = backendDaemon.saveClipboardItem(text, 'text')
+          
+          if (result) {
+            broadcastUpdate()
+            
+            // Encolar para sincronización
+            const syncEngine = SyncEngine.getInstance()
+            syncEngine.enqueueItem(result.id, 'CREATE').catch(err => {
+              log.error('Failed to enqueue item for sync:', err)
+            })
+          }
       }
 
+      // 1. Detect Images
       const image = clipboard.readImage()
       if (!image.isEmpty()) {
         const dataUrl = image.toDataURL()
         const hash = crypto.createHash('md5').update(dataUrl).digest('hex')
         if (hash !== lastImageHash) {
             lastImageHash = hash
-            pendingNotificationImage = { image, hash }
+            pendingNotificationImage = { image, hash, type: 'image' }
             createNotificationWindow()
         }
       }
+
+      // 2. Detect Files
+       let detectedFilePath = null;
+       
+       if (process.platform === 'win32') {
+           // Windows: Try 'FileNameW'
+           // The buffer is UCS-2 (UTF-16LE) and might contain multiple paths separated by NULL
+           // We take the first valid path.
+           try {
+               const buffer = clipboard.readBuffer('FileNameW');
+               if (buffer.length > 0) {
+                   // Split by NULL character (0x0000 in UCS-2 is 2 bytes of zeros)
+                   // But since we decode to string first, we split by '\0'
+                   const allPaths = buffer.toString('ucs2').split('\0');
+                   
+                   // Find the first valid file path
+                   for (const p of allPaths) {
+                       const cleanPath = p.trim();
+                       if (cleanPath.length > 0 && cleanPath.match(/^[a-zA-Z]:\\/) && fs.existsSync(cleanPath)) {
+                           detectedFilePath = cleanPath;
+                           break;
+                       }
+                   }
+               }
+           } catch (e) {
+               // ignore buffer read errors
+           }
+       } else if (process.platform === 'darwin') {
+           // macOS: Try 'public.file-url'
+           // The clipboard often contains the file URL string e.g. file:///Users/name/file.png
+           const fileUrl = clipboard.read('public.file-url');
+           if (fileUrl && fileUrl.startsWith('file://')) {
+               detectedFilePath = decodeURIComponent(fileUrl.replace('file://', ''));
+           }
+       } else if (process.platform === 'linux') {
+           // Linux: Try 'text/uri-list' (Nautilus, etc) or 'text/plain' fallback
+           // usually contains file:///home/user/file.png\r\n...
+           // We take the first one for simplicity
+           const uriList = clipboard.read('text/uri-list');
+           if (uriList) {
+               const lines = uriList.split(/[\r\n]+/);
+               for (const line of lines) {
+                   if (line.startsWith('file://')) {
+                       detectedFilePath = decodeURIComponent(line.replace('file://', ''));
+                       break;
+                   }
+               }
+           }
+       }
+
+       if (detectedFilePath && fs.existsSync(detectedFilePath)) {
+           try {
+               const stat = fs.statSync(detectedFilePath);
+               if (stat.isFile()) {
+                   // Unique hash for file based on path + modification time
+                   // Add type to hash to avoid collisions with text/images
+                   const fileHash = crypto.createHash('md5').update(`file:${detectedFilePath}:${stat.mtimeMs}`).digest('hex');
+                   
+                   if (fileHash !== lastImageHash) {
+                       lastImageHash = fileHash;
+                       
+                       const ext = path.extname(detectedFilePath).toLowerCase();
+                       const isImage = ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp', '.svg'].includes(ext);
+
+                       if (isImage) {
+                            // If it's an image file, treat it as an IMAGE type so it shows preview and saves to Image tab
+                            const image = nativeImage.createFromPath(detectedFilePath);
+                            pendingNotificationImage = { 
+                                image, 
+                                hash: fileHash, 
+                                type: 'image' 
+                            };
+                       } else {
+                            // Otherwise treat as generic document/file
+                            pendingNotificationImage = { 
+                                filePath: detectedFilePath, 
+                                fileName: path.basename(detectedFilePath),
+                                hash: fileHash,
+                                type: 'file'
+                            };
+                       }
+                       createNotificationWindow();
+                   }
+               }
+           } catch(e) {
+               // ignore access errors
+           }
+       }
     } catch (e) {
       log.error('Clipboard watcher error:', e)
     }
@@ -415,6 +577,101 @@ function stopClipboardWatcher() {
 }
 
 // IPC Handlers
+// File Management IPC
+ipcMain.handle('list-files', async (_: any, params: any) => {
+    const backend = BackendDaemon.getInstance();
+    
+    // Ensure we send deviceId instead of just forwarding raw params
+    // If params has clientId, replace/add deviceId
+    const queryParams = { ...params };
+    
+    // Get current device ID if not provided
+    if (!queryParams.deviceId) {
+        const settings = db.getSettings();
+        if (settings.selectedDeviceId) {
+            queryParams.deviceId = settings.selectedDeviceId;
+        }
+    }
+    
+    // Remove clientId if present to avoid confusion based on new requirement
+    if (queryParams.clientId) delete queryParams.clientId;
+
+    const res = await backend.request({
+        url: '/api/files',
+        method: 'GET',
+        params: queryParams
+    });
+    // Return the whole response object so frontend can check success/data
+    return res;
+});
+
+ipcMain.handle('select-file', async () => {
+    const { canceled, filePaths } = await dialog.showOpenDialog(mainWindow, {
+        properties: ['openFile']
+    });
+    if (canceled || filePaths.length === 0) return null;
+    return filePaths[0];
+});
+
+ipcMain.handle('upload-file', async (_: any, filePath: string) => {
+    try {
+        if (!fs.existsSync(filePath)) throw new Error('File not found');
+        const backend = BackendDaemon.getInstance();
+        const form = new FormData();
+        form.append('file', fs.createReadStream(filePath));
+        
+        // Get selected device ID
+        const deviceId = db.getSettings().selectedDeviceId;
+
+        const res = await backend.request({
+            url: '/api/files/upload',
+            method: 'POST',
+            data: form,
+            headers: {
+                ...form.getHeaders(),
+                'x-device-id': deviceId
+            }
+        });
+        return res;
+    } catch (e: any) {
+        return { success: false, error: e.message };
+    }
+});
+
+ipcMain.handle('delete-file', async (_: any, fileId: string) => {
+    const backend = BackendDaemon.getInstance();
+    return await backend.request({
+        url: `/api/files/${fileId}`,
+        method: 'DELETE'
+    });
+});
+
+ipcMain.handle('download-file', async (_: any, fileId: string, fileName: string) => {
+    const { canceled, filePath } = await dialog.showSaveDialog(mainWindow, {
+        defaultPath: fileName,
+        title: 'Guardar archivo'
+    });
+    
+    if (canceled || !filePath) return { canceled: true };
+
+    const backend = BackendDaemon.getInstance();
+    const res = await backend.request({
+        url: `/api/files/${fileId}/download`,
+        method: 'GET',
+        responseType: 'arraybuffer'
+    });
+
+    if (res.success) {
+        try {
+            fs.writeFileSync(filePath, Buffer.from(res.data));
+            return { success: true, filePath };
+        } catch (e: any) {
+            return { success: false, error: e.message };
+        }
+    }
+    return res;
+});
+
 ipcMain.handle('get-clipboard-history', (_: any, { limit = 20, offset = 0, filter = {} }: any = {}) => {
   // Automatically apply selected device filter if not explicitly requesting something else?
   // User wants strict filtering by selected device.
