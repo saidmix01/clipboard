@@ -85,9 +85,14 @@ export class BackendDaemon {
            // Trigger sync immediately
            try {
                const { SyncEngine } = require('./SyncEngine');
-               SyncEngine.getInstance().syncNow().catch((err: any) => console.error('[BackendDaemon] Sync on device change failed:', err));
+               SyncEngine.getInstance().syncNow()
+                 .catch((err: any) => console.error('[BackendDaemon] Sync on device change failed:', err))
+                 .finally(() => {
+                     this.broadcast('device:sync-completed', device);
+                 });
            } catch (e) {
                console.error('[BackendDaemon] Failed to trigger sync on device change:', e);
+               this.broadcast('device:sync-completed', device);
            }
        }
        return success;

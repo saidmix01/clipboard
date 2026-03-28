@@ -677,6 +677,24 @@ ipcMain.on('paste-text', () => {
             });
         }
     }
+    else if (process.platform === 'linux') {
+        const settings = db.getSettings();
+        const lang = settings.language || 'en';
+        let title = 'CopyFy';
+        let body = '';
+        if (lang.toLowerCase().startsWith('es')) {
+            title = 'Pegado automático no disponible';
+            body = 'Usa Ctrl+V o clic derecho -> Pegar para pegar el contenido copiado.';
+        }
+        else {
+            title = 'Auto-paste not available';
+            body = 'Use Ctrl+V or right click -> Paste to paste the copied content.';
+        }
+        new Notification({
+            title,
+            body
+        }).show();
+    }
 });
 ipcMain.on('copy-image', (_, dataUrl) => {
     if (dataUrl.startsWith('[LOCAL_IMAGE]:')) {
