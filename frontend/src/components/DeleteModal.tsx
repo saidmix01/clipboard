@@ -18,11 +18,11 @@ export default function DeleteModal({ open, onClose, onConfirm, loading }: Props
         <p className="text-[color:var(--color-muted)] text-sm">
           {t('delete.message')}
         </p>
-        <div className="flex gap-2 justify-end">
-          <button onClick={onClose} className="px-3 py-2 rounded-md border border-[color:var(--color-border)] text-[color:var(--color-text)]">
+        <div className="flex gap-2 justify-end pt-2">
+          <button onClick={onClose} className="px-4 h-[32px] rounded-[var(--radius-button)] border border-[color:var(--color-border)] text-[color:var(--color-text)] hover:bg-black/5 dark:hover:bg-white/5 transition-colors duration-100 text-sm font-medium">
             {t('delete.cancel')}
           </button>
-          <button onClick={onConfirm} disabled={loading} className="px-3 py-2 rounded-md bg-[color:var(--color-accent)] text-white disabled:opacity-50">
+          <button onClick={onConfirm} disabled={loading} className="px-4 h-[32px] rounded-[var(--radius-button)] bg-red-500 hover:bg-red-600 text-white disabled:opacity-50 transition-colors duration-100 text-sm font-medium">
             {loading ? t('delete.deleting') : t('delete.delete')}
           </button>
         </div>

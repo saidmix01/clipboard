@@ -1,27 +1,32 @@
 import { useState, useEffect } from 'react'
 import DetailsModal from './DetailsModal'
-import { ComputerDesktopIcon, ArrowPathIcon, MoonIcon, SunIcon, TrashIcon, CloudArrowDownIcon, InformationCircleIcon, Cog6ToothIcon, ChevronLeftIcon, GlobeAltIcon } from '@heroicons/react/24/outline'
+import { ArrowPathIcon, MoonIcon, SunIcon, TrashIcon, InformationCircleIcon, Cog6ToothIcon, ChevronLeftIcon, GlobeAltIcon, ComputerDesktopIcon, CloudArrowUpIcon } from '@heroicons/react/24/outline'
 import { useTranslation } from 'react-i18next'
+import toast from 'react-hot-toast'
 
 type Props = {
   open: boolean
   darkMode: boolean
   onClose: () => void
-  onChangeDevice: () => void
   onForceUpdate: () => void
   onToggleDark: () => void
   onClearHistory: () => void
-  onSyncNow: () => void
   onOpenAbout: () => void
+  onChangeDevice?: () => void
+  onSyncNow?: () => void
 }
 
-export default function SettingsMenu({ open, darkMode, onClose, onChangeDevice, onForceUpdate, onToggleDark, onClearHistory, onSyncNow, onOpenAbout }: Props) {
+export default function SettingsMenu({ open, darkMode, onClose, onForceUpdate, onToggleDark, onClearHistory, onOpenAbout, onChangeDevice }: Props) {
   const { t, i18n } = useTranslation()
   const [view, setView] = useState<'main' | 'general'>('main')
   const [startMinimized, setStartMinimized] = useState(false)
   const [shortcutModifier, setShortcutModifier] = useState('Alt')
   const [shortcutKey, setShortcutKey] = useState('X')
   const [recording, setRecording] = useState<'modifier' | 'key' | null>(null)
+  
+  // Sync state
+  const [isSyncing, setIsSyncing] = useState(false)
+  const [syncStats, setSyncStats] = useState<any>(null)
   
   const [colorPrimary, setColorPrimary] = useState('#0a84ff')
   const [colorSecondary, setColorSecondary] = useState('#34c759')
@@ -34,11 +39,21 @@ export default function SettingsMenu({ open, darkMode, onClose, onChangeDevice, 
     if (open) {
       setView('main')
       setRecording(null)
+      
+      // Load sync stats
+      loadSyncStats()
+      
       try {
         ;(window as any).electronAPI?.getPreferences?.().then((prefs: any) => {
           setStartMinimized(!!prefs?.startMinimized)
-          if (prefs?.shortcutModifier) setShortcutModifier(prefs.shortcutModifier)
-          if (prefs?.shortcutKey) setShortcutKey(prefs.shortcutKey)
+          if (prefs?.globalShortcut) {
+            const parts = prefs.globalShortcut.split('+')
+            if (parts.length >= 2) {
+                setShortcutKey(parts[parts.length - 1])
+                const mods = parts.slice(0, parts.length - 1)
+                setShortcutModifier(mods[0])
+            }
+          }
           if (prefs?.colorPrimary) setColorPrimary(prefs.colorPrimary)
           else {
             const v = getComputedStyle(document.documentElement).getPropertyValue('--color-primary').trim()
@@ -75,6 +90,87 @@ export default function SettingsMenu({ open, darkMode, onClose, onChangeDevice, 
     }
   }, [open])
 
+  // Listen to sync stats updates
+  useEffect(() => {
+    if (!open) return
+    
+    const unsubscribe = (window as any).electronAPI?.onSyncStats?.((stats: any) => {
+      setSyncStats(stats)
+      setIsSyncing(stats.isRunning)
+    })
+    
+    return () => {
+      if (unsubscribe) unsubscribe()
+    }
+  }, [open])
+
+  const loadSyncStats = async () => {
+    try {
+      const stats = await (window as any).electronAPI?.getSyncStats?.()
+      if (stats) {
+        setSyncStats(stats)
+        setIsSyncing(stats.isRunning)
+      }
+    } catch (e) {
+      console.error('Error loading sync stats:', e)
+    }
+  }
+
+  const handleSyncNow = async () => {
+    try {
+      setIsSyncing(true)
+      toast.loading(t('settings.syncing'), { id: 'sync-toast' })
+      
+      // Verificar que la API existe
+      if (!(window as any).electronAPI?.syncNow) {
+        throw new Error('Sync API not available')
+      }
+      
+      // Timeout de 30 segundos
+      const timeoutPromise = new Promise((_, reject) => {
+        setTimeout(() => reject(new Error('Sync timeout')), 30000)
+      })
+      
+      const syncPromise = (window as any).electronAPI.syncNow()
+      
+      const result = await Promise.race([syncPromise, timeoutPromise])
+      
+      if (result) {
+        setSyncStats(result)
+        toast.success(t('notifications.sync_completed'), { id: 'sync-toast' })
+      } else {
+        toast.error(t('notifications.sync_failed'), { id: 'sync-toast' })
+      }
+    } catch (e: any) {
+      console.error('Error syncing:', e)
+      const errorMsg = e.message === 'Sync timeout' 
+        ? 'Timeout: La sincronización está tardando demasiado'
+        : e.message === 'Sync API not available'
+        ? 'API de sincronización no disponible. Recompila el proyecto.'
+        : t('notifications.sync_failed')
+      toast.error(errorMsg, { id: 'sync-toast' })
+    } finally {
+      setIsSyncing(false)
+    }
+  }
+
+  const formatLastSync = (timestamp: number | null) => {
+    if (!timestamp) return t('settings.never_synced')
+    
+    const date = new Date(timestamp)
+    const now = new Date()
+    const diffMs = now.getTime() - date.getTime()
+    const diffMins = Math.floor(diffMs / 60000)
+    
+    if (diffMins < 1) return t('settings.last_sync', { time: t('settings.last_sync_just_now') })
+    if (diffMins < 60) return t('settings.last_sync', { time: t('settings.last_sync_mins', { mins: diffMins }) })
+    
+    const diffHours = Math.floor(diffMins / 60)
+    if (diffHours < 24) return t('settings.last_sync', { time: t('settings.last_sync_hours', { hours: diffHours }) })
+    
+    return t('settings.last_sync', { time: date.toLocaleDateString() })
+  }
+
   useEffect(() => {
     if (!recording) return
 
@@ -93,7 +189,8 @@ export default function SettingsMenu({ open, darkMode, onClose, onChangeDevice, 
           let mod = key
           if (mod === 'Meta') mod = 'Command'
           setShortcutModifier(mod)
-          await (window as any).electronAPI?.setPreferences?.({ shortcutModifier: mod })
+          const newShortcut = `${mod}+${shortcutKey}`
+          await (window as any).electronAPI?.setPreferences?.({ globalShortcut: newShortcut })
           setRecording(null)
         }
       } else if (recording === 'key') {
@@ -102,7 +199,8 @@ export default function SettingsMenu({ open, darkMode, onClose, onChangeDevice, 
           let k = key.toUpperCase()
           if (key === ' ') k = 'Space'
           setShortcutKey(k)
-          await (window as any).electronAPI?.setPreferences?.({ shortcutKey: k })
+          const newShortcut = `${shortcutModifier}+${k}`
+          await (window as any).electronAPI?.setPreferences?.({ globalShortcut: newShortcut })
           setRecording(null)
         }
       }
@@ -110,7 +208,7 @@ export default function SettingsMenu({ open, darkMode, onClose, onChangeDevice, 
 
     window.addEventListener('keydown', handler, { capture: true })
     return () => window.removeEventListener('keydown', handler, { capture: true })
-  }, [recording])
+  }, [recording]) // Correcto, quitamos las dependencias que no cambian dentro del efecto
 
   const toggleStartMinimized = async () => {
     const newVal = !startMinimized
@@ -202,43 +300,101 @@ export default function SettingsMenu({ open, darkMode, onClose, onChangeDevice, 
       <div className="p-1">
         {view === 'main' ? (
           <>
-            <h3 className="m-0 text-[color:var(--color-text)]">{t('settings.title')}</h3>
-            <div className="flex flex-col mt-2">
-              <button className={menuBtnClass} onMouseEnter={MouseOver} onMouseLeave={MouseOut} onClick={() => setView('general')}>
-                <Cog6ToothIcon className="w-5 h-5" />
-                <span>{t('settings.general')}</span>
+            <div className="flex items-center gap-2 mb-4">
+              <h3 className="m-0 text-[color:var(--color-text)]">{t('settings.title')}</h3>
+            </div>
+            <div className="flex flex-col gap-1">
+              {/* Sync Now Button */}
+              <button
+                onClick={handleSyncNow}
+                disabled={isSyncing}
+                className="w-full text-left px-3 py-2.5 rounded-[var(--radius-button)] hover:bg-black/5 dark:hover:bg-white/5 transition-colors duration-100 flex items-center justify-between group disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                <CloudArrowUpIcon className={`w-5 h-5 ${isSyncing ? 'animate-bounce' : ''}`} />
+                <div className="flex flex-col items-start flex-1">
+                  <span>{isSyncing ? t('settings.syncing') : t('settings.sync_now')}</span>
+                  {syncStats && (
+                    <span className="text-xs opacity-70">
+                      {syncStats.lastSyncAt 
+                        ? formatLastSync(syncStats.lastSyncAt)
+                        : t('settings.never_synced')
+                      }
+                    </span>
+                  )}
+                </div>
+                {syncStats && syncStats.itemsPending > 0 && (
+                  <span className="px-2 py-0.5 text-xs rounded-full bg-[color:var(--color-primary)] text-white">
+                    {syncStats.itemsPending}
+                  </span>
+                )}
               </button>
-              <button className={menuBtnClass} onMouseEnter={MouseOver} onMouseLeave={MouseOut} onClick={onSyncNow}>
-                <CloudArrowDownIcon className="w-5 h-5" />
-                <span>{t('settings.sync_now')}</span>
+              
+              <button
+                  onClick={onChangeDevice}
+                  className="w-full text-left px-3 py-2.5 rounded-[var(--radius-button)] hover:bg-black/5 dark:hover:bg-white/5 transition-colors duration-100 flex items-center justify-between group"
+                >
+                  <div className="flex items-center gap-3">
+                    <ComputerDesktopIcon className="w-5 h-5 text-[color:var(--color-muted)] group-hover:text-[color:var(--color-text)] transition-colors" />
+                    <span className="text-[color:var(--color-text)] text-sm font-medium">{t('device.title')}</span>
+                  </div>
+                </button>
+                {/* General Config */}
+              <button
+                onClick={() => setView('general')}
+                className="w-full text-left px-3 py-2.5 rounded-[var(--radius-button)] hover:bg-black/5 dark:hover:bg-white/5 transition-colors duration-100 flex items-center justify-between group"
+              >
+                <div className="flex items-center gap-3">
+                  <Cog6ToothIcon className="w-5 h-5 text-[color:var(--color-muted)] group-hover:text-[color:var(--color-text)] transition-colors" />
+                  <span className="text-[color:var(--color-text)] text-sm font-medium">{t('settings.general')}</span>
+                </div>
               </button>
-              <button className={menuBtnClass} onMouseEnter={MouseOver} onMouseLeave={MouseOut} onClick={onChangeDevice}>
-                <ComputerDesktopIcon className="w-5 h-5" />
-                <span>{t('settings.change_device')}</span>
+              <button
+                onClick={onForceUpdate}
+                className="w-full text-left px-3 py-2.5 rounded-[var(--radius-button)] hover:bg-black/5 dark:hover:bg-white/5 transition-colors duration-100 flex items-center justify-between group"
+              >
+                <div className="flex items-center gap-3">
+                  <ArrowPathIcon className="w-5 h-5 text-[color:var(--color-muted)] group-hover:text-[color:var(--color-text)] transition-colors" />
+                  <span className="text-[color:var(--color-text)] text-sm font-medium">{t('settings.check_updates')}</span>
+                </div>
               </button>
-              <button className={menuBtnClass} onMouseEnter={MouseOver} onMouseLeave={MouseOut} onClick={onForceUpdate}>
-                <ArrowPathIcon className="w-5 h-5" />
-                <span>{t('settings.check_updates')}</span>
+              <button
+                onClick={onToggleDark}
+                className="w-full text-left px-3 py-2.5 rounded-[var(--radius-button)] hover:bg-black/5 dark:hover:bg-white/5 transition-colors duration-100 flex items-center justify-between group"
+              >
+                <div className="flex items-center gap-3">
+                  {darkMode ? <SunIcon className="w-5 h-5 text-[color:var(--color-muted)] group-hover:text-[color:var(--color-text)] transition-colors" /> : <MoonIcon className="w-5 h-5 text-[color:var(--color-muted)] group-hover:text-[color:var(--color-text)] transition-colors" />}
+                  <span className="text-[color:var(--color-text)] text-sm font-medium">{darkMode ? t('settings.light_mode') : t('settings.dark_mode')}</span>
+                </div>
               </button>
-              <button className={menuBtnClass} onMouseEnter={MouseOver} onMouseLeave={MouseOut} onClick={onClearHistory}>
-                <TrashIcon className="w-5 h-5" />
-                <span>{t('settings.clear_history')}</span>
+              <button
+                onClick={onClearHistory}
+                className="w-full text-left px-3 py-2.5 rounded-[var(--radius-button)] hover:bg-red-500/10 dark:hover:bg-red-500/20 transition-colors duration-100 flex items-center justify-between group"
+              >
+                <div className="flex items-center gap-3">
+                  <TrashIcon className="w-5 h-5 text-red-500" />
+                  <span className="text-red-500 text-sm font-medium">{t('settings.clear_history')}</span>
+                </div>
               </button>
-              <button className={menuBtnClass} onMouseEnter={MouseOver} onMouseLeave={MouseOut} onClick={onOpenAbout}>
-                <InformationCircleIcon className="w-5 h-5" />
-                <span>{t('settings.about')}</span>
+              <button
+                onClick={onOpenAbout}
+                className="w-full text-left px-3 py-2.5 rounded-[var(--radius-button)] hover:bg-black/5 dark:hover:bg-white/5 transition-colors duration-100 flex items-center justify-between group mt-2 border-t border-[color:var(--color-border)]"
+              >
+                <div className="flex items-center gap-3 mt-1">
+                  <InformationCircleIcon className="w-5 h-5 text-[color:var(--color-muted)] group-hover:text-[color:var(--color-text)] transition-colors" />
+                  <span className="text-[color:var(--color-text)] text-sm font-medium">{t('settings.about')}</span>
+                </div>
               </button>
             </div>
-          </>
-        ) : (
-          <>
-             <div className="flex items-center gap-2 mb-4">
-               <button onClick={() => setView('main')} className="p-1 rounded-full hover:text-white" onMouseEnter={MouseOver} onMouseLeave={MouseOut}>
-                 <ChevronLeftIcon className="w-5 h-5" />
-               </button>
-               <h3 className="m-0 text-[color:var(--color-text)]">{t('settings.general')}</h3>
-             </div>
-             <div className="flex flex-col gap-6 px-2">
+            </>
+          ) : (
+            <>
+               <div className="flex items-center gap-2 mb-4">
+                 <button onClick={() => setView('main')} className="p-1.5 rounded-[var(--radius-button)] hover:bg-black/5 dark:hover:bg-white/5 transition-colors duration-100" title="Atrás">
+                   <ChevronLeftIcon className="w-5 h-5 text-[color:var(--color-text)]" />
+                 </button>
+                 <h3 className="m-0 text-[color:var(--color-text)]">{t('settings.general')}</h3>
+               </div>
+               <div className="flex flex-col gap-6 px-2">
                {/* Inicio minimizado */}
                <div className="flex flex-col gap-2">
                  <div className="flex items-center justify-between">
@@ -261,7 +417,7 @@ export default function SettingsMenu({ open, darkMode, onClose, onChangeDevice, 
                  <span className="text-[color:var(--color-text)]">{t('settings.shortcut_toggle')}</span>
                  <div className="flex items-center gap-2">
                    <button 
-                     className={`px-3 py-1.5 rounded border ${recording === 'modifier' ? 'bg-[color:var(--color-primary)] text-white' : 'border-[color:var(--color-border)] bg-[color:var(--color-surface)] text-[color:var(--color-text)]'}`}
+                     className={`px-3 py-1.5 rounded-[var(--radius-button)] border transition-colors duration-100 ${recording === 'modifier' ? 'bg-[color:var(--color-primary)] text-white' : 'border-[color:var(--color-border)] bg-[color:var(--color-surface)] text-[color:var(--color-text)] hover:bg-black/5 dark:hover:bg-white/5'}`}
                      style={recording === 'modifier' ? { backgroundColor: 'var(--color-primary)', borderColor: 'var(--color-primary)', color: '#fff' } : {}}
                      onClick={() => setRecording('modifier')}
                    >
@@ -269,7 +425,7 @@ export default function SettingsMenu({ open, darkMode, onClose, onChangeDevice, 
                    </button>
                    <span className="text-[color:var(--color-muted)]">+</span>
                    <button 
-                     className={`px-3 py-1.5 rounded border ${recording === 'key' ? 'bg-[color:var(--color-primary)] text-white' : 'border-[color:var(--color-border)] bg-[color:var(--color-surface)] text-[color:var(--color-text)]'}`}
+                     className={`px-3 py-1.5 rounded-[var(--radius-button)] border transition-colors duration-100 ${recording === 'key' ? 'bg-[color:var(--color-primary)] text-white' : 'border-[color:var(--color-border)] bg-[color:var(--color-surface)] text-[color:var(--color-text)] hover:bg-black/5 dark:hover:bg-white/5'}`}
                      style={recording === 'key' ? { backgroundColor: 'var(--color-primary)', borderColor: 'var(--color-primary)', color: '#fff' } : {}}
                      onClick={() => setRecording('key')}
                    >
@@ -286,7 +442,7 @@ export default function SettingsMenu({ open, darkMode, onClose, onChangeDevice, 
                   <span className="text-[color:var(--color-text)]">{t('settings.language')}</span>
                   <div className="flex items-center gap-2">
                     <button 
-                      className={`flex items-center gap-2 px-3 py-1.5 rounded border ${i18n.language.startsWith('en') ? 'bg-[color:var(--color-primary)] text-white' : 'border-[color:var(--color-border)] bg-[color:var(--color-surface)] text-[color:var(--color-text)]'}`}
+                      className={`flex items-center gap-2 px-3 py-1.5 rounded-[var(--radius-button)] border transition-colors duration-100 ${i18n.language.startsWith('en') ? 'bg-[color:var(--color-primary)] text-white' : 'border-[color:var(--color-border)] bg-[color:var(--color-surface)] text-[color:var(--color-text)] hover:bg-black/5 dark:hover:bg-white/5'}`}
                       style={i18n.language.startsWith('en') ? { backgroundColor: 'var(--color-primary)', borderColor: 'var(--color-primary)', color: '#fff' } : {}}
                       onClick={() => changeLanguage('en')}
                     >
@@ -294,7 +450,7 @@ export default function SettingsMenu({ open, darkMode, onClose, onChangeDevice, 
                       {t('settings.lang_en')}
                     </button>
                     <button 
-                      className={`flex items-center gap-2 px-3 py-1.5 rounded border ${i18n.language.startsWith('es') ? 'bg-[color:var(--color-primary)] text-white' : 'border-[color:var(--color-border)] bg-[color:var(--color-surface)] text-[color:var(--color-text)]'}`}
+                      className={`flex items-center gap-2 px-3 py-1.5 rounded-[var(--radius-button)] border transition-colors duration-100 ${i18n.language.startsWith('es') ? 'bg-[color:var(--color-primary)] text-white' : 'border-[color:var(--color-border)] bg-[color:var(--color-surface)] text-[color:var(--color-text)] hover:bg-black/5 dark:hover:bg-white/5'}`}
                       style={i18n.language.startsWith('es') ? { backgroundColor: 'var(--color-primary)', borderColor: 'var(--color-primary)', color: '#fff' } : {}}
                       onClick={() => changeLanguage('es')}
                     >
@@ -311,14 +467,14 @@ export default function SettingsMenu({ open, darkMode, onClose, onChangeDevice, 
                    <div className="flex items-center gap-2">
                     <button 
                         onClick={onToggleDark}
-                        className="p-1 rounded hover:bg-[color:var(--color-bg)] text-[color:var(--color-text)]"
+                        className="p-1.5 rounded-[var(--radius-button)] hover:bg-black/5 dark:hover:bg-white/5 transition-colors duration-100 text-[color:var(--color-text)]"
                         title={darkMode ? t('settings.light_mode') : t('settings.dark_mode')}
                       >
                         {darkMode ? <SunIcon className="w-5 h-5" /> : <MoonIcon className="w-5 h-5" />}
                       </button>
                      <button 
                        onClick={resetColors} 
-                       className="px-2 py-1 text-xs rounded border border-[color:var(--color-border)] hover:bg-[color:var(--color-surface)] transition-colors text-[color:var(--color-text)]"
+                       className="px-2 py-1.5 text-xs rounded-[var(--radius-button)] border border-[color:var(--color-border)] hover:bg-black/5 dark:hover:bg-white/5 transition-colors duration-100 text-[color:var(--color-text)]"
                        title={t('settings.reset_colors')}
                      >
                        {t('settings.reset_colors')}
@@ -392,14 +548,14 @@ export default function SettingsMenu({ open, darkMode, onClose, onChangeDevice, 
                      <div className="flex items-center gap-2 h-8">
                        <button 
                          onClick={() => handleFontSizeChange(-1)} 
-                         className="w-6 h-6 flex items-center justify-center rounded border border-[color:var(--color-border)] bg-[color:var(--color-surface)] text-[color:var(--color-text)] hover:bg-[color:var(--color-bg)]"
+                         className="w-6 h-6 flex items-center justify-center rounded-[var(--radius-button)] border border-[color:var(--color-border)] bg-[color:var(--color-surface)] text-[color:var(--color-text)] hover:bg-black/5 dark:hover:bg-white/5 transition-colors duration-100"
                        >
                          -
                        </button>
                        <span className="text-xs font-mono w-8 text-center text-[color:var(--color-text)]">{fontSize}px</span>
                        <button 
                          onClick={() => handleFontSizeChange(1)} 
-                         className="w-6 h-6 flex items-center justify-center rounded border border-[color:var(--color-border)] bg-[color:var(--color-surface)] text-[color:var(--color-text)] hover:bg-[color:var(--color-bg)]"
+                         className="w-6 h-6 flex items-center justify-center rounded-[var(--radius-button)] border border-[color:var(--color-border)] bg-[color:var(--color-surface)] text-[color:var(--color-text)] hover:bg-black/5 dark:hover:bg-white/5 transition-colors duration-100"
                        >
                          +
                        </button>

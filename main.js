@@ -1,4322 +1,1001 @@
-const {
-  app,
-  BrowserWindow,
-  globalShortcut,
-  clipboard,
-  ipcMain,
-  screen,
-  nativeImage,
-  Tray,
-  Menu,
-  shell,
-  Notification,
-  powerMonitor,
-  protocol
-} = require('electron')
-const { autoUpdater } = require('electron-updater')
-const electronLog = require('electron-log')
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+const { app, BrowserWindow, globalShortcut, clipboard, ipcMain, screen, nativeImage, Tray, Menu, shell, Notification, powerMonitor, protocol, dialog } = require('electron');
+const path = require('path');
+const fs = require('fs');
+const os = require('os');
+const crypto = require('crypto');
+const FormData = require('form-data');
+// --- Integration Start ---
+// Assuming TypeScript compilation or ts-node
+// If using plain JS, this would be: const { BackendDaemon } = require('./backend/BackendDaemon')
+const BackendDaemon_1 = require("./backend/BackendDaemon");
+const SyncEngine_1 = require("./backend/SyncEngine");
+// --- Integration End ---
+const db = require('./db');
+const { configureAutoLaunch } = require('./autolaunch');
+const electronLog = require('electron-log');
+const { exec, execFile, spawnSync } = require('child_process');
 const log = {
-  info: () => {},
-  error: () => {},
-  warn: () => {},
-  debug: () => {}
+    info: (...args) => console.log('[MAIN]', ...args),
+    error: (...args) => console.error('[MAIN]', ...args),
+    warn: (...args) => console.warn('[MAIN]', ...args),
+    debug: () => { }
+};
+let mainWindow;
+let ocrWindow = null;
+let codeWindow = null;
+let notificationWindow = null;
+let pendingNotificationImage = null;
+let pendingCodeContent = null;
+let tray;
+let isQuitting = false;
+// Set app name and ensure userData exists to avoid Lock file error (Error code: 3)
+app.setName('CopyFy');
+// app.setAppUserModelId('SAIDMIX.CopyFy'); // Optional if needed for notifications
+const userDataPath = app.getPath('userData');
+if (!fs.existsSync(userDataPath)) {
+    try {
+        fs.mkdirSync(userDataPath, { recursive: true });
+    }
+    catch (e) {
+        log.error('Failed to create userData directory:', e);
+    }
 }
-const path = require('path')
-
-if (process.platform === 'win32') {
-  app.setAppUserModelId('Copyfy')
-}
-
-const axios = require('axios')
-const fs = require('fs')
-const os = require('os')
-const { PassThrough } = require('stream')
-const db = require('./db')
-const legacyHistoryPath = path.join(os.homedir(), '.clipboard-history.json')
-const { exec, execFile, spawnSync, fork } = require('child_process')
-const crypto = require('crypto')
-const FormData = require('form-data')
-const { dialog } = require('electron')
-
-let mainWindow
-let quickWindow
-let history = []
-const childWindows = new Set()
-let tray
-let isQuitting = false
-let worker = null
-let activeUploadWindow = null
-
-if (process.platform === 'linux') {
-  try { app.setName('copyfy') } catch {}
-  // Forzar --no-sandbox para AppImage (necesario para evitar problemas de permisos)
-  if (process.env.APPIMAGE) {
-    try { app.commandLine.appendSwitch('no-sandbox') } catch {}
-  }
-  // Detectar si Wayland está disponible, sino usar X11
-  // En Electron, si no se especifica, intentará usar Wayland primero si está disponible
-  // Solo forzar X11 si hay problemas específicos con Wayland
-  const isWayland = process.env.XDG_SESSION_TYPE === 'wayland' || process.env.WAYLAND_DISPLAY
-  if (!isWayland) {
-    // Si no es Wayland, usar X11 explícitamente (más compatible con atajos globales)
-    try { app.commandLine.appendSwitch('ozone-platform', 'x11') } catch {}
-    log.info('Linux: Usando X11 (más compatible con atajos globales)')
-  } else {
-    // Si es Wayland, advertir sobre posibles problemas con atajos globales
-    log.warn('Linux: Detectado Wayland. Los atajos globales pueden requerir permisos adicionales.')
-    log.warn('Si los atajos no funcionan, considera usar X11 o configurar permisos para atajos globales en Wayland.')
-  }
-}
-
-const gotTheLock = app.requestSingleInstanceLock()
-
+// Single instance lock
+const gotTheLock = app.requestSingleInstanceLock();
 if (!gotTheLock) {
-  app.quit()
-} else {
-  app.on('second-instance', (event, commandLine, workingDirectory) => {
-    // Si alguien intenta correr una segunda instancia, enfocamos nuestra ventana
-    if (mainWindow && !mainWindow.isDestroyed()) {
-      if (mainWindow.isMinimized()) mainWindow.restore()
-      if (!mainWindow.isVisible()) mainWindow.show()
-      mainWindow.focus()
-      // En Linux, mover al frente y asegurar always on top puede requerir métodos adicionales
-      if (process.platform === 'linux') {
+    app.quit();
+}
+else {
+    app.on('second-instance', (event, commandLine, workingDirectory) => {
+        if (mainWindow) {
+            if (mainWindow.isMinimized())
+                mainWindow.restore();
+            if (!mainWindow.isVisible())
+                mainWindow.show();
+            mainWindow.focus();
+        }
+    });
+}
+// Helper: Normalize item for IPC
+function normalizeForIPC(items) {
+    return items.map(i => ({
+        id: i.id,
+        value: i.value,
+        type: i.type,
+        favorite: i.favorite,
+        createdAt: i.createdAt,
+        imagePath: i.type === 'image' && i.value.startsWith('[LOCAL_IMAGE]:') ? i.value.replace('[LOCAL_IMAGE]:', '') : null
+    }));
+}
+// Helper: Broadcast update to main window with correct filtering
+function broadcastUpdate() {
+    if (mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents) {
+        const settings = db.getSettings();
+        log.info(`[Main] broadcastUpdate settings.selectedDeviceId: ${settings.selectedDeviceId}`);
+        const filter = {};
+        if (settings.selectedDeviceId) {
+            filter.deviceId = settings.selectedDeviceId;
+        }
+        const items = db.getItems(20, 0, filter);
+        log.info(`[Main] broadcastUpdate sending ${items.length} items (Device: ${filter.deviceId || 'ALL'})`);
         try {
-          mainWindow.setAlwaysOnTop(true)
-          mainWindow.moveTop()
-        } catch {}
-      }
+            mainWindow.webContents.send('clipboard-update', normalizeForIPC(items));
+        }
+        catch (e) {
+            log.error('[Main] Failed to send clipboard-update:', e);
+        }
     }
-  })
 }
-
-function uriToPath (uri) {
-  try {
-    let u = String(uri || '').trim()
-    if (!u) return ''
-    
-    // Manejar diferentes formatos de URI de archivos
-    if (u.startsWith('file://')) {
-      if (process.platform === 'win32') {
-        // Windows: file:///C:/path o file://C:/path
-        // Remover el prefijo file:// y manejar diferentes variantes
-        u = u.replace(/^file:\/\/(\/+)?/, '')
-        // Decodificar URI y normalizar
-        u = decodeURIComponent(u)
-        // path.normalize() ya maneja correctamente los separadores en Windows
-        return path.normalize(u)
-      } else {
-        // macOS/Linux: file:///path o file://localhost/path
-        u = u.replace(/^file:\/\/(localhost\/)?/, '')
-        u = decodeURIComponent(u)
-        // Normalizar ruta (path.normalize() usa el separador correcto para la plataforma)
-        return path.normalize(u)
-      }
-    }
-    
-    // Si ya es una ruta, normalizarla usando path.normalize() que es multiplataforma
-    return path.normalize(u)
-  } catch (e) {
-    log.error('Error convirtiendo URI a path:', e?.message || e)
-    return String(uri || '').trim()
-  }
-}
-
-// Extensiones de archivos de texto y documentos permitidas
-const TEXT_FILE_EXTENSIONS = new Set([
-  // Archivos de texto plano y código fuente
-  'txt', 'md', 'js', 'ts', 'jsx', 'tsx', 'json', 'xml', 'html', 'htm', 'css', 'scss', 'sass', 'less',
-  'py', 'java', 'cpp', 'c', 'h', 'hpp', 'cs', 'php', 'rb', 'go', 'rs', 'swift', 'kt', 'scala',
-  'sh', 'bash', 'zsh', 'fish', 'bat', 'cmd', 'ps1', 'vbs',
-  'sql', 'csv', 'tsv', 'log', 'ini', 'cfg', 'conf', 'config', 'yaml', 'yml', 'toml',
-  'dockerfile', 'makefile', 'cmake', 'gradle', 'maven',
-  'r', 'm', 'pl', 'pm', 'lua', 'vim', 'diff', 'patch',
-  'tex', 'bib', 'rst', 'adoc', 'wiki', 'org',
-  // Documentos de Office y PDF
-  'pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'odt', 'ods', 'odp',
-  'rtf', 'pages', 'numbers', 'key', 'wps', 'wpd'
-])
-
-function isTextFile(filePath) {
-  try {
-    const ext = path.extname(filePath).toLowerCase().replace('.', '')
-    return TEXT_FILE_EXTENSIONS.has(ext)
-  } catch {
-    return false
-  }
-}
-
-function parseCFHDrop (buf) {
-  try {
-    if (!Buffer.isBuffer(buf) || buf.length < 20) return []
-    
-    // Estructura DROPFILES (20 bytes):
-    // Offset 0-3: pFiles (DWORD) - offset donde empiezan los paths (típicamente 20)
-    // Offset 4-7: pt.x (LONG) - coordenada X del mouse
-    // Offset 8-11: pt.y (LONG) - coordenada Y del mouse
-    // Offset 12-15: fNC (BOOL) - flag
-    // Offset 16-19: fWide (BOOL) - 0 = ANSI, 1 = Unicode
-    
-    const pFiles = buf.readUInt32LE(0) // Offset donde empiezan los paths
-    const fWide = buf.readUInt32LE(16) !== 0 // Flag unicode (offset 16-19)
-    
-    // El offset mínimo debería ser 20 (tamaño de DROPFILES structure)
-    const start = Math.max(pFiles, 20)
-    if (start >= buf.length) return []
-    
-    const files = []
-    let pos = start
-    
-    if (fWide) {
-      // Unicode (UTF-16LE): cada path termina con doble null (\0\0 = 4 bytes)
-      // La lista completa termina con cuádruple null (8 bytes)
-      while (pos + 4 < buf.length) {
-        // Buscar el siguiente doble null (dos UInt16LE consecutivos que sean 0)
-        let pathStart = pos
-        let foundDoubleNull = false
-        
-        while (pos + 4 <= buf.length) {
-          const u16_1 = buf.readUInt16LE(pos)
-          const u16_2 = buf.readUInt16LE(pos + 2)
-          
-          if (u16_1 === 0 && u16_2 === 0) {
-            foundDoubleNull = true
-            break
-          }
-          pos += 2
+let cachedSelectedDeviceId = null;
+// Window Creation
+function createWindow() {
+    const display = screen.getPrimaryDisplay();
+    const screenWidth = display.workArea.width;
+    const screenHeight = display.workArea.height;
+    const windowWidth = 400;
+    const finalX = screenWidth - windowWidth;
+    mainWindow = new BrowserWindow({
+        width: windowWidth,
+        height: screenHeight,
+        x: finalX,
+        y: 0,
+        frame: false,
+        transparent: true,
+        vibrancy: process.platform === 'darwin' ? 'hud' : undefined,
+        backgroundColor: '#00FFFFFF',
+        alwaysOnTop: true,
+        resizable: false,
+        show: false,
+        skipTaskbar: true,
+        webPreferences: {
+            preload: path.join(__dirname, 'preload.js'), // Point to compiled JS
+            contextIsolation: true,
+            nodeIntegration: false,
+            devTools: !app.isPackaged
         }
-        
-        if (foundDoubleNull && pos > pathStart) {
-          // Extraer el path desde pathStart hasta pos
-          const pathBuf = buf.subarray(pathStart, pos)
-          const pathStr = pathBuf.toString('utf16le').replace(/\0+$/, '').trim()
-          if (pathStr && pathStr.length > 0) {
-            files.push(pathStr)
-          }
-          
-          // Saltar el doble null (4 bytes)
-          pos += 4
-          
-          // Verificar si hay otro doble null (fin de lista)
-          if (pos + 4 <= buf.length && buf.readUInt16LE(pos) === 0 && buf.readUInt16LE(pos + 2) === 0) {
-            break // Fin de lista
-          }
-        } else {
-          break // No encontramos más archivos
-        }
-      }
-    } else {
-      // ANSI: cada path termina con null (1 byte)
-      // La lista completa termina con doble null (2 bytes)
-      while (pos < buf.length) {
-        // Buscar el siguiente null terminator
-        let pathStart = pos
-        while (pos < buf.length && buf[pos] !== 0) {
-          pos++
-        }
-        
-        if (pos > pathStart) {
-          // Extraer el path
-          const pathBuf = buf.subarray(pathStart, pos)
-          const pathStr = pathBuf.toString('ascii').trim()
-          if (pathStr && pathStr.length > 0) {
-            files.push(pathStr)
-          }
-        }
-        
-        // Saltar el null
-        pos++
-        
-        // Si encontramos otro null inmediatamente, significa fin de lista
-        if (pos < buf.length && buf[pos] === 0) {
-          break
-        }
-      }
+    });
+    const indexPath = app.isPackaged
+        ? path.join(app.getAppPath(), 'frontend', 'dist', 'index.html')
+        : 'http://127.0.0.1:5173';
+    if (app.isPackaged) {
+        mainWindow.loadFile(indexPath);
     }
-    
-    // Eliminar duplicados y retornar
-    const uniqueFiles = [...new Set(files)].filter(Boolean)
-    return uniqueFiles
-  } catch (e) {
-    log.error('Error parseando CF_HDROP:', e?.message || e)
-    return []
-  }
-}
-
-function readClipboardFileUris () {
-  try {
-    const formats = (clipboard.availableFormats() || []).map(f => String(f || '').toLowerCase())
-    const out = []
-    const seen = new Set() // Para evitar duplicados
-    
-    // En Windows, CF_HDROP es el formato más confiable para múltiples archivos
-    if (process.platform === 'win32') {
-      const bufDrop = clipboard.readBuffer('CF_HDROP')
-      if (Buffer.isBuffer(bufDrop) && bufDrop.length > 0) {
-        const parts = parseCFHDrop(bufDrop)
-        for (const p of parts) {
-          if (p) {
-            // Usar path.resolve() para obtener ruta absoluta normalizada (compatible con todas las plataformas)
-            const resolved = path.resolve(p)
-            const normalized = resolved.toLowerCase()
-            if (!seen.has(normalized)) {
-              seen.add(normalized)
-              out.push(resolved)
-            }
-          }
-        }
-      }
+    else {
+        mainWindow.loadURL(indexPath);
     }
-    
-    // También verificar otros formatos como respaldo
-    // text/uri-list: formato estándar usado en Linux y algunas aplicaciones
-    if (formats.includes('text/uri-list')) {
-      const buf = clipboard.readBuffer('text/uri-list')
-      const txt = Buffer.isBuffer(buf) ? buf.toString('utf-8') : ''
-      for (const line of String(txt || '').split(/\r?\n/)) {
-        const s = String(line || '').trim()
-        if (s && !s.startsWith('#')) { // Ignorar comentarios en URI list
-          const p = uriToPath(s)
-          if (p) {
-            const resolved = path.resolve(p)
-            const normalized = resolved.toLowerCase()
-            if (!seen.has(normalized)) {
-              seen.add(normalized)
-              out.push(resolved)
-            }
-          }
-        }
-      }
-    }
-    
-    // public.file-url: formato usado en algunas aplicaciones Linux/macOS
-    if (formats.includes('public.file-url')) {
-      const buf = clipboard.readBuffer('public.file-url')
-      const txt = Buffer.isBuffer(buf) ? buf.toString('utf-8') : ''
-      for (const line of String(txt || '').split(/\r?\n/)) {
-        const s = String(line || '').trim()
-        if (s) {
-          const p = uriToPath(s)
-          if (p) {
-            const resolved = path.resolve(p)
-            const normalized = resolved.toLowerCase()
-            if (!seen.has(normalized)) {
-              seen.add(normalized)
-              out.push(resolved)
-            }
-          }
-        }
-      }
-    }
-    
-    // macOS: NSFilenamesPboardType es un array serializado de PropertyList (plist)
-    if (process.platform === 'darwin' && formats.includes('nsfilenamespboardtype')) {
-      try {
-        const buf = clipboard.readBuffer('NSFilenamesPboardType')
-        if (Buffer.isBuffer(buf) && buf.length > 0) {
-          // Intentar parsear como plist binario o XML
-          // En macOS moderno, Electron puede devolver esto como string JSON o array
-          // Primero intentar como string/array si es posible
-          try {
-            const text = buf.toString('utf8')
-            // Si parece JSON (array de strings)
-            if (text.startsWith('[') || text.startsWith('"')) {
-              const parsed = JSON.parse(text)
-              const files = Array.isArray(parsed) ? parsed : [parsed]
-              for (const file of files) {
-                const filePath = String(file || '').trim()
-                if (filePath) {
-                  // Convertir a ruta absoluta normalizada
-                  const resolved = path.resolve(filePath)
-                  const normalized = resolved.toLowerCase()
-                  if (!seen.has(normalized)) {
-                    seen.add(normalized)
-                    out.push(resolved)
-                  }
-                }
-              }
-            }
-          } catch {
-            // Si no es JSON, intentar leer como texto plano (archivos separados por null o newline)
-            const text = buf.toString('utf8')
-            const parts = text.split(/\0|\r?\n/).map(s => s.trim()).filter(Boolean)
-            for (const part of parts) {
-              if (part) {
-                // Convertir a ruta absoluta normalizada
-                const resolved = path.resolve(part)
-                const normalized = resolved.toLowerCase()
-                if (!seen.has(normalized)) {
-                  seen.add(normalized)
-                  out.push(resolved)
-                }
-              }
-            }
-          }
-        }
-      } catch (e) {
-        log.error('Error leyendo NSFilenamesPboardType:', e?.message || e)
-      }
-    }
-    
-    // FileNameW y FileName: formatos de Windows para un solo archivo (rara vez múltiples)
-    if (process.platform === 'win32') {
-      const bufW = clipboard.readBuffer('FileNameW')
-      if (Buffer.isBuffer(bufW) && bufW.length > 0) {
-        const raw = bufW.toString('utf16le')
-        const parts = String(raw || '').split('\0').map(s => String(s || '').trim()).filter(Boolean)
-        for (const p of parts) {
-          if (p) {
-            const resolved = path.resolve(p)
-            const normalized = resolved.toLowerCase()
-            if (!seen.has(normalized)) {
-              seen.add(normalized)
-              out.push(resolved)
-            }
-          }
-        }
-      }
-      const bufA = clipboard.readBuffer('FileName')
-      if (Buffer.isBuffer(bufA) && bufA.length > 0) {
-        const raw = bufA.toString('ascii')
-        const parts = String(raw || '').split('\0').map(s => String(s || '').trim()).filter(Boolean)
-        for (const p of parts) {
-          if (p) {
-            const resolved = path.resolve(p)
-            const normalized = resolved.toLowerCase()
-            if (!seen.has(normalized)) {
-              seen.add(normalized)
-              out.push(resolved)
-            }
-          }
-        }
-      }
-    }
-    
-    // x-special/gnome-copied-files: formato usado en GNOME/Linux
-    if (formats.includes('x-special/gnome-copied-files')) {
-      const buf = clipboard.readBuffer('x-special/gnome-copied-files')
-      const txt = Buffer.isBuffer(buf) ? buf.toString('utf-8') : ''
-      const lines = String(txt || '').split(/\r?\n/)
-      const rest = lines.filter((_, i) => i > 0) // Saltar primera línea (acción: copy/cut)
-      for (const line of rest) {
-        const s = String(line || '').trim()
-        if (s) {
-          const p = uriToPath(s)
-          if (p) {
-            const resolved = path.resolve(p)
-            const normalized = resolved.toLowerCase()
-            if (!seen.has(normalized)) {
-              seen.add(normalized)
-              out.push(resolved)
-            }
-          }
-        }
-      }
-    }
-    
-    return out
-  } catch (e) {
-    log.error('Error leyendo archivos del portapapeles:', e)
-    return []
-  }
-}
-
-function getImagePathFromClipboard () {
-  try {
-    const uris = readClipboardFileUris()
-    const paths = uris.map(uriToPath).filter(Boolean)
-    const exts = new Set(['.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp', '.tif', '.tiff', '.ico'])
-    for (const p of paths) {
-      const ext = path.extname(p).toLowerCase()
-      if (exts.has(ext) && fs.existsSync(p)) return p
-    }
-    return null
-  } catch {
-    return null
-  }
-}
-
-// Función helper para obtener el estado actual de los archivos del portapapeles
-// Devuelve la clave (key) que representa los archivos de texto actuales, o '' si no hay archivos de texto
-function getCurrentClipboardFilesKey () {
-  try {
-    if (!authToken) return ''
-    
-    const rawUris = readClipboardFileUris()
-    const uniqueFileMap = new Map()
-
-    if (rawUris && rawUris.length > 0) {
-      for (const uri of rawUris) {
-        const p = uriToPath(uri)
-        if (p && fs.existsSync(p)) {
-          try {
-            const stat = fs.statSync(p)
-            if (stat.isFile() && isTextFile(p)) {
-              const key = (stat.ino && stat.dev) ? `${stat.dev}-${stat.ino}` : path.resolve(p).toLowerCase()
-              const existing = uniqueFileMap.get(key)
-              
-              if (!existing) {
-                uniqueFileMap.set(key, p)
-              } else {
-                const score = (pathStr) => {
-                  let s = 0
-                  if (/~\d+(\.|$)/i.test(pathStr)) s -= 10
-                  if (pathStr === pathStr.toUpperCase() && /[a-z]/.test(pathStr.toLowerCase())) s -= 2
-                  return s + (pathStr.length * 0.01)
-                }
-                if (score(p) > score(existing)) {
-                  uniqueFileMap.set(key, p)
-                }
-              }
-            }
-          } catch (e) {
-            // Silenciar errores menores
-          }
-        }
-      }
-    }
-
-    if (uniqueFileMap.size > 0) {
-      const sortedPaths = Array.from(uniqueFileMap.values()).sort()
-      const normalizedPaths = sortedPaths.map(p => path.resolve(p)).sort()
-      return normalizedPaths.join('|')
-    }
-    
-    return ''
-  } catch {
-    return ''
-  }
-}
-
-function getImageHistoryDir () {
-  const dir = path.join(app.getPath('userData'), 'clipboard-images')
-  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true })
-  return dir
-}
-
-function readClipboardImageSmart () {
-  try {
-    let img = clipboard.readImage()
-    if (img && !img.isEmpty()) return img
-    const formats = clipboard.availableFormats() || []
-    const tryFormats = ['image/png', 'PNG', 'image/jpeg', 'JFIF', 'image/webp', 'WEBP', 'image/bmp', 'BMP', 'image/tiff', 'TIFF', 'image/gif', 'GIF']
-    for (const f of formats) {
-      if (tryFormats.includes(f)) {
-        const buf = clipboard.readBuffer(f)
-        if (Buffer.isBuffer(buf) && buf.length > 0) {
-          try {
-            const ni = nativeImage.createFromBuffer(buf)
-            if (ni && !ni.isEmpty()) return ni
-          } catch {}
-        }
-      }
-    }
-    for (const f of formats) {
-      const buf = clipboard.readBuffer(f)
-      if (!Buffer.isBuffer(buf) || buf.length === 0) continue
-      let mime = ''
-      const s = String(f || '')
-      if (s.startsWith('image/')) mime = s.toLowerCase()
-      else if (s === 'PNG') mime = 'image/png'
-      else if (s === 'JFIF') mime = 'image/jpeg'
-      else if (s === 'WEBP') mime = 'image/webp'
-      else if (s === 'BMP') mime = 'image/bmp'
-      else if (s === 'TIFF') mime = 'image/tiff'
-      else if (s === 'GIF') mime = 'image/gif'
-      if (!mime) continue
-      try {
-        const dataUrl = `data:${mime};base64,${buf.toString('base64')}`
-        const ni = nativeImage.createFromDataURL(dataUrl)
-        if (ni && !ni.isEmpty()) return ni
-      } catch {}
-    }
-    const html = clipboard.readHTML()
-    if (typeof html === 'string' && html) {
-      const m = html.match(/data:image[^"' ]+/i)
-      if (m && m[0]) {
-        try {
-          const ni = nativeImage.createFromDataURL(m[0])
-          if (ni && !ni.isEmpty()) return ni
-        } catch {}
-      }
-    }
-    const p = getImagePathFromClipboard()
-    if (p) {
-      const ni = nativeImage.createFromPath(p)
-      if (ni && !ni.isEmpty()) return ni
-    }
-    if (process.platform === 'linux') {
-      const sel = clipboard.readImage('selection')
-      if (sel && !sel.isEmpty()) return sel
-    }
-    return nativeImage.createEmpty()
-  } catch {
-    return nativeImage.createEmpty()
-  }
-}
-
-function saveClipboardImagePNG (image) {
-  if (!image || image.isEmpty()) return null
-  const png = image.toPNG()
-  if (!png || png.length === 0) return null
-  const hash = crypto.createHash('sha256').update(png).digest('hex')
-  const dir = getImageHistoryDir()
-  const fileName = `${Date.now()}-${hash.slice(0, 8)}.png`
-  const filePath = path.join(dir, fileName)
-  fs.writeFileSync(filePath, png)
-  const manifestPath = path.join(dir, 'images.json')
-  let manifest = []
-  try {
-    if (fs.existsSync(manifestPath)) {
-      const raw = fs.readFileSync(manifestPath, 'utf-8')
-      manifest = JSON.parse(raw)
-    }
-  } catch {}
-  manifest.push({ file: fileName, hash, createdAt: new Date().toISOString() })
-  try { fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2), 'utf-8') } catch {}
-  return filePath
-}
-
-function getImagePathFromDataURL (dataUrl) {
-  try {
-    if (typeof dataUrl !== 'string' || !dataUrl.startsWith('data:image')) return null
-    const ni = nativeImage.createFromDataURL(dataUrl)
-    if (!ni || ni.isEmpty()) return null
-    const png = ni.toPNG()
-    if (!png || png.length === 0) return null
-    const hash = crypto.createHash('sha256').update(png).digest('hex')
-    const dir = getImageHistoryDir()
-    const manifestPath = path.join(dir, 'images.json')
-    try {
-      if (fs.existsSync(manifestPath)) {
-        const raw = fs.readFileSync(manifestPath, 'utf-8')
-        const manifest = JSON.parse(raw)
-        const found = Array.isArray(manifest) ? manifest.find(x => x && x.hash === hash) : null
-        if (found && found.file) {
-          const p = path.join(dir, found.file)
-          if (fs.existsSync(p)) return p
-        }
-      }
-    } catch {}
-    const saved = saveClipboardImagePNG(ni)
-    return saved || null
-  } catch {
-    return null
-  }
-}
-
-function augmentHistoryWithImagePaths (list) {
-  try {
-    const arr = Array.isArray(list) ? list : []
-    return arr.map(it => {
-      const v = it && typeof it.value === 'string' ? it.value : ''
-      if (v.startsWith('data:image')) {
-        const p = getImagePathFromDataURL(v)
-        if (p) return { ...it, imagePath: p }
-      } else if (v.startsWith('[LOCAL_IMAGE]:')) {
-        const p = v.replace('[LOCAL_IMAGE]:', '')
-        return { ...it, imagePath: p }
-      }
-      return it
-    })
-  } catch {
-    return Array.isArray(list) ? list : []
-  }
-}
-
-function normalizeHistory (raw) {
-  if (!Array.isArray(raw)) return []
-  return raw.map(item =>
-    typeof item === 'string'
-      ? { value: item, favorite: false }
-      : { value: item.value, favorite: !!item.favorite }
-  )
-}
-
-autoUpdater.logger = electronLog
-autoUpdater.logger.transports.file.level = 'info'
-
-// No dependemos de JSON legacy para cargar historial. Todo se gestiona con SQLite.
-
-//Pegado de texto
-function performPaste (mainWindow) {
-  const platform = process.platform
-  const isDev = !app.isPackaged
-
-  // ✅ Ocultar ventana para devolver foco a la anterior app
-  if (mainWindow && mainWindow.hide) mainWindow.hide()
-
-  log.info('Plataforma', { platform })
-  log.info('Entorno', { env: isDev ? 'desarrollo' : 'producción' })
-
-  if (platform === 'win32') {
-    // Rutas de ejecutables compatibles con desarrollo y producción en Windows
-    let exePath
-    if (isDev) {
-      exePath = path.join(__dirname, 'helpers', 'paste.exe')
-    } else {
-      // En producción, intentar múltiples ubicaciones posibles
-      const possiblePaths = [
-        path.join(process.resourcesPath, 'app.asar.unpacked', 'helpers', 'paste.exe'),
-        path.join(process.resourcesPath, 'helpers', 'paste.exe'),
-        path.join(path.dirname(process.execPath), 'resources', 'app.asar.unpacked', 'helpers', 'paste.exe'),
-        path.join(path.dirname(process.execPath), 'helpers', 'paste.exe')
-      ]
-      
-      exePath = possiblePaths.find(p => fs.existsSync(p)) || possiblePaths[0]
-    }
-
-    if (!fs.existsSync(exePath)) {
-      log.error('paste.exe no encontrado en:', exePath)
-      return
-    }
-
-    log.info('Ejecutando', { exePath })
-    execFile(exePath, err => {
-      if (err) {
-        log.error('Error al ejecutar paste.exe', err)
-      } else {
-        log.info('paste.exe ejecutado correctamente')
-      }
-    })
-  } else if (platform === 'darwin') {
-    // macOS: comando AppleScript
-    setTimeout(() => {
-      exec(
-        `osascript -e 'tell application "System Events" to keystroke "v" using command down'`,
-        err => {
-          if (err) log.error('Error ejecutando osascript', err)
-          else log.info('Comando pegado en macOS')
-        }
-      )
-    }, 300)
-  } else if (platform === 'linux') {
-    // ✅ Always ensure clipboard is written first (already done by copy handlers)
-    // ✅ Check if auto-paste is enabled in preferences
-    let enableAutoPaste = false
-    try {
-      const prefsStr = db.getConfig('preferences')
-      const prefs = prefsStr ? JSON.parse(prefsStr) : {}
-      enableAutoPaste = prefs.enableAutoPaste === true
-    } catch (e) {
-      log.error('Error reading preferences for auto-paste', e)
-    }
-
-    // ✅ If auto-paste is disabled, just inform user politely with system notification
-    if (!enableAutoPaste) {
-      log.info('Auto-paste disabled. Content is in clipboard. Press Ctrl+V to paste.')
-      try {
-        new Notification({ 
-          title: 'Copyfy', 
-          body: 'Contenido copiado al portapapeles. Presiona Ctrl+V para pegar.',
-          silent: false
-        }).show()
-      } catch (e) {
-        log.error('Error showing paste notification', e)
-      }
-      return
-    }
-
-    // ✅ Auto-paste is enabled - attempt it as fallback
-    setTimeout(async () => {
-      const isWayland = !!(process.env.XDG_SESSION_TYPE === 'wayland' || process.env.WAYLAND_DISPLAY)
-      const has = name => {
-        try {
-          const r = spawnSync(process.platform === 'win32' ? 'where' : 'which', [name], { stdio: 'ignore' })
-          return r && r.status === 0
-        } catch {
-          return false
-        }
-      }
-      const tasks = []
-      const text = clipboard.readText()
-      
-      // Priority order: wtype (Wayland) > xdotool (X11) > ydotool (last resort, Wayland only)
-      if (isWayland && has('wtype')) {
-        tasks.push(() => new Promise(resolve => {
-          exec('wtype -M ctrl -k v -m ctrl', err => {
-            if (err) return resolve({ ok: false, err })
-            resolve({ ok: true })
-          })
-        }))
-      }
-      if (has('xdotool')) {
-        tasks.push(() => new Promise(resolve => {
-          exec('xdotool key ctrl+v', err => {
-            if (err) return resolve({ ok: false, err })
-            resolve({ ok: true })
-          })
-        }))
-      }
-      if (isWayland && has('ydotool') && typeof text === 'string' && text.trim() !== '') {
-        tasks.push(() => new Promise(resolve => {
-          // os.tmpdir() es multiplataforma y devuelve la ruta correcta en todas las plataformas
-          const tmp = path.join(os.tmpdir(), `copyfy_text_${Date.now()}_${Math.random().toString(36).substr(2, 9)}.txt`)
-          try {
-            fs.writeFileSync(tmp, text, 'utf-8')
-          } catch (e) {
-            return resolve({ ok: false, err: e })
-          }
-          // Escapar la ruta correctamente para evitar problemas con espacios o caracteres especiales
-          // En Linux, usar comillas simples y normalizar separadores de ruta
-          const normalizedTmp = tmp.replace(/\\/g, '/')
-          exec(`ydotool type --file '${normalizedTmp.replace(/'/g, "'\"'\"'")}'`, err => {
-            try { fs.rmSync(tmp, { force: true }) } catch {}
-            if (err) return resolve({ ok: false, err })
-            resolve({ ok: true })
-          })
-        }))
-      }
-      if (has('xdotool') && typeof text === 'string' && text.trim() !== '') {
-        tasks.push(() => new Promise(resolve => {
-          // os.tmpdir() es multiplataforma (funciona en Windows, Linux, macOS)
-          const tmp = path.join(os.tmpdir(), `copyfy_text_${Date.now()}_${Math.random().toString(36).substr(2, 9)}.txt`)
-          try {
-            fs.writeFileSync(tmp, text, 'utf-8')
-          } catch (e) {
-            return resolve({ ok: false, err: e })
-          }
-          // Escapar la ruta correctamente para evitar problemas con espacios o caracteres especiales
-          // Normalizar separadores para Linux (usar /)
-          const normalizedTmp = tmp.replace(/\\/g, '/')
-          exec(`xdotool type --clearmodifiers --delay 1 --file '${normalizedTmp.replace(/'/g, "'\"'\"'")}'`, err => {
-            try { fs.rmSync(tmp, { force: true }) } catch {}
-            if (err) return resolve({ ok: false, err })
-            resolve({ ok: true })
-          })
-        }))
-      }
-      
-      // ✅ Try auto-paste if tools are available
-      let done = false
-      for (const t of tasks) {
-        const res = await t()
-        if (res && res.ok) {
-          log.info('Pegado/typing automático en Linux')
-          done = true
-          break
-        }
-      }
-      
-      // ✅ If auto-paste failed or no tools available, inform user politely with system notification
-      if (!done) {
-        log.info('Auto-paste not available. Content is in clipboard. Press Ctrl+V to paste.')
-        try {
-          new Notification({ 
-            title: 'Copyfy', 
-            body: 'Contenido copiado al portapapeles. Presiona Ctrl+V para pegar.',
-            silent: false
-          }).show()
-        } catch (e) {
-          log.error('Error showing paste notification', e)
-        }
-      }
-    }, 300)
-  } else {
-    log.warn('Plataforma no compatible')
-}
-}
-//Pegado de imagen
-function performPasteImage (mainWindow) {
-  const platform = process.platform
-  const isDev = !app.isPackaged
-
-  // ✅ Ocultar ventana para devolver foco a la anterior app
-  if (mainWindow && mainWindow.hide) mainWindow.hide()
-
-  log.info('Plataforma', { platform })
-  log.info('Entorno', { env: isDev ? 'desarrollo' : 'producción' })
-
-  if (platform === 'win32') {
-    // Rutas de ejecutables compatibles con desarrollo y producción en Windows
-    let exePath
-    if (isDev) {
-      exePath = path.join(__dirname, 'helpers', 'paste-image.exe')
-    } else {
-      // En producción, intentar múltiples ubicaciones posibles
-      const possiblePaths = [
-        path.join(process.resourcesPath, 'app.asar.unpacked', 'helpers', 'paste-image.exe'),
-        path.join(process.resourcesPath, 'helpers', 'paste-image.exe'),
-        path.join(path.dirname(process.execPath), 'resources', 'app.asar.unpacked', 'helpers', 'paste-image.exe'),
-        path.join(path.dirname(process.execPath), 'helpers', 'paste-image.exe')
-      ]
-      
-      exePath = possiblePaths.find(p => fs.existsSync(p)) || possiblePaths[0]
-    }
-
-    if (!fs.existsSync(exePath)) {
-      log.error('paste-image.exe no encontrado en:', exePath)
-      return
-    }
-
-    log.info('Ejecutando', { exePath })
-    execFile(exePath, err => {
-      if (err) {
-        log.error('Error al ejecutar paste-image.exe', err)
-      } else {
-        log.info('paste-image.exe ejecutado correctamente')
-      }
-    })
-  } else if (platform === 'darwin') {
-    // macOS: comando AppleScript (Ctrl+V para imágenes también)
-    setTimeout(() => {
-      exec(
-        `osascript -e 'tell application "System Events" to keystroke "v" using command down'`,
-        err => {
-          if (err) log.error('Error ejecutando osascript (imagen)', err)
-          else log.info('Imagen pegada en macOS')
-        }
-      )
-    }, 300)
-  } else if (platform === 'linux') {
-    // ✅ Always ensure clipboard is written first (already done by copy handlers)
-    // ✅ Check if auto-paste is enabled in preferences
-    let enableAutoPaste = false
-    try {
-      const prefsStr = db.getConfig('preferences')
-      const prefs = prefsStr ? JSON.parse(prefsStr) : {}
-      enableAutoPaste = prefs.enableAutoPaste === true
-    } catch (e) {
-      log.error('Error reading preferences for auto-paste', e)
-    }
-
-    // ✅ If auto-paste is disabled, just inform user politely with system notification
-    if (!enableAutoPaste) {
-      log.info('Auto-paste disabled. Image is in clipboard. Press Ctrl+V to paste.')
-      try {
-        new Notification({ 
-          title: 'Copyfy', 
-          body: 'Imagen copiada al portapapeles. Presiona Ctrl+V para pegar.',
-          silent: false
-        }).show()
-      } catch (e) {
-        log.error('Error showing paste notification', e)
-      }
-      return
-    }
-
-    // ✅ Auto-paste is enabled - attempt it as fallback
-    setTimeout(() => {
-      const isWayland = !!(process.env.XDG_SESSION_TYPE === 'wayland' || process.env.WAYLAND_DISPLAY)
-      const has = name => {
-        try {
-          const r = spawnSync(process.platform === 'win32' ? 'where' : 'which', [name], { stdio: 'ignore' })
-          return r && r.status === 0
-        } catch {
-          return false
-        }
-      }
-      const cmds = []
-      // Priority order: wtype (Wayland) > xdotool (X11)
-      if (isWayland && has('wtype')) cmds.push('wtype -M ctrl -k v -m ctrl')
-      if (has('xdotool')) cmds.push('xdotool key ctrl+v')
-      
-      const run = () => {
-        const cmd = cmds.shift()
-        if (!cmd) {
-          // ✅ No tools available - inform user politely with system notification
-          log.info('Auto-paste not available. Image is in clipboard. Press Ctrl+V to paste.')
-          try {
-            new Notification({ 
-              title: 'Copyfy', 
-              body: 'Imagen copiada al portapapeles. Presiona Ctrl+V para pegar.',
-              silent: false
-            }).show()
-          } catch (e) {
-            log.error('Error showing paste notification', e)
-          }
-          return
-        }
-        exec(cmd, err => {
-          if (err) {
-            if (cmds.length) return run()
-            // ✅ All tools failed - inform user politely with system notification
-            log.info('Auto-paste failed. Image is in clipboard. Press Ctrl+V to paste.')
-            try {
-              new Notification({ 
-                title: 'Copyfy', 
-                body: 'Imagen copiada al portapapeles. Presiona Ctrl+V para pegar.',
-                silent: false
-              }).show()
-            } catch (e) {
-              log.error('Error showing paste notification', e)
-            }
-          } else {
-            log.info('Imagen pegada en Linux')
-          }
-        })
-      }
-      run()
-    }, 300)
-  } else {
-    log.warn('Plataforma no compatible para pegar imagen')
-}
-}
-
-function createWindow () {
-  const display = screen.getPrimaryDisplay()
-  const screenWidth = display.workArea.width
-  const screenHeight = display.workArea.height
-  const windowWidth = 400
-  const windowHeight = screenHeight
-  const finalX = screenWidth - windowWidth
-  const startX = screenWidth // Inicia fuera de la pantalla
-
-  mainWindow = new BrowserWindow({
-    width: windowWidth,
-    height: windowHeight,
-    x: startX,
-    y: 0,
-    frame: false,
-    transparent: true,
-    backgroundColor: '#00FFFFFF',
-    alwaysOnTop: true,
-    resizable: false, // ✅ importante: no redimensionable
-    icon: app.isPackaged 
-      ? path.join(app.getAppPath(), 'frontend', 'media', '64x64.png')
-      : path.join(__dirname, 'frontend', 'media', '64x64.png'),
-    show: false,
-    hasShadow: true, // ✅ sombra opcional
-    title: '',
-    webPreferences: {
-      // Ruta de preload compatible con desarrollo y producción en todas las plataformas
-      preload: app.isPackaged 
-        ? path.join(app.getAppPath(), 'preload.js')
-        : path.join(__dirname, 'preload.js'),
-      contextIsolation: true,
-      nodeIntegration: false,
-      devTools: !app.isPackaged
-    }
-  })
-
-  // Cargar interfaz: compatible con desarrollo y producción en todas las plataformas
-  if (app.isPackaged) {
-    // En producción, usar app.getAppPath() que funciona correctamente en todas las plataformas
-    const indexPath = path.join(app.getAppPath(), 'frontend', 'dist', 'index.html')
-    mainWindow.loadFile(indexPath)
-  } else {
-    // En desarrollo, usar el servidor de Vite
-    mainWindow.loadURL('http://localhost:5173')
-  }
-
-  // Enviar historial al frontend (ya cargado al inicio)
-  mainWindow.webContents.on('did-finish-load', () => {
-    if (mainWindow?.webContents) {
-      mainWindow.webContents.send('clipboard-update', augmentHistoryWithImagePaths(history))
-    }
-  })
-
-  // Mostrar sin animación manual para evitar bloqueos
-  mainWindow.once('ready-to-show', () => {
-    mainWindow.setTitle('')
-    mainWindow.setBounds({
-      x: finalX,
-      y: 0,
-      width: windowWidth,
-      height: windowHeight
-    })
-    
-    // Comprobar si debe iniciar minimizada
-    try {
-      const prefsStr = db.getConfig('preferences')
-      const prefs = prefsStr ? JSON.parse(prefsStr) : {}
-      if (!prefs.startMinimized) {
-        mainWindow.show()
-        // Asegurar que la ventana esté siempre encima en Linux desde el inicio
-        if (process.platform === 'linux') {
-          try {
-            mainWindow.setAlwaysOnTop(true)
-            mainWindow.moveTop()
-          } catch {}
-        }
-      }
-    } catch {
-      mainWindow.show()
-      // Asegurar que la ventana esté siempre encima en Linux desde el inicio
-      if (process.platform === 'linux') {
-        try {
-          mainWindow.setAlwaysOnTop(true)
-          mainWindow.moveTop()
-        } catch {}
-      }
-    }
-    if (mainWindow && !mainWindow.isVisible()) {
-      setTimeout(() => {
-        try { mainWindow.focus() } catch {}
-        try { mainWindow.webContents.focus() } catch {}
-        try { mainWindow.webContents.send('focus-search') } catch {}
-      }, 150)
-    } else {
-      // Si inicia minimizada, aseguramos que esté oculta pero lista
-      mainWindow.hide() 
-    }
-    
-  })
-
-  // Evitar cierre completo
-  mainWindow.on('close', event => {
-    if (!isQuitting) {
-      event.preventDefault()
-      mainWindow.hide()
-      try { childWindows.forEach(w => { try { w.close() } catch {} }) } catch {}
-    }
-  })
-
-  mainWindow.on('minimize', event => {
-    event.preventDefault()
-    mainWindow.hide()
-  })
-
-  // Optimización de memoria: liberar RAM cuando la ventana se oculta
-  mainWindow.on('hide', () => {
-    try {
-      // Habilitar throttling de fondo para reducir uso de CPU/RAM
-      mainWindow.webContents.setBackgroundThrottling(true)
-      // Limpiar cachés del navegador para liberar memoria
-      mainWindow.webContents.session.clearCache().catch(() => {})
-      // Limpiar almacenamiento en memoria del navegador
-      mainWindow.webContents.session.clearStorageData({
-        storages: ['cache', 'cookies', 'filesystem']
-      }).catch(() => {})
-      // Notificar al frontend que la ventana está oculta
-      mainWindow.webContents.send('window-visibility-changed', { visible: false })
-    } catch (err) {
-      log.error('Error en optimización de memoria al ocultar:', err)
-    }
-  })
-
-  mainWindow.on('show', () => {
-    try {
-      // Deshabilitar throttling cuando la ventana es visible
-      mainWindow.webContents.setBackgroundThrottling(false)
-      // Notificar al frontend que la ventana está visible
-      mainWindow.webContents.send('window-visibility-changed', { visible: true })
-    } catch (err) {
-      log.error('Error al mostrar ventana:', err)
-    }
-    // Asegurar que la ventana esté siempre encima, especialmente en Linux
-    if (process.platform === 'linux') {
-      try {
-        mainWindow.setAlwaysOnTop(true)
-        mainWindow.moveTop()
-      } catch {}
-    }
-    setTimeout(() => {
-      try { mainWindow.focus() } catch {}
-      try { mainWindow.webContents.focus() } catch {}
-      try { mainWindow.webContents.send('focus-search') } catch {}
-    }, 120)
-  })
-}
-
-// Variables de estado del portapapeles (fuera de app.whenReady para accesibilidad global)
-let lastImageDataUrl = ''
-let lastText = ''
-let lastFilesKey = ''
-
-// Función para reinicializar el estado de los archivos del portapapeles
-// Se llama al iniciar la app, al iniciar sesión, y cuando se reactiva la app
-function resetClipboardFilesState () {
-  lastFilesKey = getCurrentClipboardFilesKey()
-}
-
-app.whenReady().then(async () => {
-  protocol.registerFileProtocol('local-image', (request, callback) => {
-    const url = request.url.replace('local-image://', '')
-    try {
-      return callback(decodeURIComponent(url))
-    } catch (error) {
-      // Failed to register protocol
-    }
-  })
-
-  try { require('./autolaunch').configureAutoLaunch() } catch (e) { log.error('Autolaunch setup failed', e) }
-  await db.init(app)
-  
-  createWindow()
-
-  // Inicializar Worker
-  // Usamos el worker empaquetado (bundled) tanto en dev como en prod para consistencia
-  const workerPath = app.isPackaged
-    ? path.join(process.resourcesPath, 'app.asar.unpacked', 'workers', 'dist', 'worker.js')
-    : path.join(__dirname, 'workers', 'dist', 'worker.js')
-
-  // Verificar que el worker exista en desarrollo
-  if (!app.isPackaged && !fs.existsSync(workerPath)) {
-    log.error('Worker no encontrado en desarrollo. Ejecuta: npm run build:worker')
-    log.error('Ruta esperada:', workerPath)
-  }
-
-  try {
-    // Establecer APP_RESOURCES_PATH para el worker en producción (Linux/macOS/Windows)
-    const workerEnv = { ...process.env }
-    if (app.isPackaged && process.resourcesPath) {
-      workerEnv.APP_RESOURCES_PATH = process.resourcesPath
-    }
-
-    worker = fork(workerPath, [], {
-      stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
-      env: workerEnv
-    })
-    
-    if (worker.stdout) {
-      worker.stdout.on('data', (data) => log.info(`[Worker]: ${data.toString().trim()}`))
-    }
-    if (worker.stderr) {
-      worker.stderr.on('data', (data) => log.error(`[Worker Error]: ${data.toString().trim()}`))
-    }
-    
-    worker.on('error', (err) => log.error('Worker error:', err))
-    worker.on('exit', (code) => {
-      if (!isQuitting) log.info(`Worker exited with code ${code}`)
-    })
-
-    worker.send({ type: 'init', path: app.getPath('userData') })
-  } catch (e) {
-    log.error('Failed to start worker:', e)
-  }
-  
-  // Promesas pendientes para operaciones del worker
-  const pendingWorkerOps = new Map()
-  let workerOpId = 0
-
-  worker.on('message', (msg) => {
-    if (msg.type === 'migration-done') {
-      try {
-        const updates = msg.results.map(r => ({ id: r.id, path: `[LOCAL_IMAGE]:${r.path}` }))
-        if (updates.length > 0) {
-           log.info(`Worker: Migración completada. ${updates.length} imágenes.`)
-           db.updateImagesBulk(updates)
-           const deviceName = getCurrentDeviceName()
-           history = db.getAll(deviceName)
-           if (mainWindow?.webContents) {
-             mainWindow.webContents.send('clipboard-update', augmentHistoryWithImagePaths(history))
-           }
-        }
-      } catch (e) {
-        log.error('Error al procesar migration-done del worker:', e)
-      }
-    } else if (msg.type === 'sync-done') {
-      const { syncedIds, conflicts, newItems } = msg
-      try {
-          if (syncedIds && syncedIds.length > 0) {
-             const clientIds = syncedIds.map(s => s.clientId).filter(Boolean)
-             if (clientIds.length > 0) db.markSynced(getCurrentDeviceName(), clientIds)
-             
-             for (const s of syncedIds) {
-                if (s.id && s.clientId) {
-                   db.updateRemoteId(getCurrentDeviceName(), s.clientId, s.id)
-                }
-             }
-          }
-          
-          if (conflicts && conflicts.length > 0) {
-             for (const c of conflicts) {
-                db.updateFromConflict(getCurrentDeviceName(), c)
-             }
-          }
-          
-          if (newItems && newItems.length > 0) {
-             const backendItems = newItems.map(it => ({
-                id: it.id,
-                value: it.value,
-                favorite: it.favorite,
-                updatedAt: it.updatedAt
-             }))
-             db.importItems(getCurrentDeviceName(), backendItems)
-             
-             // Delete not in remote
-             const remoteValues = backendItems.map(it => it.value)
-             db.deleteNotInRemote(getCurrentDeviceName(), remoteValues)
-          }
-          
-          history = db.getAll(getCurrentDeviceName())
-          if (mainWindow?.webContents) {
-            mainWindow.webContents.send('clipboard-update', augmentHistoryWithImagePaths(history))
-            mainWindow.webContents.send('sync-progress', { percentage: 100, message: 'Completado' })
-          }
-          log.info('Worker Sync completed')
-      } catch (e) {
-         log.error('Error processing sync-done:', e)
-      } finally {
-         syncLock = false
-      }
-    } else if (msg.type === 'register-device-done') {
-      const { opId, deviceId, error } = msg
-      const pending = pendingWorkerOps.get(opId)
-      if (pending) {
-        pendingWorkerOps.delete(opId)
-        if (error) {
-          pending.reject(new Error(error))
-        } else {
-          pending.resolve(deviceId)
-        }
-      }
-    } else if (msg.type === 'refresh-token-done') {
-      const { opId, token, refreshToken, error } = msg
-      const pending = pendingWorkerOps.get(opId)
-      if (pending) {
-        pendingWorkerOps.delete(opId)
-        if (error) {
-          pending.reject(new Error(error))
-        } else {
-          pending.resolve({ token, refreshToken })
-        }
-      }
-    }
-  })
-
-  // Migración de imágenes Base64 a archivos (via Worker)
-  setTimeout(() => {
-    try {
-       const deviceName = getCurrentDeviceName()
-       const legacy = db.getLegacyImages(deviceName)
-       if (legacy.length > 0) {
-          log.info(`Enviando ${legacy.length} imágenes al worker para migración...`)
-          worker.send({ type: 'migrate-images', items: legacy })
-       }
-    } catch (e) {
-       log.error('Error iniciando migración en worker:', e)
-    }
-  }, 5000)
-  // Ruta del icono: compatible con desarrollo y producción en todas las plataformas
-  // En empaquetado, usar app.getAppPath() que funciona correctamente en todas las plataformas
-  const iconPath = app.isPackaged
-    ? path.join(app.getAppPath(), 'frontend', 'media', '64x64.png')
-    : path.join(__dirname, 'frontend', 'media', '64x64.png')
-  
-  // Verificar que el icono existe, usar fallback si no
-  let image
-  try {
-    if (fs.existsSync(iconPath)) {
-      image = nativeImage.createFromPath(iconPath)
-      if (image && image.isEmpty()) {
-        throw new Error('Icono vacío')
-      }
-    } else {
-      // Fallback: intentar desde __dirname (puede funcionar en desarrollo)
-      const fallbackPath = path.join(__dirname, 'frontend', 'media', '64x64.png')
-      if (fs.existsSync(fallbackPath)) {
-        image = nativeImage.createFromPath(fallbackPath)
-      } else {
-        image = nativeImage.createEmpty()
-      }
-    }
-  } catch (e) {
-    log.error('Error cargando icono:', e?.message || e)
-    // Último fallback: icono vacío (Electron usará el icono por defecto)
-    image = nativeImage.createEmpty()
-  }
-  tray = new Tray(image)
-  tray.setToolTip('Copyfy++')
-  const menu = Menu.buildFromTemplate([
-    { label: 'Abrir', click: () => { if (mainWindow) { mainWindow.show(); mainWindow.focus() } } },
-    { label: 'Ver tutorial', click: () => { 
-      if (mainWindow?.webContents) { 
-        mainWindow.show(); 
-        mainWindow.focus(); 
-        try { mainWindow.webContents.send('open-tutorial') } catch {} 
-      } 
-    } },
-    { type: 'separator' },
-    { label: 'Salir', click: () => { isQuitting = true; app.quit() } }
-  ])
-  tray.setContextMenu(menu)
-  tray.on('click', () => {
-    if (!mainWindow) return
-    if (mainWindow.isVisible()) {
-      mainWindow.hide()
-    } else {
-      mainWindow.show()
-      setTimeout(() => {
-        try { mainWindow.focus() } catch {}
-        try { mainWindow.webContents.focus() } catch {}
-        try { mainWindow.webContents.send('focus-search') } catch {}
-      }, 120)
-    }
-  })
-  if (process.platform === 'darwin' && app.dock && app.dock.hide) {
-    app.dock.hide()
-  }
-  autoUpdater.forceDevUpdateConfig = true
-  
-  // Cargar historial una sola vez al inicio (optimización)
-  try {
-    history = authToken ? db.getAll(getCurrentDeviceName()) : db.getAllGuest(getCurrentDeviceName())
-  } catch (err) {
-    log.error('Error al leer historial (device)', err)
-    history = []
-  }
-  
-  // Migración legacy asíncrona (no bloquea el inicio)
-  if (fs.existsSync(legacyHistoryPath)) {
-    Promise.resolve().then(async () => {
-      try {
-        const data = fs.readFileSync(legacyHistoryPath, 'utf-8')
-        const parsed = JSON.parse(data)
-        const items = normalizeHistory(parsed)
-        db.importItems(getCurrentDeviceName(), items)
-        history = authToken ? db.getAll(getCurrentDeviceName()) : db.getAllGuest(getCurrentDeviceName())
-        log.info('Historial migrado desde legacy')
-        if (mainWindow?.webContents) {
-          mainWindow.webContents.send('clipboard-update', augmentHistoryWithImagePaths(history))
-        }
-      } catch (e) {
-        log.error('Error en migración legacy', e)
-      }
-    }).catch(() => {})
-  }
-  
-  // Diferir enforceHistoryLimit/enforceGuestLimit (no crítico para el inicio)
-  Promise.resolve().then(async () => {
-    try {
-      if (authToken) {
-        await Promise.resolve(enforceHistoryLimit(1000)).catch(() => {})
-      } else {
-        enforceGuestLimit(1000)
-      }
-    } catch {}
-  }).catch(() => {})
-
-  const pollClipboard = () => {
-    // Enviar historial ya cargado al renderer (ya fue cargado al inicio)
-    if (mainWindow?.webContents) {
-      mainWindow.webContents.send('clipboard-update', augmentHistoryWithImagePaths(history))
-    }
-
-    // Inicializar lastFilesKey con el estado actual del portapapeles
-    // Esto previene que archivos copiados antes de abrir la app/iniciar sesión/desbloquear se procesen
-    resetClipboardFilesState()
-
-    setInterval(() => {
-      try {
-        // Solo detectar archivos si el usuario está autenticado
-        if (!authToken) {
-          // Si no hay autenticación, resetear lastFilesKey para evitar detecciones previas
-          if (lastFilesKey !== '') {
-            lastFilesKey = ''
-          }
-          // Continuar con el resto del polling (texto e imágenes)
-        } else {
-          // Usuario autenticado - procesar archivos del portapapeles
-          const rawUris = readClipboardFileUris()
-          const uniqueFileMap = new Map()
-
-          if (rawUris && rawUris.length > 0) {
-            for (const uri of rawUris) {
-              const p = uriToPath(uri)
-              if (p && fs.existsSync(p)) {
-                try {
-                  const stat = fs.statSync(p)
-                  // Solo procesar archivos de texto
-                  if (stat.isFile() && isTextFile(p)) {
-                    // Clave única basada en inodo para detectar duplicados (e.g. 8.3 vs nombre largo)
-                    // Usar inodo + device si están disponibles, sino usar ruta normalizada
-                    const key = (stat.ino && stat.dev) ? `${stat.dev}-${stat.ino}` : path.resolve(p).toLowerCase()
-                    const existing = uniqueFileMap.get(key)
-                    
-                    if (!existing) {
-                      uniqueFileMap.set(key, p)
-                    } else {
-                      // Heurística para elegir el "mejor" nombre de archivo (preferir nombre largo sobre 8.3)
-                      const score = (pathStr) => {
-                         let s = 0
-                         // Penalizar nombre corto 8.3 (contiene ~ y digito)
-                         if (/~\d+(\.|$)/i.test(pathStr)) s -= 10
-                         // Penalizar todo mayúsculas si el otro tiene minúsculas
-                         if (pathStr === pathStr.toUpperCase() && /[a-z]/.test(pathStr.toLowerCase())) s -= 2
-                         // Preferir longitud mayor como desempate
-                         return s + (pathStr.length * 0.01)
-                      }
-                      if (score(p) > score(existing)) {
-                        uniqueFileMap.set(key, p)
-                      }
-                    }
-                  }
-                } catch (e) {
-                  // Silenciar errores menores durante polling normal
-                }
-              }
-            }
-          }
-
-          if (uniqueFileMap.size > 0) {
-            const sortedPaths = Array.from(uniqueFileMap.values()).sort()
-            // Normalizar las rutas para la comparación (resolver paths relativos y absolutos)
-            const normalizedPaths = sortedPaths.map(p => path.resolve(p)).sort()
-            const currentFilesKey = normalizedPaths.join('|')
-            
-            if (currentFilesKey !== lastFilesKey) {
-              // Solo loggear cuando haya un cambio real en los archivos
-              log.info(`Archivos de texto detectados: ${sortedPaths.length} archivo(s)`, sortedPaths.map(p => path.basename(p)))
-              lastFilesKey = currentFilesKey
-              // Upload files - pasar todos los archivos de texto juntos
-              askForUpload(sortedPaths)
-            }
-          } else {
-            // Solo resetear lastFilesKey si realmente cambió (no hay archivos)
-            if (lastFilesKey !== '') {
-              lastFilesKey = ''
-            }
-          }
-        }
-      } catch {}
-
-      try {
-        const currentImage = clipboard.readImage()
-        if (currentImage.isEmpty()) {
-          const imgPath = getImagePathFromClipboard()
-          if (imgPath) {
-            const ni = nativeImage.createFromPath(imgPath)
-            if (!ni.isEmpty()) {
-              clipboard.writeImage(ni)
-              try { saveClipboardImagePNG(ni) } catch {}
-              const dataUrl = ni.toDataURL()
-              if (
-                typeof dataUrl === 'string' &&
-                dataUrl.startsWith('data:image') &&
-                dataUrl.trim().length > 30 &&
-                dataUrl !== lastImageDataUrl
-              ) {
-                lastImageDataUrl = dataUrl
-                
-                let savedPath = null
-                try { savedPath = saveClipboardImagePNG(ni) } catch {}
-                const dbValue = savedPath ? `[LOCAL_IMAGE]:${savedPath}` : dataUrl
-
-                if (authToken) {
-                  db.insert(getCurrentDeviceName(), dbValue)
-                  Promise.resolve(enforceHistoryLimit(1000)).catch(() => {})
-                  history = db.getAll(getCurrentDeviceName())
-                  saveClipboardRecord('image', dataUrl, { format: 'dataURL' })
-                    .then(rid => { if(rid) db.updateRemoteIdByValue(getCurrentDeviceName(), dbValue, rid) })
-                    .catch(err => log.error('Immediate save error (image path)', err))
-                } else {
-                  db.insertGuest(getCurrentDeviceName(), dbValue)
-                  enforceGuestLimit(1000)
-                  history = db.getAllGuest(getCurrentDeviceName())
-                }
-                if (mainWindow?.webContents) {
-                  mainWindow.webContents.send('clipboard-update', augmentHistoryWithImagePaths(history))
-                }
-              }
-            }
-          }
-        }
-      } catch {}
-      const image = readClipboardImageSmart()
-      if (image.isEmpty() && process.platform === 'linux') {
-        const selImg = clipboard.readImage('selection')
-        if (!selImg.isEmpty()) {
-          const dataUrl = selImg.toDataURL()
-          if (typeof dataUrl === 'string' && dataUrl.startsWith('data:image') && dataUrl.trim().length > 30) {
-            try { saveClipboardImagePNG(selImg) } catch {}
-            lastImageDataUrl = dataUrl
-            if (authToken) {
-              db.insert(getCurrentDeviceName(), dataUrl)
-              Promise.resolve(enforceHistoryLimit(1000)).catch(() => {})
-              history = db.getAll(getCurrentDeviceName())
-              saveClipboardRecord('image', dataUrl, { format: 'dataURL' })
-                .then(rid => { if(rid) db.updateRemoteIdByValue(getCurrentDeviceName(), dataUrl, rid) })
-                .catch(err => log.error('Immediate save error (linux sel)', err))
-            } else {
-              db.insertGuest(getCurrentDeviceName(), dataUrl)
-              enforceGuestLimit(1000)
-              history = db.getAllGuest(getCurrentDeviceName())
-            }
-            if (mainWindow?.webContents) {
-              mainWindow.webContents.send('clipboard-update', augmentHistoryWithImagePaths(history))
-            }
-            return
-          }
-        }
-      }
-      const text = clipboard.readText()
-
-      // --- Si hay nueva imagen ---
-      if (!image.isEmpty()) {
-        const dataUrl = image.toDataURL()
-
-        // Protección contra datos vacíos o inválidos
-        if (
-          typeof dataUrl !== 'string' ||
-          !dataUrl.startsWith('data:image') ||
-          dataUrl === 'data:image/png;base64,' || // imagen vacía común
-          dataUrl.trim().length < 30 || // corta, posiblemente vacía
-          dataUrl === lastImageDataUrl // repetida
-        ) {
-          return
-        }
-
-        if (authToken) {
-          lastImageDataUrl = dataUrl
-          
-          const tempDir = path.join(app.getPath('userData'), 'temp-screenshots')
-          try {
-             if (!fs.existsSync(tempDir)) fs.mkdirSync(tempDir, { recursive: true })
-             const fileName = `screenshot-${Date.now()}.png`
-             const tempPath = path.join(tempDir, fileName)
-             fs.writeFileSync(tempPath, image.toPNG())
-             createScreenshotNotificationWindow(tempPath, dataUrl)
-          } catch(e) {
-             log.error('Failed to handle screenshot', e)
-          }
-          return
-        }
-
-        // Guest logic (Optimized RAM but no confirmation)
-        lastImageDataUrl = dataUrl
-        let savedPath = null
-        try {
-          savedPath = saveClipboardImagePNG(image)
-          if (savedPath) { try { log.info('Imagen guardada', { savedPath }) } catch {} }
-        } catch {}
-
-        const dbValue = savedPath ? `[LOCAL_IMAGE]:${savedPath}` : dataUrl
-
-        db.insertGuest(getCurrentDeviceName(), dbValue)
-        enforceGuestLimit(1000)
-        history = db.getAllGuest(getCurrentDeviceName())
-        
-        mainWindow.webContents.send('clipboard-update', augmentHistoryWithImagePaths(history))
-        return
-      }
-
-      // --- Si hay nuevo texto ---
-      if (
-        typeof text === 'string' &&
-        text.trim() !== '' &&
-        text !== lastText
-      ) {
-        lastText = text
-        if (authToken) {
-          db.insert(getCurrentDeviceName(), text)
-          Promise.resolve(enforceHistoryLimit(1000)).catch(() => {})
-          history = db.getAll(getCurrentDeviceName())
-          saveClipboardRecord('text', text).catch(err => log.error('Immediate save error (text)', err))
-        } else {
-          db.insertGuest(getCurrentDeviceName(), text)
-          enforceGuestLimit(1000)
-          history = db.getAllGuest(getCurrentDeviceName())
-        }
-        mainWindow.webContents.send('clipboard-update', augmentHistoryWithImagePaths(history))
-      }
-    }, 1000)
-  }
-
-  pollClipboard()
-  // startClipboardImagePolling(1000) // Removed as undefined
-  // Solo buscar actualizaciones en Windows
-  if (app.isPackaged && process.platform === 'win32') {
-    try { mainWindow.webContents.send('update-status', 'Comprobando actualizaciones al iniciar...') } catch {}
-    setTimeout(() => {
-      try {
-        Promise.resolve(autoUpdater.checkForUpdates()).catch(err => {
-          try { log.error('checkForUpdates startup error', err?.message || err) } catch {}
-        })
-      } catch (e) {
-        try { log.error('autoUpdater startup error', e?.message || e) } catch {}
-      }
-    }, 3000)
-  } else if (!app.isPackaged) {
-    try { mainWindow.webContents.send('update-status', 'Entorno de desarrollo: se omite la comprobación automática.') } catch {}
-  }
-
-  const toggleShow = () => {
-    log.info('Shortcut toggleShow triggered')
-    if (!mainWindow) {
-      createWindow()
-    }
-    
-    // Si la ventana está visible y NO está minimizada, la ocultamos
-    if (mainWindow.isVisible() && !mainWindow.isMinimized()) {
-      mainWindow.hide()
-      return
-    }
-
-    // Si está oculta o minimizada, la mostramos
-    const display = screen.getPrimaryDisplay()
-    const screenWidth = display.workArea.width
-    const screenHeight = display.workArea.height
-    const windowWidth = 400
-    const windowHeight = screenHeight
-    const x = screenWidth - windowWidth
-    const y = 0
-    mainWindow.setBounds({ x, y, width: windowWidth, height: windowHeight })
-    
-    if (mainWindow.isMinimized()) mainWindow.restore()
-    mainWindow.show()
-    
-    setTimeout(() => {
-      try { mainWindow.focus() } catch {}
-      try { mainWindow.webContents.focus() } catch {}
-      try { mainWindow.webContents.send('focus-search') } catch {}
-    }, 120)
-  }
-
-  const updateGlobalShortcuts = () => {
-    try { globalShortcut.unregisterAll() } catch {}
-
-    try {
-      const prefsStr = db.getConfig('preferences')
-      const prefs = prefsStr ? JSON.parse(prefsStr) : {}
-      let modifier = prefs.shortcutModifier
-      let key = prefs.shortcutKey
-
-      // Default defaults
-      if (!modifier) modifier = process.platform === 'darwin' ? 'Command+Option' : 'Alt'
-      if (!key) key = 'X'
-
-      const accelerator = `${modifier}+${key}`
-      try {
-        // En Linux, especialmente en Wayland, puede haber problemas con atajos globales
-        // Intentar registrar el atajo
-        const ret = globalShortcut.register(accelerator, toggleShow)
-        if (ret) {
-          log.info(`Shortcut registrado exitosamente: ${accelerator}`, {
-            platform: process.platform,
-            isPackaged: app.isPackaged,
-            sessionType: process.env.XDG_SESSION_TYPE,
-            wayland: !!process.env.WAYLAND_DISPLAY
-          })
-        } else {
-          log.warn(`Fallo al registrar shortcut: ${accelerator}. Intentando fallback...`, {
-            platform: process.platform,
-            isPackaged: app.isPackaged,
-            sessionType: process.env.XDG_SESSION_TYPE
-          })
-          // Fallback safe defaults if custom fails
-          const fallbackAccelerator = process.platform === 'darwin' ? 'Command+Option+X' : 'Alt+X'
-          const fallbackRet = globalShortcut.register(fallbackAccelerator, toggleShow)
-          if (fallbackRet) {
-            log.info(`Shortcut fallback registrado: ${fallbackAccelerator}`)
-          } else {
-            log.error(`Fallo al registrar shortcut fallback: ${fallbackAccelerator}`)
-            // En Linux, si falla, puede ser un problema de permisos o Wayland
-            if (process.platform === 'linux') {
-              log.error('ATENCIÓN: Los atajos globales pueden no funcionar en Wayland sin configuración adicional.')
-              log.error('Solución: Usa X11 o configura permisos para atajos globales en Wayland.')
-            }
-          }
-        }
-      } catch (e) {
-        log.error('Error registrando shortcut', e)
-        if (process.platform === 'linux') {
-          log.error('En Linux, los atajos globales pueden requerir permisos especiales o usar X11 en lugar de Wayland.')
-        }
-      }
-    } catch (e) {
-      log.error('Error reading preferences for shortcuts', e)
-    }
-  }
-
-  // Registrar atajos después de que la ventana esté completamente lista
-  // Esto es especialmente importante en Linux compilado donde los atajos pueden fallar
-  // si se registran demasiado pronto
-  if (mainWindow) {
     mainWindow.once('ready-to-show', () => {
-      // Esperar un poco más para asegurar que la app esté completamente inicializada
-      setTimeout(() => {
-        updateGlobalShortcuts()
-      }, 1500)
-    })
-  } else {
-    // Si mainWindow aún no existe, esperar un poco y registrar
-    setTimeout(() => {
-      updateGlobalShortcuts()
-    }, 3000)
-  }
-  
-  app.on('update-shortcuts', updateGlobalShortcuts)
-
-  // Quick switcher desactivado
-
-  // Quick switcher desactivado
-
-  // NO cargar sesión en el proceso principal al inicio
-  // El frontend (React) se encargará de cargar la sesión y refrescar el token
-  // Una vez que el frontend establezca el token vía 'set-auth-token', 
-  // entonces se ejecutarán las funciones que requieren autenticación (incluyendo syncClipboardHistory)
-
-  // Iniciar sincronización periódica (se ejecutará solo si hay authToken)
-  setInterval(() => {
-    if (authToken) {
-      syncClipboardHistory()
-    }
-  }, 15 * 60 * 1000)
-
-  // NO ejecutar syncClipboardHistory() inmediatamente aquí
-  // Esperar a que el frontend establezca el token vía 'set-auth-token'
-  // El handler 'set-auth-token' ya llama a syncClipboardHistory() cuando se establece el token
-})
-
-app.on('window-all-closed', () => {
-})
-
-app.on('before-quit', () => {
-  isQuitting = true
-  if (worker) {
-    try { worker.kill() } catch (e) { }
-    worker = null
-  }
-  try { childWindows.forEach(w => { try { w.destroy() } catch {} }) } catch {}
-})
-
-app.on('will-quit', () => {
-  try { globalShortcut.unregisterAll() } catch {}
-})
-
-// Reinicializar el estado de los archivos cuando la app se reactiva o el sistema se desbloquea
-// Esto previene que archivos copiados antes de desbloquear/reactivar se procesen
-if (powerMonitor) {
-  // Evento unlock-screen funciona en macOS y Linux
-  powerMonitor.on('unlock-screen', () => {
-    resetClipboardFilesState()
-  })
-  
-  // En Windows, usar el evento 'resume' que se dispara cuando el sistema vuelve de suspensión
-  if (process.platform === 'win32') {
-    powerMonitor.on('resume', () => {
-      resetClipboardFilesState()
-    })
-  }
+        const settings = db.getSettings();
+        mainWindow.show();
+        broadcastUpdate();
+    });
+    mainWindow.on('blur', () => {
+        // Optional: hide on blur
+    });
 }
-
-// Reinicializar cuando la ventana principal recibe foco (app se reactiva)
-// Esto ayuda especialmente en Windows cuando se desbloquea o inicia sesión
-app.on('browser-window-focus', (event, window) => {
-  if (window === mainWindow) {
-    // Pequeño delay para asegurar que el estado del sistema esté actualizado
-    setTimeout(() => {
-      resetClipboardFilesState()
-    }, 500)
-  }
-})
-
-// En Windows, también detectar cuando la app vuelve a estar activa después de estar inactiva
-if (process.platform === 'win32') {
-  app.on('activate', () => {
-    setTimeout(() => {
-      resetClipboardFilesState()
-    }, 500)
-  })
-}
-
-// Quick switcher desactivado
-
-ipcMain.on('set-search-query', (_, q) => {
-  try {
-    const s = typeof q === 'string' ? q : ''
-    if (mainWindow?.webContents) {
-      mainWindow.webContents.send('set-search-query', s)
-      try {
-        const qTrim = String(s || '').trim()
-        let items = []
-        if (qTrim.length === 0) {
-          if (!authToken) {
-            items = db.getRecentGuest(getCurrentDeviceName(), 'all', 50)
-          } else {
-            items = db.getRecent(getCurrentDeviceName(), 'all', 50)
-          }
-        } else {
-          if (!authToken) {
-            items = db.searchGuest(getCurrentDeviceName(), qTrim, 'all')
-          } else {
-            items = db.search(getCurrentDeviceName(), qTrim, 'all')
-          }
-        }
-        mainWindow.webContents.send('apply-search', { query: s, items })
-      } catch (e) {
-        try { log.error('apply-search error', e?.message || e) } catch {}
-      }
+function createOCRWindow(imagePath) {
+    if (ocrWindow) {
+        ocrWindow.focus();
+        ocrWindow.webContents.send('ocr-load-image', imagePath);
+        return;
     }
-  } catch (e) {
-    try { log.error('set-search-query main error', e?.message || e) } catch {}
-  }
-})
-
-
-
-// Evento para forzar la actualización desde el frontend
-ipcMain.on('force-update', () => {
-  log.info('🧪 Botón forzó búsqueda de actualización...')
-  if (!app.isPackaged) {
-    try { mainWindow.webContents.send('update-status', 'Solo disponible en producción.') } catch {}
-    return
-  }
-  // Solo buscar actualizaciones en Windows
-  if (process.platform !== 'win32') {
-    try { mainWindow.webContents.send('update-status', 'Las actualizaciones automáticas solo están disponibles en Windows.') } catch {}
-    return
-  }
-  Promise.resolve(autoUpdater.checkForUpdates()).catch(err => {
-    try { log.error('checkForUpdates error', err?.message || err) } catch {}
-  })
-})
-
-// Eventos para debug y actualizaciones
-autoUpdater.on('checking-for-update', () => {
-  log.info('🔍 Buscando actualizaciones...')
-  mainWindow.webContents.send('update-status', 'Buscando actualizaciones...')
-})
-
-autoUpdater.on('update-available', info => {
-  log.info('🟠 Actualización disponible:', info)
-  mainWindow.webContents.send(
-    'update-status',
-    'Actualización disponible, descargando...'
-  )
-})
-
-autoUpdater.on('update-not-available', () => {
-  log.info('✅ No hay actualizaciones.')
-  mainWindow.webContents.send('update-status', 'Ya tienes la última versión.')
-})
-
-autoUpdater.on('error', err => {
-  log.error('❌ Error en autoUpdater:', err)
-  mainWindow.webContents.send(
-    'update-status',
-    'Error al buscar actualizaciones.'
-  )
-})
-
-autoUpdater.on('update-downloaded', () => {
-  log.info('✅ Update descargada, reiniciando...')
-  mainWindow.webContents.send(
-    'update-status',
-    'Actualización descargada. Reiniciando...'
-  )
-  setTimeout(() => autoUpdater.quitAndInstall(), 2000)
-})
-
-ipcMain.handle('get-clipboard-history', async () => {
-  try {}
-  catch {}
-  const res = authToken ? db.getAll(getCurrentDeviceName()) : db.getAllGuest(getCurrentDeviceName())
-  return augmentHistoryWithImagePaths(res)
-})
-
-ipcMain.handle('hide-window', () => {
-  if (mainWindow) {
-    mainWindow.hide()
-  }
-  try { childWindows.forEach(w => { try { w.close() } catch {} }) } catch {}
-})
-
-ipcMain.on('copy-to-clipboard', (_, text) => {
-  const { clipboard } = require('electron')
-  clipboard.writeText(text)
-})
-//limpiar historial
-ipcMain.handle('clear-history', async () => {
-  try {
-    if (authToken) {
-      const axiosInstance = getAxiosInstance()
-      const clientId = activeDeviceName || os.hostname()
-      try {
-        log.info('Intentando DELETE backend por clientId (path param)', { url: `/clipboard/by-client/${clientId}` })
-        await axiosInstance.delete(`/clipboard/by-client/${clientId}`)
-        log.info('Historial borrado en backend (DELETE path)')
-      } catch (e) {
-        try { log.warn('DELETE path falló, probando POST /clipboard/by-client', e?.message || e) } catch {}
-        try {
-          const payload = { clientId }
-          log.info('Intentando POST backend por clientId (body)', { url: '/clipboard/by-client', payload })
-          await axiosInstance.post('/clipboard/by-client', payload, { headers: { 'Content-Type': 'application/json' } })
-          log.info('Historial borrado en backend (POST body)')
-        } catch (e2) {
-          try { log.warn('POST /clipboard/by-client falló, probando DELETE /clipboard con params', e2?.message || e2) } catch {}
-          try {
-            log.info('Intentando DELETE backend por clientId (query param)', { url: '/clipboard', params: { clientId } })
-            await axiosInstance.delete('/clipboard', { params: { clientId } })
-            log.info('Historial borrado en backend (DELETE query)')
-          } catch (e3) {
-            log.error('Error borrando historial en backend con todos los intentos', e3?.message || e3)
-          }
-        }
-      }
-    }
-    history = []
-    if (authToken) db.clear(getCurrentDeviceName())
-    else db.clearGuest(getCurrentDeviceName())
-    mainWindow.webContents.send('clipboard-update', augmentHistoryWithImagePaths(history))
-    log.info('Historial borrado')
-  } catch (err) {
-    log.error('Error al borrar historial', err)
-  }
-})
-
-// Borrar item especifico
-ipcMain.handle('delete-history-item', async (_, id) => {
-  try {
-    const item = db.getById(id)
-    log.info('Solicitud de borrado:', { id, found: !!item, hasAuth: !!authToken })
-    
-    if (authToken && item) {
-       try {
-          const axiosInstance = getAxiosInstance()
-          const clientId = activeDeviceName || os.hostname()
-          const payload = { clientId, value: item.value }
-          
-          log.info('Enviando POST al backend (by-value):', { url: '/clipboard/by-value', payload })
-          await axiosInstance.post('/clipboard/by-value', payload, {
-            headers: { 'Content-Type': 'application/json' }
-          })
-          
-          log.info('Borrado del backend exitoso')
-        } catch (e) {
-         log.error('Error borrando del backend', e?.message || e)
-       }
-    } else {
-      if (!authToken) log.info('No se borra del backend: No hay token')
-      else if (!item) log.info('No se borra del backend: Item no encontrado localmente')
-    }
-    
-    db.deleteById(id)
-    history = authToken ? db.getAll(getCurrentDeviceName()) : db.getAllGuest(getCurrentDeviceName())
-    mainWindow.webContents.send('clipboard-update', augmentHistoryWithImagePaths(history))
-    log.info('Item borrado localmente:', id)
-    return { success: true }
-  } catch (err) {
-    log.error('Error al borrar item', err)
-    return { success: false, error: err.message }
-  }
-})
-
-//copiar imagen
-ipcMain.on('copy-image', (_, dataUrl) => {
-  try {
-    let image
-    if (dataUrl && dataUrl.startsWith('[LOCAL_IMAGE]:')) {
-      const p = dataUrl.replace('[LOCAL_IMAGE]:', '')
-      if (fs.existsSync(p)) {
-        image = nativeImage.createFromPath(p)
-      }
-    } else {
-      image = nativeImage.createFromDataURL(dataUrl)
-    }
-
-    if (image && !image.isEmpty()) {
-      lastImageDataUrl = image.toDataURL() // ✅ Evitar que el watcher lo detecte como nuevo
-      clipboard.writeImage(image)
-      log.info('Imagen copiada al portapapeles (self)')
-    } else {
-      log.error('Imagen vacía o inválida al intentar copiar')
-    }
-  } catch (err) {
-    log.error('Error al copiar imagen', err)
-  }
-})
-ipcMain.on('viewer-minimize', () => {
-  const win = BrowserWindow.getFocusedWindow()
-  if (win) win.minimize()
-})
-ipcMain.on('open-image-viewer', (_, dataUrl) => {
-  try {
-    if (!authToken) return
-    const win = new BrowserWindow({
-      width: 1000,
-      height: 800,
-      resizable: true,
-      frame: false,
-      transparent: true,
-      backgroundColor: '#00FFFFFF',
-      hasShadow: true,
-      show: true,
-      parent: mainWindow,
-      webPreferences: {
-        nodeIntegration: true,
-        contextIsolation: false,
-        sandbox: false,
-        devTools: !app.isPackaged
-      }
-    })
-    try { childWindows.add(win); win.on('closed', () => { try { childWindows.delete(win) } catch {} }) } catch {}
-    const display = screen.getPrimaryDisplay()
-    const wa = display.workArea
-    const mainBounds = mainWindow?.getBounds() || { width: 400, x: wa.x + wa.width - 400, y: wa.y, height: wa.height }
-    const viewerWidth = Math.max(300, wa.width - mainBounds.width)
-    win.setBounds({ x: wa.x, y: wa.y, width: viewerWidth, height: wa.height })
-
-    let finalSrc = dataUrl
-    if (typeof dataUrl === 'string' && dataUrl.startsWith('[LOCAL_IMAGE]:')) {
-      try {
-        const p = dataUrl.replace('[LOCAL_IMAGE]:', '')
-        if (fs.existsSync(p)) {
-          const b64 = fs.readFileSync(p).toString('base64')
-          finalSrc = `data:image/png;base64,${b64}`
-        }
-      } catch (e) {
-        log.error('Error cargando imagen local para visor', e)
-      }
-    }
-
-    const html = `<!doctype html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1"/><style>body{margin:0;background:#111;display:flex;align-items:center;justify-content:center;height:100vh;color:#ddd;font-family:system-ui}#wrap{position:relative;cursor:crosshair}#img{max-width:95vw;max-height:95vh;border-radius:6px;user-select:none;cursor:crosshair}#sel{position:absolute;border:2px solid #00aaff;background:rgba(0,170,255,0.2);display:none;pointer-events:none}#panel{position:fixed;top:10px;left:10px;background:#222;border:1px solid #333;border-radius:6px;padding:8px;display:flex;gap:8px;align-items:center}button{background:#333;border:1px solid #444;color:#eee;padding:6px 10px;border-radius:4px;cursor:pointer}button:disabled{opacity:.6;cursor:not-allowed}#res{position:fixed;bottom:10px;left:10px;right:10px;background:#1a1a1a;border:1px solid #333;border-radius:6px;padding:10px;max-height:40vh;overflow:auto;white-space:pre-wrap}</style></head><body><div id="panel"><button id="ocr" disabled>OCR selección</button><button id="copy" disabled>Copiar</button><span id="status"></span></div><div id="wrap"><img id="img" src="${finalSrc}"/><div id="sel"></div></div><div id="res" style="display:none"></div><script src="https://unpkg.com/tesseract.js@v4.0.3/dist/tesseract.min.js"></script><script>const img=document.getElementById('img');const sel=document.getElementById('sel');const ocrBtn=document.getElementById('ocr');const copyBtn=document.getElementById('copy');const statusEl=document.getElementById('status');const resEl=document.getElementById('res');let start=null;let rect=null;function px(n){return Math.round(n)+'px'}function setStatus(t){statusEl.textContent=t}function resetSel(){sel.style.display='none';ocrBtn.disabled=true;copyBtn.disabled=true;resEl.style.display='none';resEl.textContent='';rect=null}function within(e){const r=img.getBoundingClientRect();return e.clientX>=r.left&&e.clientX<=r.right&&e.clientY>=r.top&&e.clientY<=r.bottom}window.addEventListener('mousedown',e=>{if(!within(e))return;const r=img.getBoundingClientRect();start={x:e.clientX,y:e.clientY};sel.style.display='block';sel.style.left=px(start.x);sel.style.top=px(start.y);sel.style.width='0px';sel.style.height='0px';setStatus('Seleccionando...')});window.addEventListener('mousemove',e=>{if(!start)return;const x=Math.min(e.clientX,start.x);const y=Math.min(e.clientY,start.y);const w=Math.abs(e.clientX-start.x);const h=Math.abs(e.clientY-start.y);sel.style.left=px(x);sel.style.top=px(y);sel.style.width=px(w);sel.style.height=px(h)});window.addEventListener('mouseup',e=>{if(!start)return;const r=img.getBoundingClientRect();const x=Math.min(e.clientX,start.x);const y=Math.min(e.clientY,start.y);const w=Math.abs(e.clientX-start.x);const h=Math.abs(e.clientY-start.y);start=null;if(w<5||h<5){resetSel();setStatus('');return}rect={x:x-r.left,y:y-r.top,w:w,h:h};ocrBtn.disabled=false;copyBtn.disabled=true;setStatus('Selección lista')});async function cropToCanvas(){const dispW=img.clientWidth;const dispH=img.clientHeight;const natW=img.naturalWidth;const natH=img.naturalHeight;const scaleX=natW/dispW;const scaleY=natH/dispH;const sx=Math.max(0,Math.round(rect.x*scaleX));const sy=Math.max(0,Math.round(rect.y*scaleY));const sw=Math.min(natW-sx,Math.round(rect.w*scaleX));const sh=Math.min(natH-sy,Math.round(rect.h*scaleY));const c=document.createElement('canvas');c.width=sw;c.height=sh;const ctx=c.getContext('2d');ctx.drawImage(img,sx,sy,sw,sh,0,0,sw,sh);return c}async function runOCR(){try{setStatus('Procesando...');const c=await cropToCanvas();const r=await Tesseract.recognize(c,'spa',{logger:m=>{}});resEl.style.display='block';resEl.textContent=r.data.text||'';copyBtn.disabled=!resEl.textContent.trim();setStatus('Listo')}catch(err){resEl.style.display='block';resEl.textContent='Error: '+(err&&err.message||'');copyBtn.disabled=true;setStatus('')}}ocrBtn.addEventListener('click',()=>{if(!rect)return;runOCR()});copyBtn.addEventListener('click',async()=>{try{await navigator.clipboard.writeText(resEl.textContent||'');setStatus('Copiado')}catch(e){setStatus('No se pudo copiar')}});img.addEventListener('load',()=>{resetSel();setStatus('')});</script></body></html>`
-    win.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html))
-    win.webContents.on('did-finish-load', () => {
-      const __no = null
-      const inj = `(()=>{const { clipboard } = require('electron');const img=document.getElementById('img');const wrap=document.getElementById('wrap');const sel=document.getElementById('sel');const statusEl=document.getElementById('status');const resEl=document.getElementById('res');let startClient=null;let startWrap=null;let rect=null;let processing=false;function px(n){return Math.round(n)+'px'}function setStatus(t){statusEl.textContent=t}function resetSel(){sel.style.display='none';resEl.style.display='none';resEl.textContent='';rect=null}function within(e){const r=img.getBoundingClientRect();return e.clientX>=r.left&&e.clientX<=r.right&&e.clientY>=r.top&&e.clientY<=r.bottom}function clampToImg(x,y){const imgR=img.getBoundingClientRect();const wrapR=wrap.getBoundingClientRect();const minX=imgR.left-wrapR.left;const minY=imgR.top-wrapR.top;const maxX=minX+img.clientWidth;const maxY=minY+img.clientHeight;return{cx:Math.max(minX,Math.min(maxX,x)),cy:Math.max(minY,Math.min(maxY,y))}}const overlay=(()=>{const o=document.createElement('div');o.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.55);display:none;align-items:center;justify-content:center;z-index:9999';const box=document.createElement('div');box.style.cssText='display:flex;flex-direction:column;align-items:center;gap:10px';const spinner=document.createElement('div');spinner.style.cssText='border:4px solid #555;border-top:4px solid #0af;border-radius:50%;width:42px;height:42px;animation:spin 1s linear infinite';const text=document.createElement('div');text.id='loadingText';text.style.cssText='color:#eee;font-family:system-ui';const style=document.createElement('style');style.textContent='@keyframes spin{to{transform:rotate(360deg)}}';document.head.appendChild(style);box.appendChild(spinner);box.appendChild(text);o.appendChild(box);document.body.appendChild(o);return{show:(t)=>{text.textContent=t;o.style.display='flex'},hide:()=>{o.style.display='none'}}})();document.addEventListener('mousedown',e=>{if(!within(e))return;const wrapR=wrap.getBoundingClientRect();startClient={x:e.clientX,y:e.clientY};const relX=e.clientX-wrapR.left;const relY=e.clientY-wrapR.top;const cl=clampToImg(relX,relY);startWrap={x:cl.cx,y:cl.cy};sel.style.display='block';sel.style.left=px(startWrap.x);sel.style.top=px(startWrap.y);sel.style.width='0px';sel.style.height='0px';setStatus('Seleccionando...');e.stopPropagation();e.preventDefault()},{capture:true});document.addEventListener('mousemove',e=>{if(!startWrap)return;const wrapR=wrap.getBoundingClientRect();const relX=e.clientX-wrapR.left;const relY=e.clientY-wrapR.top;const cl=clampToImg(relX,relY);const x=Math.min(cl.cx,startWrap.x);const y=Math.min(cl.cy,startWrap.y);const w=Math.abs(cl.cx-startWrap.x);const h=Math.abs(cl.cy-startWrap.y);sel.style.left=px(x);sel.style.top=px(y);sel.style.width=px(w);sel.style.height=px(h);e.stopPropagation();e.preventDefault()},{capture:true});async function cropToCanvas(){const dispW=img.clientWidth;const dispH=img.clientHeight;const natW=img.naturalWidth;const natH=img.naturalHeight;const scaleX=natW/dispW;const scaleY=natH/dispH;const sx=Math.max(0,Math.round(rect.x*scaleX));const sy=Math.max(0,Math.round(rect.y*scaleY));const sw=Math.min(natW-sx,Math.round(rect.w*scaleX));const sh=Math.min(natH-sy,Math.round(rect.h*scaleY));const c=document.createElement('canvas');c.width=sw;c.height=sh;const ctx=c.getContext('2d');ctx.drawImage(img,sx,sy,sw,sh,0,0,sw,sh);return c}async function runOCR(){if(!rect||processing)return;try{processing=true;overlay.show('Procesando OCR...');setStatus('Procesando...');const c=await cropToCanvas();const r=await Tesseract.recognize(c,'spa',{logger:()=>{}});const text=(r&&r.data&&r.data.text)?r.data.text:'';resEl.style.display='block';resEl.textContent=text;overlay.show('Copiando...');try{clipboard.writeText(text||'');setStatus('Copiado')}catch(e){setStatus('No se pudo copiar')}}catch(err){resEl.style.display='block';resEl.textContent='Error: '+(err&&err.message||'');setStatus('')}finally{processing=false;overlay.hide()}}document.addEventListener('mouseup',e=>{if(!startClient||!startWrap)return;const imgR=img.getBoundingClientRect();const xClient=Math.min(e.clientX,startClient.x);const yClient=Math.min(e.clientY,startClient.y);const wClient=Math.abs(e.clientX-startClient.x);const hClient=Math.abs(e.clientY-startClient.y);startClient=null;startWrap=null;if(wClient<5||hClient<5){resetSel();setStatus('');return}rect={x:xClient-imgR.left,y:yClient-imgR.top,w:wClient,h:hClient};setStatus('Seleccion lista');e.stopPropagation();e.preventDefault();runOCR()},{capture:true});img.addEventListener('load',()=>{resetSel();setStatus('')})})()`
-      win.webContents.executeJavaScript(inj)
-      const ui = `(()=>{const { ipcRenderer }=require('electron');document.body.style.background='transparent';const style=document.createElement('style');style.textContent=`+
-      "'"+
-      `#window{position:fixed;inset:0;border:1px solid rgba(255,255,255,.2);border-radius:10px;background:rgba(45,45,45,.7);backdrop-filter:blur(10px);box-shadow:0 8px 24px rgba(0,0,0,.35);overflow:hidden;display:flex;flex-direction:column}#header{display:flex;align-items:center;justify-content:space-between;padding:8px 10px;border-bottom:1px solid rgba(255,255,255,.15);-webkit-app-region:drag;color:#eee}#title{font-size:14px;margin:0}#controls{display:flex;gap:8px;-webkit-app-region:no-drag}#controls button{width:28px;height:28px;display:flex;align-items:center;justify-content:center;background:#3a3a3a;border:1px solid #4a4a4a;color:#eee;border-radius:6px;cursor:pointer}#controls #close{background:#d32f2f;border-color:#b71c1c;color:#fff}`+
-      "'"+
-      `;document.head.appendChild(style);const winEl=document.createElement('div');winEl.id='window';const header=document.createElement('div');header.id='header';const title=document.createElement('h5');title.id='title';title.textContent='📋 Copyfy++';const controls=document.createElement('div');controls.id='controls';const btnClose=document.createElement('button');btnClose.id='close';btnClose.textContent='✕';btnClose.addEventListener('click',()=>window.close());controls.appendChild(btnClose);header.appendChild(title);header.appendChild(controls);const content=document.createElement('div');content.id='content';content.style.cssText='flex:1;position:relative;display:flex;align-items:center;justify-content:center';while(document.body.firstChild){content.appendChild(document.body.firstChild)}winEl.appendChild(header);winEl.appendChild(content);document.body.appendChild(winEl);document.addEventListener('keydown',(e)=>{if(e.key==='Escape'){window.close()}});})();`
-      win.webContents.executeJavaScript(ui)
-    })
-  } catch (err) {
-    log.error('Error abriendo visor de imagen', err)
-  }
-})
-ipcMain.on('open-code-editor', (_, codeText) => {
-  try {
-    if (!authToken) return
-    const win = new BrowserWindow({
-      width: 1000,
-      height: 800,
-      resizable: true,
-      frame: false,
-      transparent: true,
-      backgroundColor: '#00FFFFFF',
-      hasShadow: true,
-      show: true,
-      parent: mainWindow,
-      webPreferences: { nodeIntegration: true, contextIsolation: false, sandbox: false, devTools: !app.isPackaged }
-    })
-    try { childWindows.add(win); win.on('closed', () => { try { childWindows.delete(win) } catch {} }) } catch {}
-    const display = screen.getPrimaryDisplay()
-    const wa = display.workArea
-    const mainBounds = mainWindow?.getBounds() || { width: 400, x: wa.x + wa.width - 400, y: wa.y, height: wa.height }
-    const viewerWidth = Math.max(300, wa.width - mainBounds.width)
-    win.setBounds({ x: wa.x, y: wa.y, width: viewerWidth, height: wa.height })
-    // Ruta del viewer compatible con desarrollo y producción en todas las plataformas
-    const editorPath = app.isPackaged
-      ? path.join(app.getAppPath(), 'viewer', 'code-editor.html')
-      : path.join(__dirname, 'viewer', 'code-editor.html')
-    
-    // Obtener idioma
-    let lang = app.getLocale()
-    try {
-       const prefsStr = db.getConfig('preferences')
-       if (prefsStr) {
-          const p = JSON.parse(prefsStr)
-          if (p.language) lang = p.language
-       }
-    } catch {}
-
-    win.loadFile(editorPath, { query: { lang } })
-    win.webContents.on('did-finish-load', () => {
-      try {
-        const b64 = Buffer.from(String(codeText || ''), 'utf-8').toString('base64')
-        win.webContents.send('set-content', b64)
-      } catch {}
-    })
-  } catch (err) {
-    log.error('Error abriendo editor de código', err)
-  }
-})
-//Traducir texto
-ipcMain.handle('translate-to-english', async (_, text) => {
-  try {
-    const deeplKey = (() => {
-      try { return require('./config').DEEPL_KEY } catch { return process.env.DEEPL_KEY || process.env.DEEPL_API_KEY || '' }
-    })()
-    if (!deeplKey) {
-      log.warn('Traducción deshabilitada: falta DEEPL_KEY')
-      return 'Configura la API de DeepL para traducir'
-    }
-    const params = new URLSearchParams()
-    params.append('text', text)
-    params.append('source_lang', 'ES')
-    params.append('target_lang', 'EN')
-
-    const response = await axios.post(
-      'https://api-free.deepl.com/v2/translate',
-      params,
-      {
-        headers: {
-          Authorization: `DeepL-Auth-Key ${deeplKey}`,
-          'Content-Type': 'application/x-www-form-urlencoded'
-        }
-      }
-    )
-
-    return response.data.translations[0].text
-  } catch (error) {
-    log.error('Error en traducción:', error.response?.data || error.message)
-    return 'Error de traducción'
-  }
-})
-// Cuando se recibe el evento desde el renderer
-ipcMain.on('paste-text', () => {
-  performPaste(mainWindow)
-})
-
-// Escuchar favorito
-ipcMain.on('toggle-favorite', async (event, payload) => {
-  try {
-    if (!authToken) return
-    const current = readDeviceHistory()
-    if (!Array.isArray(current)) return
-
-    const value = (typeof payload === 'string') ? payload : (payload && payload.value)
-    const id = (payload && typeof payload === 'object') ? payload.id : undefined
-    let newFavorite = false
-    const updated = current.map(item => {
-      if (typeof item === 'object' && item.value === value) {
-        const fav = !item.favorite
-        newFavorite = fav
-        return { ...item, favorite: fav }
-      }
-      return item
-    })
-    db.setFavorite(getCurrentDeviceName(), value, newFavorite)
-
-    // También actualizamos la variable en memoria
-    history = db.getAll(getCurrentDeviceName())
-
-    // Enviar al frontend
-    if (mainWindow?.webContents) {
-      mainWindow.webContents.send('clipboard-update', augmentHistoryWithImagePaths(history))
-    }
- 
-    let remoteId = null
-    if (authToken && id) {
-      try {
-        const rec = db.getById(id)
-        remoteId = rec && rec.remote_id
-        log.info('toggle-favorite remote', { localId: id, remoteId, value, favorite: !!newFavorite })
-        if (remoteId) {
-          await updateClipboardRecord(remoteId, { favorite: !!newFavorite })
-        }
-      } catch {}
-    }
-    if (!remoteId) {
-      try { 
-        log.info('toggle-favorite missing remote_id, triggering background sync')
-        syncClipboardHistory() 
-      } catch {}
-    }
-  } catch (err) {
-    log.error('❌ Error actualizando favoritos:', err)
-  }
-})
-
-ipcMain.handle('pasteImage', () => {
-  performPasteImage(mainWindow)
-})
-
-ipcMain.handle('get-app-version', () => {
-  return app.getVersion()
-})
-
-ipcMain.handle('get-system-locale', () => {
-  return app.getLocale()
-})
-
-ipcMain.on('screenshot-action', async (event, { action, tempPath }) => {
-  try {
-    if (action === 'discard') {
-      try { fs.rmSync(tempPath, { force: true }) } catch {}
-    } else if (action === 'save') {
-      if (!fs.existsSync(tempPath)) return
-      
-      const dir = path.join(app.getPath('userData'), 'clipboard-images')
-      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true })
-      
-      const fileName = path.basename(tempPath)
-      const finalPath = path.join(dir, fileName)
-      
-      try {
-        fs.renameSync(tempPath, finalPath)
-      } catch (e) {
-        fs.copyFileSync(tempPath, finalPath)
-        try { fs.rmSync(tempPath) } catch {}
-      }
-
-      const dbValue = `[LOCAL_IMAGE]:${finalPath}`
-      const deviceName = getCurrentDeviceName()
-
-      db.insert(deviceName, dbValue)
-      Promise.resolve(enforceHistoryLimit(1000)).catch(() => {})
-      history = db.getAll(deviceName)
-      
-      if (mainWindow?.webContents) {
-        mainWindow.webContents.send('clipboard-update', augmentHistoryWithImagePaths(history))
-      }
-    }
-  } catch (e) {
-    log.error('Error handling screenshot action', e)
-  }
-})
-ipcMain.on('open-external-url', (_, url) => {
-  try {
-    if (mainWindow) mainWindow.hide()
-    try { childWindows.forEach(w => { try { w.close() } catch {} }) } catch {}
-    const targetRaw = String(url || '').trim() || 'https://copyfy.lat/novedades'
-    const target = (/^https?:\/\//i.test(targetRaw)) ? targetRaw : 'https://copyfy.lat/novedades'
-    Promise.resolve(shell.openExternal(target)).catch(err => { try { log.error('shell.openExternal error', err?.message || err) } catch {} })
-  } catch (err) {
-    log.error('Error abriendo navegador externo', err)
-  }
-})
-let BACKEND_URL = 'https://copyfy.webcolsoluciones.com.co'
-//let BACKEND_URL = 'http://localhost:3000'
-try { BACKEND_URL = require('./config').BACKEND_URL || BACKEND_URL } catch {}
-let authToken = null
-let deviceId = null
-let activeDeviceName = null
-let syncLock = false
-let favoritesSyncCooldownUntil = 0
-
-function getCurrentDeviceName () {
-  return sanitizeDeviceName(activeDeviceName || os.hostname())
-}
-
-function readDeviceConfigObj () {
-  try {
-    const prefsStr = db.getConfig('preferences')
-    const preferences = prefsStr ? JSON.parse(prefsStr) : {}
-    return {
-      deviceName: os.hostname(),
-      createdAt: new Date().toISOString(),
-      preferences: preferences,
-      version: 1,
-      history: []
-    }
-  } catch {
-    return {
-      deviceName: os.hostname(),
-      createdAt: new Date().toISOString(),
-      preferences: {},
-      version: 1,
-      history: []
-    }
-  }
-}
-
-function writeDeviceConfigObj (obj) {
-  try {
-    if (obj.preferences) {
-      db.setConfig('preferences', JSON.stringify(obj.preferences))
-    }
-  } catch (e) {
-    log.error('Error writing preferences to DB:', e)
-  }
-}
-
-function readDeviceHistory () {
-  try {
-    return db.getAll(getCurrentDeviceName())
-  } catch {
-    return []
-  }
-}
-
-function writeDeviceHistory (hist) {
-  try {
-    db.importItems(getCurrentDeviceName(), normalizeHistory(hist))
-  } catch (err) {
-    log.error('Error al guardar historial (device)', err)
-  }
-}
-
-function listLocalDevices () {
-  try {
-    // Obtener dispositivos desde la DB (historial por dispositivo)
-    const devicesStr = db.getConfig('devices')
-    if (devicesStr) {
-      try {
-        const devices = JSON.parse(devicesStr)
-        if (Array.isArray(devices)) return devices
-      } catch {}
-    }
-    // Si no hay en DB, retornar solo el dispositivo actual
-    return [getCurrentDeviceName()]
-  } catch {
-    return [getCurrentDeviceName()]
-  }
-}
-
-function readDeviceHistoryByName (rawName) {
-  try {
-    const name = sanitizeDeviceName(rawName)
-    const all = db.getAll(name)
-    return normalizeHistory(all)
-  } catch {
-    return []
-  }
-}
-
-async function getDevicesFromBackend () {
-  try {
-    const axiosInstance = getAxiosInstance()
-    try {
-      const res = await axiosInstance.get('/devices')
-      const data = res?.data
-      const container = (data && typeof data === 'object' ? (data.data ?? data) : {})
-      const list = Array.isArray(container) ? container : (Array.isArray(container.items) ? container.items : [])
-      const names = Array.isArray(list)
-        ? list
-            .map(p => {
-              if (typeof p === 'string') return p
-              const obj = p || {}
-              return String(obj.clientId || obj.name || '')
-            })
-            .filter(Boolean)
-        : []
-      if (names.length > 0) return names
-    } catch {}
-
-    const res2 = await axiosInstance.get('/users/me')
-    const data2 = res2?.data
-    const payload = (data2 && typeof data2 === 'object' ? (data2.data ?? data2) : {})
-    const user = payload?.user || payload
-    const devices = user?.devices || []
-    const names2 = Array.isArray(devices)
-      ? devices
-          .map(p => {
-            if (typeof p === 'string') return p
-            const obj = p || {}
-            return obj.name || obj.clientId || ''
-          })
-          .filter(Boolean)
-      : []
-    return names2
-  } catch (error) {
-    log.error('getDevicesFromBackend error', error?.message || error)
-    return []
-  }
-}
-
-function sanitizeDeviceName (name) {
-  const s = String(name || '').trim()
-  // Caracteres prohibidos en nombres de archivos/carpetas en Windows, Linux y macOS:
-  // Windows: < > : " / \ | ? *
-  // Linux/macOS: / (y null bytes, pero eso se maneja con trim)
-  // Usar una regex que funcione en todas las plataformas
-  // También remover caracteres de control y espacios al inicio/final
-  return s
-    .replace(/[<>:"/\\|?*\x00-\x1f]/g, '') // Remover caracteres prohibidos y control
-    .replace(/^\s+|\s+$/g, '') // Remover espacios al inicio y final
-    .replace(/\.{2,}/g, '.') // Reemplazar múltiples puntos consecutivos
-    .replace(/^\.+|\.+$/g, '') // Remover puntos al inicio y final (problemas en Linux)
-    .slice(0, 64) || 'device'
-}
-
-async function ensureLocalDevices () {
-  try {
-    const names = await getDevicesFromBackend()
-    // Guardar lista de dispositivos en DB
-    if (names.length > 0) {
-      db.setConfig('devices', JSON.stringify(names))
-    }
-    log.info('ensureLocalDevices completo', { count: names.length })
-  } catch (error) {
-    log.error('ensureLocalDevices error', error?.message || error)
-  }
-}
-
-/**
- * Intenta refrescar el token usando el refreshToken de la sesión
- * @param {Object} session - Objeto de sesión con refreshToken
- * @returns {Promise<string|null>} - Nuevo token si el refresh fue exitoso, null si falló
- */
-/**
- * Intenta refrescar el token usando el refreshToken de la sesión
- * @param {Object} session - Objeto de sesión con refreshToken
- * @returns {Promise<string|null>} - Nuevo token si el refresh fue exitoso, null si falló
- */
-async function refreshTokenFromSession (session) {
-  try {
-    if (!session || !session.refreshToken) {
-      log.debug('No hay refreshToken en la sesión')
-      return null
-    }
-
-    const url = `${BACKEND_URL}/auth/refresh`
-    const refreshTokenValue = session.refreshToken
-    log.info('Intentando refrescar token', { 
-      url, 
-      hasRefreshToken: !!refreshTokenValue,
-      refreshTokenType: typeof refreshTokenValue,
-      refreshTokenLength: refreshTokenValue ? String(refreshTokenValue).length : 0
-    })
-    
-    if (!refreshTokenValue || refreshTokenValue === null || refreshTokenValue === undefined) {
-      log.error('refreshToken es null o undefined en la sesión', { sessionKeys: Object.keys(session || {}) })
-      return null
-    }
-
-    const requestPayload = { refreshToken: refreshTokenValue }
-    
-    const res = await axios.post(url, requestPayload, {
-      headers: { 'Content-Type': 'application/json' }
-    })
-
-    const data = res?.data
-    // El formato puede ser: { data: { token, refreshToken } } o { token, refreshToken }
-    const payload = (data && typeof data === 'object' ? (data.data ?? data) : {})
-    const okFlag = (data && typeof data === 'object') ? (data.success ?? data.status ?? res.status === 200) : res.status === 200
-    const newToken = payload?.token
-    const newRefreshToken = payload?.refreshToken || session.refreshToken
-
-    if (okFlag && newToken) {
-      // Actualizar la sesión con el nuevo token
-      const updatedSession = {
-        ...session,
-        token: newToken,
-        refreshToken: newRefreshToken
-      }
-      
-      // Guardar la sesión actualizada en DB
-      db.setConfig('session', JSON.stringify(updatedSession))
-
-      log.info('Token refrescado exitosamente', { hasNewRefreshToken: !!newRefreshToken })
-      return newToken
-    } else {
-      log.warn('Refresh token falló: respuesta inválida', { 
-        status: res.status, 
-        hasToken: !!newToken,
-        okFlag: okFlag,
-        responseData: data 
-      })
-      return null
-    }
-  } catch (error) {
-    const status = error?.response?.status
-    const statusText = error?.response?.statusText
-    log.warn('Error al refrescar token', {
-      error: error?.message || error,
-      status: status,
-      statusText: statusText,
-      responseData: error?.response?.data
-    })
-    
-    // Si el error es 401, el refreshToken está expirado
-    if (status === 401 || status === 403) {
-      log.warn('RefreshToken expirado o inválido - el usuario debe iniciar sesión de nuevo')
-    }
-    
-    return null
-  }
-}
-
-ipcMain.on('set-auth-token', (event, token) => {
-  authToken = token
-  // Reinicializar el estado de los archivos del portapapeles al iniciar sesión
-  // Esto previene que archivos copiados antes de iniciar sesión se procesen
-  resetClipboardFilesState()
-  syncClipboardHistory()
-  ensureLocalDevices()
-  Promise.resolve(enforceHistoryLimit(1000)).catch(() => {})
-})
-
-// Handlers IPC para configuración (DB local)
-ipcMain.handle('get-config', (event, key) => {
-  try {
-    return db.getConfig(key)
-  } catch (e) {
-    log.error('get-config error:', e)
-    return null
-  }
-})
-
-ipcMain.handle('set-config', (event, key, value) => {
-  try {
-    return db.setConfig(key, value)
-  } catch (e) {
-    log.error('set-config error:', e)
-    return false
-  }
-})
-
-ipcMain.handle('remove-config', (event, key) => {
-  try {
-    return db.removeConfig(key)
-  } catch (e) {
-    log.error('remove-config error:', e)
-    return false
-  }
-})
-
-ipcMain.handle('get-all-config', () => {
-  try {
-    return db.getAllConfig()
-  } catch (e) {
-    log.error('get-all-config error:', e)
-    return {}
-  }
-})
-
-// Handlers IPC para sesión (usando DB local)
-ipcMain.handle('save-session', (event, sessionData) => {
-  try {
-    if (sessionData && typeof sessionData === 'object') {
-      db.setConfig('session', JSON.stringify(sessionData))
-      return true
-    }
-    return false
-  } catch (e) {
-    log.error('save-session error:', e)
-    return false
-  }
-})
-
-ipcMain.handle('read-session', () => {
-  try {
-    const sessionStr = db.getConfig('session')
-    if (sessionStr) {
-      try {
-        return JSON.parse(sessionStr)
-      } catch (e) {
-        log.error('Error parsing session from DB:', e)
-      }
-    }
-    return null
-  } catch (e) {
-    log.error('read-session error:', e)
-    return null
-  }
-})
-
-ipcMain.handle('clear-session-file', () => {
-  try {
-    db.removeConfig('session')
-    db.removeConfig('x-token')
-    return true
-  } catch (e) {
-    log.error('clear-session-file error:', e)
-    return false
-  }
-})
-
-async function resolveDeviceIdentifiers (rawName) {
-  try {
-    const axiosInstance = getAxiosInstance()
-    const res = await axiosInstance.get('/devices')
-    const data = res?.data
-    const container = (data && typeof data === 'object' ? (data.data ?? data) : {})
-    const list = Array.isArray(container) ? container : (Array.isArray(container.items) ? container.items : [])
-    const target = sanitizeDeviceName(rawName)
-    for (const p of Array.isArray(list) ? list : []) {
-      const obj = p || {}
-      const name = obj.name || obj.clientId || ''
-      const sname = sanitizeDeviceName(name)
-      if (sname === target) {
-        return { deviceId: obj.id || (obj.device && obj.device.id) || null, clientId: obj.clientId || null, name: name }
-      }
-    }
-  } catch {}
-  return { deviceId: null, clientId: null, name: sanitizeDeviceName(rawName) }
-}
-
-ipcMain.handle('switch-active-device', async (_, deviceName) => {
-  try {
-    activeDeviceName = sanitizeDeviceName(deviceName)
-    await ensureLocalDevices()
-    const devHist = readDeviceHistory()
-    history = devHist
-    if (mainWindow?.webContents) {
-      mainWindow.webContents.send('clipboard-update', augmentHistoryWithImagePaths(history))
-    }
-    try { authToken ? await enforceHistoryLimit(1000) : enforceGuestLimit(1000) } catch {}
-    if (mainWindow?.webContents) {
-      mainWindow.webContents.send('sync-progress', { percentage: 1, message: 'Sincronizando…' })
-    }
-  let finished = false
-    const syncPromise = (async () => { 
-      await syncClipboardHistory(); 
-      finished = true 
-    })()
-    const timeoutMs = 30 * 1000
-    const timeout = new Promise(resolve => setTimeout(resolve, timeoutMs))
-    await Promise.race([syncPromise, timeout])
-    try { authToken ? await enforceHistoryLimit(1000) : enforceGuestLimit(1000) } catch {}
-    if (!finished && mainWindow?.webContents) {
-      mainWindow.webContents.send('sync-progress', { percentage: 30, message: 'Sincronización en segundo plano' })
-    }
-    return history
-  } catch (e) {
-    log.error('switch-active-device error', e?.message || e)
-    return []
-  }
-})
-
-ipcMain.handle('list-devices', async () => {
-  try {
-    await ensureLocalDevices()
-    return listLocalDevices()
-  } catch {
-    return []
-  }
-})
-
-  ipcMain.handle('load-device-history', async (_, deviceName) => {
-    try {
-      const list = listLocalDevices()
-      const target = sanitizeDeviceName(deviceName)
-      if (!list.includes(target)) {
-        return []
-      }
-      const devHist = authToken ? readDeviceHistoryByName(target) : db.getAllGuest(target)
-      history = devHist
-      if (mainWindow?.webContents) {
-        mainWindow.webContents.send('clipboard-update', augmentHistoryWithImagePaths(history))
-      }
-      return history
-    } catch {
-      return []
-    }
-  })
-
-ipcMain.handle('get-active-device', async () => {
-  try {
-    return activeDeviceName || os.hostname()
-  } catch {
-    return os.hostname()
-  }
-})
-
-const https = require('https')
-const http = require('http')
-
-function getAxiosInstance () {
-  if (!authToken) {
-    throw new Error('No hay token de autenticación disponible')
-  }
-
-  const instance = axios.create({
-    baseURL: BACKEND_URL,
-    maxBodyLength: Infinity,
-    maxContentLength: Infinity,
-    httpAgent: new http.Agent({ keepAlive: true, maxSockets: 50 }),
-    httpsAgent: new https.Agent({ keepAlive: true, maxSockets: 50 }),
-    headers: {
-      Authorization: `Bearer ${authToken}`,
-      'Content-Type': 'application/json'
-    }
-  })
-
-  // Interceptor para manejar errores 401 y refrescar token automáticamente
-  instance.interceptors.response.use(
-    (response) => response,
-    async (error) => {
-      const originalRequest = error.config
-
-      // Si el error es 401 y no hemos intentado refrescar ya
-      if (error.response?.status === 401 && !originalRequest._retry) {
-        originalRequest._retry = true
-
-        try {
-          // Obtener la sesión desde la DB
-          const sessionStr = db.getConfig('session')
-          if (!sessionStr) {
-            log.warn('No hay sesión guardada para refrescar token')
-            return Promise.reject(error)
-          }
-
-          const session = JSON.parse(sessionStr)
-          if (!session || !session.refreshToken) {
-            log.warn('No hay refreshToken en la sesión')
-            return Promise.reject(error)
-          }
-
-          log.info('Token expirado, intentando refrescar con refreshToken')
-          
-          // Intentar refrescar el token
-          const newToken = await refreshTokenFromSession(session)
-          
-          if (newToken) {
-            // Actualizar el token global
-            authToken = newToken
-            
-            // Notificar al frontend del nuevo token
-            if (mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents) {
-              mainWindow.webContents.send('token-refreshed', newToken)
-            }
-            
-            // Actualizar el header de autorización para la petición original
-            originalRequest.headers.Authorization = `Bearer ${newToken}`
-            
-            log.info('Token refrescado exitosamente, reintentando petición original')
-            
-            // Reintentar la petición original con el nuevo token
-            return instance(originalRequest)
-          } else {
-            log.warn('No se pudo refrescar el token')
-            return Promise.reject(error)
-          }
-        } catch (refreshError) {
-          log.error('Error al intentar refrescar token:', refreshError)
-          return Promise.reject(error)
-        }
-      }
-
-      return Promise.reject(error)
-    }
-  )
-
-  return instance
-}
-
-async function enforceHistoryLimit (limit = 1000) {
-  try {
-    const device = getCurrentDeviceName()
-    const count = db.countActive(device)
-    if (count > limit) {
-      db.trimToLimit(device, limit)
-      if (authToken) {
-        try {
-          const axiosInstance = getAxiosInstance()
-          const ids = await resolveDeviceIdentifiers(device)
-          if (ids && ids.deviceId) {
-            await axiosInstance.post('/clipboard/trim', { deviceId: ids.deviceId })
-          }
-        } catch (e) {
-          try { log.error('trim backend error', e?.message || e) } catch {}
-        }
-      }
-    }
-  } catch {}
-}
-
-function enforceGuestLimit (limit = 1000) {
-  try {
-    const device = getCurrentDeviceName()
-    const count = db.countGuestActive(device)
-    if (count > limit) {
-      db.trimGuestToLimit(device, limit)
-    }
-  } catch {}
-}
-
-async function fetchBackendClipboard () {
-  try {
-    const axiosInstance = getAxiosInstance()
-    const clientId = activeDeviceName || os.hostname()
-    const res = await axiosInstance.get('/clipboard', { params: { clientId } })
-    const data = res?.data
-    const items = (data && typeof data === 'object' ? (data.data?.items ?? data.items ?? []) : [])
-    const mapped = Array.isArray(items)
-      ? items.map(it => ({
-          id: it.id,
-          value: String(it.value ?? ''),
-          favorite: !!it.favorite,
-          deviceId: it.deviceId || (it.device && it.device.id) || null,
-          clientId: it.clientId || (it.meta && it.meta.clientId) || (it.device && it.device.clientId) || null
-        }))
-      : []
-    history = mapped
-    writeDeviceHistory(history)
-    history = db.getAll(getCurrentDeviceName())
-        if (mainWindow?.webContents) {
-          mainWindow.webContents.send('clipboard-update', augmentHistoryWithImagePaths(history))
-        }
-  } catch (error) {
-    log.error('fetchBackendClipboard error', error?.message || error)
-  }
-}
-
-async function ensureDeviceRegistered () {
-  try {
-    if (deviceId) return deviceId
-    // Si el worker no está disponible, usar método directo como fallback
-    if (!worker) {
-      log.warn('Worker not available, using direct device registration')
-      const axiosInstance = getAxiosInstance()
-      const hostname = os.hostname()
-      const osName = process.platform === 'win32' ? 'Windows' : (process.platform === 'darwin' ? 'macOS' : 'Linux')
-      const payload = { clientId: hostname, name: hostname, metadata: { os: osName, appVersion: app.getVersion() } }
-      const res = await axiosInstance.post('/devices', payload)
-      const data = res?.data
-      const obj = (data && typeof data === 'object' ? (data.data ?? data) : {})
-      deviceId = obj?.id || obj?.device?.id || null
-      return deviceId
-    }
-    
-    // Usar worker para registro de dispositivo (no bloquea el hilo principal)
-    return new Promise((resolve, reject) => {
-      const opId = ++workerOpId
-      const timeout = setTimeout(() => {
-        pendingWorkerOps.delete(opId)
-        log.warn('Device registration timeout, using fallback')
-        // Fallback a método directo si el worker tarda mucho
-        const axiosInstance = getAxiosInstance()
-        const hostname = os.hostname()
-        const osName = process.platform === 'win32' ? 'Windows' : (process.platform === 'darwin' ? 'macOS' : 'Linux')
-        const payload = { clientId: hostname, name: hostname, metadata: { os: osName, appVersion: app.getVersion() } }
-        axiosInstance.post('/devices', payload).then(res => {
-          const data = res?.data
-          const obj = (data && typeof data === 'object' ? (data.data ?? data) : {})
-          deviceId = obj?.id || obj?.device?.id || null
-          resolve(deviceId)
-        }).catch(reject)
-      }, 5000)
-      
-      pendingWorkerOps.set(opId, {
-        resolve: (result) => {
-          clearTimeout(timeout)
-          deviceId = result
-          resolve(result)
+    const display = screen.getPrimaryDisplay();
+    const screenWidth = display.workArea.width;
+    const screenHeight = display.workArea.height;
+    const mainWidth = 400;
+    const width = screenWidth - mainWidth;
+    const height = screenHeight;
+    const x = 0;
+    const y = 0;
+    ocrWindow = new BrowserWindow({
+        width: width,
+        height: height,
+        x: x,
+        y: y,
+        title: 'OCR - Text Extraction',
+        frame: false,
+        transparent: true,
+        backgroundColor: '#00FFFFFF',
+        webPreferences: {
+            preload: path.join(__dirname, 'preload.js'),
+            contextIsolation: true,
+            nodeIntegration: false,
+            devTools: !app.isPackaged
         },
-        reject: (error) => {
-          clearTimeout(timeout)
-          log.error('ensureDeviceRegistered error', error?.message || error)
-          resolve(null) // Resolver con null en lugar de rechazar para no romper el flujo
+        autoHideMenuBar: true
+    });
+    const indexPath = app.isPackaged
+        ? path.join(app.getAppPath(), 'frontend', 'dist', 'index.html')
+        : 'http://127.0.0.1:5173';
+    const url = `${indexPath}?mode=ocr&img=${encodeURIComponent(imagePath)}`;
+    if (app.isPackaged) {
+        ocrWindow.loadFile(indexPath, { search: `mode=ocr&img=${encodeURIComponent(imagePath)}` }).then(() => {
+            ocrWindow.webContents.send('ocr-load-image', imagePath);
+        });
+    }
+    else {
+        ocrWindow.loadURL(url);
+    }
+    ocrWindow.on('closed', () => {
+        ocrWindow = null;
+    });
+}
+function createCodeWindow(codeContent) {
+    pendingCodeContent = codeContent;
+    if (codeWindow) {
+        codeWindow.focus();
+        codeWindow.webContents.send('code-load-content', codeContent);
+        return;
+    }
+    const display = screen.getPrimaryDisplay();
+    const screenWidth = display.workArea.width;
+    const screenHeight = display.workArea.height;
+    const mainWidth = 400;
+    const width = screenWidth - mainWidth;
+    const height = screenHeight;
+    const x = 0;
+    const y = 0;
+    codeWindow = new BrowserWindow({
+        width: width,
+        height: height,
+        x: x,
+        y: y,
+        title: 'Code Editor',
+        frame: false,
+        transparent: true,
+        backgroundColor: '#00FFFFFF',
+        webPreferences: {
+            preload: path.join(__dirname, 'preload.js'),
+            contextIsolation: true,
+            nodeIntegration: false,
+            devTools: !app.isPackaged
+        },
+        autoHideMenuBar: true,
+        show: false
+    });
+    const indexPath = app.isPackaged
+        ? path.join(app.getAppPath(), 'frontend', 'dist', 'index.html')
+        : 'http://127.0.0.1:5173';
+    const url = `${indexPath}?mode=code`;
+    if (app.isPackaged) {
+        codeWindow.loadFile(indexPath, { search: 'mode=code' }).then(() => {
+        });
+    }
+    else {
+        codeWindow.loadURL(url);
+    }
+    codeWindow.once('ready-to-show', () => {
+        codeWindow.show();
+    });
+    codeWindow.on('closed', () => {
+        codeWindow = null;
+        pendingCodeContent = null;
+    });
+}
+function createNotificationWindow() {
+    if (notificationWindow) {
+        notificationWindow.focus();
+        return;
+    }
+    const display = screen.getPrimaryDisplay();
+    const width = 350;
+    const height = 100;
+    const x = display.workArea.width - width - 20;
+    let y = display.workArea.height - height - 20;
+    if (process.platform === 'darwin') {
+        y = 40; // macOS: Arriba a la derecha
+    }
+    notificationWindow = new BrowserWindow({
+        width, height, x, y,
+        frame: false,
+        transparent: true,
+        alwaysOnTop: true,
+        resizable: false,
+        skipTaskbar: true,
+        webPreferences: {
+            preload: path.join(__dirname, 'preload.js'),
+            contextIsolation: true,
+            nodeIntegration: false,
+            devTools: !app.isPackaged
         }
-      })
-      
-      const hostname = os.hostname()
-      const osName = process.platform === 'win32' ? 'Windows' : (process.platform === 'darwin' ? 'macOS' : 'Linux')
-      const config = {
-        backendUrl: BACKEND_URL,
-        authToken: authToken
-      }
-      const deviceInfo = {
-        hostname,
-        osName,
-        appVersion: app.getVersion()
-      }
-      
-      worker.send({ type: 'register-device', opId, config, deviceInfo })
-    })
-  } catch (error) {
-    log.error('ensureDeviceRegistered error', error?.message || error)
-    return null
-  }
-}
-
-function askForUpload(filePaths) {
-  try {
-    // Validar autenticación - solo usuarios logueados pueden subir archivos
-    if (!authToken) {
-      log.info('Intento de subir archivos sin autenticación - ignorado')
-      return
+    });
+    const indexPath = app.isPackaged
+        ? path.join(app.getAppPath(), 'frontend', 'dist', 'index.html')
+        : 'http://127.0.0.1:5173';
+    const url = `${indexPath}?mode=notification`;
+    if (app.isPackaged) {
+        notificationWindow.loadFile(indexPath, { search: 'mode=notification' }).then(() => {
+        });
     }
-
-    const isArray = Array.isArray(filePaths)
-    const files = isArray ? filePaths : [filePaths]
-    if (files.length === 0) return
-
-    // Filtrar solo archivos de texto (doble verificación)
-    const textFiles = files.filter(f => isTextFile(f))
-    if (textFiles.length === 0) return
-
-    // Usar ventana de notificación con barra de progreso en todas las plataformas
-    // Las notificaciones del sistema en Linux/macOS no soportan barras de progreso interactivas
-    createNotificationWindow(textFiles)
-  } catch (e) {
-    log.error('Error mostrando notificacion', e)
-  }
-}
-
-let activeScreenshotWindow = null
-
-function createScreenshotNotificationWindow(tempPath, dataUrl) {
-  try {
-    if (activeScreenshotWindow && !activeScreenshotWindow.isDestroyed()) {
-      try { activeScreenshotWindow.close() } catch {}
+    else {
+        notificationWindow.loadURL(url);
     }
-
-    const display = screen.getPrimaryDisplay()
-    const { width, height } = display.workAreaSize
-    const { x: screenX, y: screenY } = display.workArea
-    const winWidth = 360
-    const winHeight = 120
-    
-    const x = screenX + width - winWidth - 20
-    const y = screenY + height - winHeight - 20
-    
-    const notifWindow = new BrowserWindow({
-      width: winWidth,
-      height: winHeight,
-      x: Math.max(0, x),
-      y: Math.max(0, y),
-      frame: false,
-      transparent: process.platform !== 'linux',
-      alwaysOnTop: true,
-      skipTaskbar: true,
-      resizable: false,
-      show: false,
-      hasShadow: process.platform === 'darwin',
-      webPreferences: {
-        nodeIntegration: true,
-        contextIsolation: false
-      }
-    })
-
-    activeScreenshotWindow = notifWindow
-
-    const htmlContent = `
-      <!DOCTYPE html>
-      <html>
-      <head>
-      <style>
-      body { margin: 0; padding: 10px 12px; background: #1e1e1e; color: #fff; font-family: system-ui, -apple-system, sans-serif; border-radius: 8px; border: 1px solid #333; box-shadow: 0 4px 12px rgba(0,0,0,0.5); overflow: hidden; display: flex; flex-direction: column; height: 100vh; box-sizing: border-box; }
-      .title { font-weight: 600; font-size: 13px; margin-bottom: 2px; color: #fff; line-height: 1.2; }
-      .message { font-size: 12px; color: #aaa; margin-bottom: 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; line-height: 1.3; }
-      .timeout-container { display: block; margin: 4px 0; }
-      .timeout-bar { width: 100%; height: 3px; background: #333; border-radius: 2px; overflow: hidden; margin-bottom: 2px; }
-      .timeout-fill { height: 100%; background: #ef4444; width: 100%; transition: width 1s linear; }
-      .timeout-text { font-size: 9px; color: #888; text-align: center; line-height: 1.2; }
-      .actions { display: flex; gap: 6px; margin-top: auto; justify-content: flex-end; }
-      button { border: none; padding: 5px 10px; border-radius: 4px; font-size: 11px; cursor: pointer; transition: background 0.2s; font-weight: 500; line-height: 1.2; }
-      .btn-primary { background: #3b82f6; color: white; }
-      .btn-primary:hover { background: #2563eb; }
-      .btn-secondary { background: #333; color: #ccc; }
-      .btn-secondary:hover { background: #444; }
-      .close { position: absolute; top: 6px; right: 6px; background: none; color: #666; font-size: 14px; padding: 0; cursor: pointer; width: 18px; height: 18px; display: flex; align-items: center; justify-content: center; }
-      .close:hover { color: #fff; }
-      </style>
-      </head>
-      <body>
-      <button class="close" onclick="discard()">×</button>
-      <div class="title">Captura detectada</div>
-      <div class="message">¿Guardar esta captura en el historial?</div>
-      
-      <div class="timeout-container">
-        <div class="timeout-bar"><div class="timeout-fill" id="timeoutFill"></div></div>
-        <div class="timeout-text" id="timeoutText">30s restantes</div>
-      </div>
-
-      <div class="actions">
-        <button class="btn-secondary" onclick="discard()">Descartar</button>
-        <button class="btn-primary" onclick="save()">Guardar</button>
-      </div>
-
-      <script>
-        const { ipcRenderer } = require('electron')
-        
-        // Timeout logic
-        let timeLeft = 30
-        const timeoutFill = document.getElementById('timeoutFill')
-        const timeoutText = document.getElementById('timeoutText')
-        
-        const timer = setInterval(() => {
-          timeLeft--
-          timeoutText.textContent = timeLeft + 's restantes'
-          const pct = (timeLeft / 30) * 100
-          timeoutFill.style.width = pct + '%'
-          
-          if (timeLeft <= 0) {
-            clearInterval(timer)
-            discard()
-          }
-        }, 1000)
-
-        function discard() {
-          ipcRenderer.send('screenshot-action', { action: 'discard', tempPath: '${tempPath.replace(/\\/g, '\\\\')}' })
-          window.close()
+    notificationWindow.on('closed', () => {
+        notificationWindow = null;
+    });
+}
+// Handshake listener
+ipcMain.on('code-window-ready', (event) => {
+    if (codeWindow && pendingCodeContent) {
+        codeWindow.webContents.send('code-load-content', pendingCodeContent);
+    }
+});
+ipcMain.on('app-ready', () => {
+    log.info('[Main] Received app-ready signal from renderer');
+    broadcastUpdate();
+    // Sync devices on app startup if authenticated
+    const settings = db.getSettings();
+    if (settings && settings.accessToken) {
+        log.info('[Main] User authenticated, triggering device sync on startup');
+        BackendDaemon_1.BackendDaemon.getInstance().syncDevicesOnLogin(true).catch((e) => {
+            log.error('[Main] Failed to sync devices on startup:', e);
+        });
+    }
+});
+ipcMain.on('notification-window-ready', () => {
+    if (notificationWindow && pendingNotificationImage) {
+        if (pendingNotificationImage.type === 'image') {
+            const dataUrl = pendingNotificationImage.image.toDataURL();
+            notificationWindow.webContents.send('notification-load-image', dataUrl);
         }
-        
-        function save() {
-          ipcRenderer.send('screenshot-action', { action: 'save', tempPath: '${tempPath.replace(/\\/g, '\\\\')}' }) 
-          window.close()
+        else if (pendingNotificationImage.type === 'file') {
+            // Send file info instead of image
+            notificationWindow.webContents.send('notification-load-file', {
+                name: pendingNotificationImage.fileName,
+                path: pendingNotificationImage.filePath
+            });
         }
-      </script>
-      </body>
-      </html>
-    `
-    notifWindow.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(htmlContent))
-    notifWindow.once('ready-to-show', () => {
-      notifWindow.show()
-      // Asegurar que la ventana esté siempre encima, especialmente en Linux
-      if (process.platform === 'linux') {
-        try {
-          notifWindow.setAlwaysOnTop(true)
-          notifWindow.moveTop()
-        } catch {}
-      }
-    })
-  } catch (e) {
-    log.error('Error creating screenshot window', e)
-  }
-}
-
-function createNotificationWindow(filePaths) {
-  try {
-    const isArray = Array.isArray(filePaths)
-    const files = isArray ? filePaths : [filePaths]
-    
-    // Cerrar ventana anterior si existe
-    if (activeUploadWindow && !activeUploadWindow.isDestroyed()) {
-      try {
-        activeUploadWindow.close()
-      } catch {}
     }
-    
-    const title = files.length === 1 ? 'Archivo detectado' : `${files.length} Archivos detectados`
-    const message = files.length === 1 
-      ? `¿Subir "${path.basename(files[0])}" a Copyfy?` 
-      : `¿Subir ${files.length} archivos a Copyfy?`
-    
-    // Serializar los archivos para usar en el HTML como array literal de JavaScript
-    const filesJsonForJS = JSON.stringify(files)
-    
-    const display = screen.getPrimaryDisplay()
-    const { width, height } = display.workAreaSize
-    const { x: screenX, y: screenY } = display.workArea
-    const winWidth = 360
-    const winHeight = 140 // Optimizada para reducir espacio desperdiciado
-    
-    // Posicionar la ventana en la esquina inferior derecha, compatible con todas las plataformas
-    // macOS puede tener el dock en la parte inferior, Linux puede tener paneles
-    const x = screenX + width - winWidth - 20
-    const y = screenY + height - winHeight - 20
-    
-    const notifWindow = new BrowserWindow({
-      width: winWidth,
-      height: winHeight,
-      x: Math.max(0, x),
-      y: Math.max(0, y),
-      frame: false,
-      transparent: process.platform !== 'linux', // Transparencia puede no funcionar bien en algunos Linux
-      alwaysOnTop: true,
-      skipTaskbar: true,
-      resizable: false,
-      show: false,
-      hasShadow: process.platform === 'darwin', // macOS usa sombras por defecto
-      webPreferences: {
-        nodeIntegration: true,
-        contextIsolation: false
-      }
-    })
-
-    activeUploadWindow = notifWindow
-
-    // Construir el HTML usando concatenación de strings para evitar problemas con template strings anidados
-    const htmlContentParts = [
-      '<!DOCTYPE html>',
-      '<html>',
-      '<head>',
-      '<style>',
-      'body { margin: 0; padding: 10px 12px; background: #1e1e1e; color: #fff; font-family: system-ui, -apple-system, sans-serif; border-radius: 8px; border: 1px solid #333; box-shadow: 0 4px 12px rgba(0,0,0,0.5); overflow: hidden; display: flex; flex-direction: column; height: 100vh; box-sizing: border-box; }',
-      '.title { font-weight: 600; font-size: 13px; margin-bottom: 2px; color: #fff; line-height: 1.2; }',
-      '.message { font-size: 12px; color: #aaa; margin-bottom: 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; line-height: 1.3; }',
-      '.timeout-container { display: block; margin: 4px 0; }',
-      '.timeout-bar { width: 100%; height: 3px; background: #333; border-radius: 2px; overflow: hidden; margin-bottom: 2px; }',
-      '.timeout-fill { height: 100%; background: #ef4444; width: 100%; transition: width 1s linear; }',
-      '.timeout-text { font-size: 9px; color: #888; text-align: center; line-height: 1.2; }',
-      '.progress-container { display: none; margin: 6px 0; }',
-      '.progress-container.visible { display: block; }',
-      '.progress-bar { width: 100%; height: 5px; background: #333; border-radius: 3px; overflow: hidden; margin-bottom: 3px; }',
-      '.progress-fill { height: 100%; background: #3b82f6; width: 0%; transition: width 0.3s ease; }',
-      '.progress-text { font-size: 10px; color: #888; text-align: center; line-height: 1.2; }',
-      '.current-file { font-size: 10px; color: #aaa; margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; line-height: 1.2; }',
-      '.actions { display: flex; gap: 6px; margin-top: 6px; justify-content: flex-end; }',
-      '.actions.uploading { display: none; }',
-      'button { border: none; padding: 5px 10px; border-radius: 4px; font-size: 11px; cursor: pointer; transition: background 0.2s; font-weight: 500; line-height: 1.2; }',
-      '.btn-primary { background: #3b82f6; color: white; }',
-      '.btn-primary:hover { background: #2563eb; }',
-      '.btn-secondary { background: #333; color: #ccc; }',
-      '.btn-secondary:hover { background: #444; }',
-      '.close { position: absolute; top: 6px; right: 6px; background: none; color: #666; font-size: 14px; padding: 0; cursor: pointer; width: 18px; height: 18px; display: flex; align-items: center; justify-content: center; }',
-      '.close:hover { color: #fff; }',
-      '</style>',
-      '</head>',
-      '<body>',
-      '<button class="close" onclick="cancel()">×</button>',
-      '<div class="title">' + title.replace(/</g, '&lt;').replace(/>/g, '&gt;') + '</div>',
-      '<div class="message">' + message.replace(/</g, '&lt;').replace(/>/g, '&gt;') + '</div>',
-      '<div class="timeout-container" id="timeoutContainer">',
-      '<div class="timeout-bar">',
-      '<div class="timeout-fill" id="timeoutFill"></div>',
-      '</div>',
-      '<div class="timeout-text" id="timeoutText">60s restantes</div>',
-      '</div>',
-      '<div class="progress-container" id="progressContainer">',
-      '<div class="progress-bar">',
-      '<div class="progress-fill" id="progressFill"></div>',
-      '</div>',
-      '<div class="progress-text" id="progressText">0%</div>',
-      '<div class="current-file" id="currentFile"></div>',
-      '</div>',
-      '<div class="actions" id="actions">',
-      '<button class="btn-secondary" onclick="cancel()">Cancelar</button>',
-      '<button class="btn-primary" onclick="confirm()">' + (files.length === 1 ? 'Subir archivo' : 'Subir todos') + '</button>',
-      '</div>',
-      '<script>',
-      'const { ipcRenderer } = require(\'electron\')',
-      'const progressContainer = document.getElementById(\'progressContainer\')',
-      'const progressFill = document.getElementById(\'progressFill\')',
-      'const progressText = document.getElementById(\'progressText\')',
-      'const currentFile = document.getElementById(\'currentFile\')',
-      'const actions = document.getElementById(\'actions\')',
-      'const timeoutContainer = document.getElementById(\'timeoutContainer\')',
-      'const timeoutFill = document.getElementById(\'timeoutFill\')',
-      'const timeoutText = document.getElementById(\'timeoutText\')',
-      '',
-      '// Archivos a subir (pasados desde el main process)',
-      'const filePaths = ' + filesJsonForJS + ';',
-      '',
-      'let autoClose = null',
-      'let countdownInterval = null',
-      'let remainingSeconds = 60',
-      'const TIMEOUT_MS = 60000',
-      '',
-      'function updateCountdown() {',
-      '  remainingSeconds--',
-      '  const percentage = (remainingSeconds / 60) * 100',
-      '  timeoutFill.style.width = percentage + "%"',
-      '  timeoutText.textContent = remainingSeconds + "s restantes"',
-      '  if (remainingSeconds <= 10) {',
-      '    timeoutText.style.color = "#ef4444"',
-      '    timeoutFill.style.background = "#ef4444"',
-      '  } else if (remainingSeconds <= 20) {',
-      '    timeoutText.style.color = "#f59e0b"',
-      '    timeoutFill.style.background = "#f59e0b"',
-      '  } else {',
-      '    timeoutText.style.color = "#888"',
-      '    timeoutFill.style.background = "#3b82f6"',
-      '  }',
-      '  if (remainingSeconds <= 0) {',
-      '    clearInterval(countdownInterval)',
-      '    clearTimeout(autoClose)',
-      '    ipcRenderer.send(\'notification-timeout\', { filePaths: filePaths })',
-      '    window.close()',
-      '  }',
-      '}',
-      '',
-      'function confirm() {',
-      '  clearTimeout(autoClose)',
-      '  clearInterval(countdownInterval)',
-      '  timeoutContainer.style.display = "none"',
-      '  progressContainer.classList.add("visible")',
-      '  actions.classList.add("uploading")',
-      '  ipcRenderer.send(\'notification-action\', { action: "upload", filePaths: filePaths })',
-      '}',
-      '',
-      'function cancel() {',
-      '  clearTimeout(autoClose)',
-      '  clearInterval(countdownInterval)',
-      '  ipcRenderer.send(\'notification-cancel\', { filePaths: filePaths })',
-      '  window.close()',
-      '}',
-      '',
-      'ipcRenderer.on(\'upload-progress\', (_, data) => {',
-      '  const { percent, current, total, fileName } = data',
-      '  progressFill.style.width = percent + "%"',
-      '  progressText.textContent = percent.toFixed(0) + "%"',
-      '  if (fileName) {',
-      '    currentFile.textContent = fileName',
-      '  }',
-      '})',
-      '',
-      'ipcRenderer.on(\'upload-complete\', () => {',
-      '  clearInterval(countdownInterval)',
-      '  timeoutContainer.style.display = "none"',
-      '  progressFill.style.width = "100%"',
-      '  progressText.textContent = "100% ✓"',
-      '  setTimeout(() => window.close(), 1500)',
-      '})',
-      '',
-      'countdownInterval = setInterval(updateCountdown, 1000)',
-      '',
-      'autoClose = setTimeout(() => {',
-      '  clearInterval(countdownInterval)',
-      '  if (!progressContainer.classList.contains("visible")) {',
-      '    ipcRenderer.send(\'notification-timeout\', { filePaths: filePaths })',
-      '    window.close()',
-      '  }',
-      '}, TIMEOUT_MS)',
-      '',
-      'setTimeout(() => {',
-      '  timeoutFill.style.width = "100%"',
-      '  timeoutFill.style.transition = "width 60s linear"',
-      '  timeoutFill.style.width = "0%"',
-      '}, 100)',
-      '</script>',
-      '</body>',
-      '</html>'
-    ]
-    
-    const htmlContent = htmlContentParts.join('\n')
-
-    notifWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(htmlContent)}`)
-    notifWindow.once('ready-to-show', () => {
-      notifWindow.show()
-      // Asegurar que la ventana esté siempre encima, especialmente en Linux
-      if (process.platform === 'linux') {
-        try {
-          notifWindow.setAlwaysOnTop(true)
-          notifWindow.moveTop()
-        } catch {}
-      }
-    })
-    
-    notifWindow.on('closed', () => {
-      if (activeUploadWindow === notifWindow) {
-        activeUploadWindow = null
-      }
-    })
-  } catch (e) {
-    log.error('Error creando ventana de notificacion', e)
-  }
-}
-
-ipcMain.on('notification-action', async (_, { action, filePath, filePaths }) => {
-  if (action === 'upload') {
-    const targets = filePaths || (filePath ? [filePath] : [])
-    
-    if (targets.length === 0) return
-    
-    let completed = 0
-    const total = targets.length
-    
-    // Función para actualizar progreso
-    const updateProgress = (current, fileName) => {
-      const percent = (current / total) * 100
-      try {
-        if (activeUploadWindow && !activeUploadWindow.isDestroyed() && !activeUploadWindow.webContents.isDestroyed()) {
-          activeUploadWindow.webContents.send('upload-progress', {
-            percent,
-            current,
-            total,
-            fileName: fileName ? path.basename(fileName) : null
-          })
-        }
-      } catch (e) {
-        // Ventana cerrada durante la subida
-      }
-      if (mainWindow?.webContents && !mainWindow.webContents.isDestroyed()) {
-        mainWindow.webContents.send('file-upload-status', { status: 'uploading', file: fileName, progress: percent })
-      }
-    }
-    
-    // Subir archivos secuencialmente para mostrar progreso correcto
-    for (let i = 0; i < targets.length; i++) {
-      const p = targets[i]
-      const fileName = path.basename(p)
-      
-      try {
-        updateProgress(completed, p)
-        
-        const res = await uploadFile(p)
-        
-        if (res.success) {
-          completed++
-          updateProgress(completed, p)
-          
-          if (mainWindow?.webContents) {
-            mainWindow.webContents.send('file-uploaded', res.data)
-          }
-        } else {
-          completed++
-          updateProgress(completed, p)
-          
-          if (mainWindow?.webContents) {
-            mainWindow.webContents.send('file-upload-error', { file: p, error: res.error })
-          }
-          new Notification({ title: 'Error', body: `Error al subir ${fileName}.` }).show()
-        }
-      } catch (error) {
-        completed++
-        updateProgress(completed, p)
-        
-        if (mainWindow?.webContents) {
-          mainWindow.webContents.send('file-upload-error', { file: p, error: error?.message || 'Error desconocido' })
-        }
-        new Notification({ title: 'Error', body: `Error al subir ${fileName}.` }).show()
-      }
-    }
-    
-    // Notificar finalización
-    try {
-      if (activeUploadWindow && !activeUploadWindow.isDestroyed() && !activeUploadWindow.webContents.isDestroyed()) {
-        activeUploadWindow.webContents.send('upload-complete')
-      }
-    } catch (e) {
-      // Ventana ya cerrada
-    }
-    
-    // Mostrar notificación de éxito si todos fueron subidos correctamente
-    if (completed === total) {
-      new Notification({ 
-        title: 'Subida completada', 
-        body: total === 1 ? `${path.basename(targets[0])} se ha subido correctamente.` : `${total} archivos subidos correctamente.` 
-      }).show()
-    }
-  }
-})
-
-// Handler para cuando el timeout expira - reinicializar el estado de los archivos
-ipcMain.on('notification-timeout', (_, { filePaths }) => {
-  try {
-    // Reinicializar el estado de los archivos para que no se vuelvan a procesar
-    resetClipboardFilesState()
-    log.info('Timeout de notificación de subir archivos - estado reinicializado')
-  } catch (e) {
-    log.error('Error en notification-timeout', e)
-  }
-})
-
-// Handler para cuando el usuario cancela - reinicializar el estado de los archivos
-ipcMain.on('notification-cancel', (_, { filePaths }) => {
-  try {
-    // Reinicializar el estado de los archivos para que no se vuelvan a procesar
-    resetClipboardFilesState()
-    log.info('Usuario canceló notificación de subir archivos - estado reinicializado')
-  } catch (e) {
-    log.error('Error en notification-cancel', e)
-  }
-})
-
-async function uploadFile(filePath) {
-  try {
-    if (!authToken) return { success: false, message: 'No autenticado' }
-    if (!fs.existsSync(filePath)) return { success: false, message: 'Archivo no encontrado' }
-    
-    const form = new FormData()
-    form.append('file', fs.createReadStream(filePath))
-    
-    const axiosInstance = getAxiosInstance()
-    const clientId = activeDeviceName || os.hostname()
-    
-    const headers = {
-      ...axiosInstance.defaults.headers,
-      ...form.getHeaders(),
-      'x-device-id': clientId
-    }
-    
-    // Asegurar que el Content-Type sea el del form-data (multipart)
-    if (headers['Content-Type'] === 'application/json') {
-      delete headers['Content-Type']
-    }
-    // form-data devuelve headers en minúsculas usualmente
-    const formHeaders = form.getHeaders()
-    for (const k in formHeaders) {
-      headers[k] = formHeaders[k]
-    }
-    
-    const res = await axiosInstance.post('/api/files/upload', form, { headers })
-    return { success: true, data: res.data }
-  } catch (error) {
-    log.error('Error subiendo archivo', error?.message || error)
-    return { success: false, error: error?.message || 'Error de red' }
-  }
-}
-
-async function saveClipboardRecord (type, value, meta = {}, overrides = {}) {
-  try {
-    const axiosInstance = getAxiosInstance()
-    const clientIdOverride = overrides && overrides.clientId ? String(overrides.clientId) : null
-    const deviceIdOverride = overrides && overrides.deviceId ? overrides.deviceId : null
-    const hostname = os.hostname()
-    let desiredClientId = clientIdOverride ?? (activeDeviceName || hostname)
-    let desiredDeviceId = null
-    if (deviceIdOverride) {
-      desiredDeviceId = deviceIdOverride
-    } else if (sanitizeDeviceName(desiredClientId) === sanitizeDeviceName(hostname)) {
-      desiredDeviceId = deviceId || (await ensureDeviceRegistered())
-    } else {
-      const resolved = await resolveDeviceIdentifiers(desiredClientId)
-      desiredDeviceId = resolved.deviceId || null
-      desiredClientId = resolved.clientId || desiredClientId
-    }
-    const payload = desiredDeviceId
-      ? { type, value, meta, clientId: desiredClientId, deviceId: desiredDeviceId }
-      : { type, value, meta, clientId: desiredClientId }
-    log.info('clipboard save request', { type, deviceId: desiredDeviceId })
-    const res = await axiosInstance.post('/clipboard', payload)
-    const data = res?.data
-    const item = (data && typeof data === 'object') ? (data.data ?? data) : null
-    return item?.id
-  } catch (error) {
-    if (error.response && error.response.status === 413) {
-      log.warn('clipboard save skipped: payload too large (413)', { type, size: value?.length })
-    } else {
-      log.error('clipboard save error', error?.message || error)
-    }
-  }
-}
-
-async function updateClipboardRecord (id, patch) {
-  try {
-    const axiosInstance = getAxiosInstance()
-    log.info('clipboard update request', { id, patch: (patch && typeof patch==='object')?patch:{} })
-    await axiosInstance.put(`/clipboard/${id}`,(patch && typeof patch==='object')?patch:{})
-  } catch (error) {
-    log.error('clipboard update error', error?.message || error)
-    try { if (error && error.response) { log.error('clipboard update response', error.response.data) } } catch {}
-  }
-}
-
-function readLocalHistory () {
-  try {
-    return readDeviceHistory()
-  } catch {
-    return []
-  }
-}
-
-async function syncWithServer() {
-  try {
-    const dirtyItems = db.getDirtyItems(getCurrentDeviceName())
-    if (dirtyItems.length === 0) return
-
-    const axiosInstance = getAxiosInstance()
-    // Ensure we have a valid clientId (device identifier)
-    const clientId = activeDeviceName || os.hostname()
-
-    // BATCH PROCESSING: Dynamic batching based on size (1MB chunks)
-    // We increase MAX_BATCH_SIZE significantly to let payload size drive the splitting
-    const MAX_BATCH_SIZE = 10000; 
-    const MAX_PAYLOAD_SIZE = 1024 * 1024 * 1; // ~1MB limit (Nginx default)
-
-    // Helper to calculate approximate size
-    const getSize = (obj) => JSON.stringify(obj).length;
-
-    const batches = [];
-    let currentBatch = [];
-    let currentSize = 0;
-
-    for (const item of dirtyItems) {
-        let type = 'text'
-        let valueToSend = item.value
-
-        if (item.value.startsWith('data:image')) {
-            type = 'image'
-        } else if (item.value.startsWith('[LOCAL_IMAGE]:')) {
-            type = 'image'
-            const localPath = item.value.replace('[LOCAL_IMAGE]:', '')
+});
+ipcMain.on('notification-action', async (_, action) => {
+    if (action === 'save' && pendingNotificationImage) {
+        if (pendingNotificationImage.type === 'image') {
             try {
-                if (fs.existsSync(localPath)) {
-                   const ni = nativeImage.createFromPath(localPath)
-                   if (!ni.isEmpty()) {
-                      valueToSend = ni.toDataURL()
-                   } else {
-                      continue
-                   }
-                } else {
-                   continue
-                }
-            } catch (e) {
-               continue
-            }
-        }
-
-        const itemChange = {
-            id: item.id,
-            clientId: item.clientId,
-            type: type,
-            value: valueToSend,
-            favorite: item.favorite,
-            version: item.version,
-            updatedAt: item.updatedAt
-        };
-        
-        const itemSize = getSize(itemChange);
-
-        // If a single item is too big, skip it or truncate (logging warning)
-        if (itemSize > MAX_PAYLOAD_SIZE) {
-            log.warn('Skipping item too large for sync', { id: item.id, size: itemSize });
-            continue; 
-        }
-
-        if (currentBatch.length >= MAX_BATCH_SIZE || (currentSize + itemSize) > MAX_PAYLOAD_SIZE) {
-             batches.push(currentBatch);
-             currentBatch = [];
-             currentSize = 0;
-        }
-
-        currentBatch.push(itemChange);
-        currentSize += itemSize;
-    }
-
-    if (currentBatch.length > 0) {
-        batches.push(currentBatch);
-    }
-
-    // Parallel processing with concurrency limit
-    // Increased to 10 concurrent requests to maximize throughput
-    const CONCURRENCY = 10;
-    log.info(`Syncing ${batches.length} batches with concurrency ${CONCURRENCY}`);
-    
-    for (let i = 0; i < batches.length; i += CONCURRENCY) {
-        const chunk = batches.slice(i, i + CONCURRENCY);
-        await Promise.all(chunk.map(batch => sendBatch(axiosInstance, clientId, batch)));
-    }
-    
-  } catch (error) {
-    log.error('syncWithServer error', error?.message || error)
-    // Don't throw, just log, so periodic sync keeps trying
-  }
-}
-
-async function sendBatch(axiosInstance, clientId, changes) {
-    if (changes.length === 0) return;
-    
-    try {
-        const payload = { clientId, changes };
-        log.info('syncWithServer sending batch', { count: changes.length });
-        
-        const res = await axiosInstance.post('/clipboard/sync', payload);
-        const { applied, conflicts } = res.data;
-
-        if (applied && Array.isArray(applied)) {
-            const appliedClientIds = applied.map(a => a.clientId).filter(Boolean);
-            if (appliedClientIds.length > 0) {
-                db.markSynced(getCurrentDeviceName(), appliedClientIds);
-            }
-            // Update remote IDs for new items
-            for (const appItem of applied) {
-                if (appItem.id && appItem.clientId) {
-                    db.updateRemoteId(getCurrentDeviceName(), appItem.clientId, appItem.id);
+                const { image, hash } = pendingNotificationImage;
+                const imagesDir = path.join(app.getPath('userData'), 'images');
+                if (!fs.existsSync(imagesDir))
+                    fs.mkdirSync(imagesDir, { recursive: true });
+                const filename = `${Date.now()}-${hash.substring(0, 8)}.png`;
+                const filePath = path.join(imagesDir, filename);
+                fs.writeFileSync(filePath, image.toPNG());
+                // Usar BackendDaemon para guardar con deviceId
+                const backendDaemon = BackendDaemon_1.BackendDaemon.getInstance();
+                const result = backendDaemon.saveClipboardItem(`[LOCAL_IMAGE]:${filePath}`, 'image');
+                if (result) {
+                    broadcastUpdate();
+                    // Encolar para sincronización
+                    const syncEngine = SyncEngine_1.SyncEngine.getInstance();
+                    syncEngine.enqueueItem(result.id, 'CREATE').catch(err => {
+                        log.error('Failed to enqueue image for sync:', err);
+                    });
                 }
             }
-        }
-
-        if (conflicts && Array.isArray(conflicts)) {
-            for (const conflict of conflicts) {
-                if (conflict.server) {
-                    db.updateFromConflict(getCurrentDeviceName(), conflict.server);
-                }
+            catch (e) {
+                log.error('Error saving image:', e);
             }
         }
-        log.info('Batch synced successfully', { applied: applied?.length });
-    } catch (e) {
-        log.error('Batch sync failed', e.message);
-        if (e.response && e.response.status === 413) {
-            log.error('Batch too large even after splitting. Retrying items individually...');
-            // Fallback: Try syncing items one by one
-            if (changes.length > 1) {
-                for (const item of changes) {
-                    try {
-                        await sendBatch(axiosInstance, clientId, [item]);
-                    } catch (innerError) {
-                        log.error('Individual item sync failed', { id: item.clientId, error: innerError.message });
-                        // If individual item fails with 413, we can't do much but skip it
+        else if (pendingNotificationImage.type === 'file') {
+            try {
+                const { filePath } = pendingNotificationImage;
+                if (fs.existsSync(filePath)) {
+                    const backend = BackendDaemon_1.BackendDaemon.getInstance();
+                    const form = new FormData();
+                    form.append('file', fs.createReadStream(filePath));
+                    // Get selected device ID
+                    const deviceId = db.getSettings().selectedDeviceId;
+                    // Upload immediately using the correct endpoint
+                    const res = await backend.request({
+                        url: '/api/files/upload',
+                        method: 'POST',
+                        data: form,
+                        headers: {
+                            ...form.getHeaders(),
+                            'x-device-id': deviceId
+                        }
+                    });
+                    if (res.success) {
+                        if (notificationWindow && !notificationWindow.isDestroyed()) {
+                            notificationWindow.close();
+                        }
+                        // Broadcast update so the list refreshes
+                        broadcastUpdate();
+                        if (mainWindow && !mainWindow.isDestroyed()) {
+                            mainWindow.webContents.send('file-uploaded', res.data);
+                        }
+                    }
+                    else {
+                        // Upload failed (e.g. offline)
+                        log.error('Upload failed:', res.error);
+                        if (notificationWindow && !notificationWindow.isDestroyed()) {
+                            // Send error to notification window to display
+                            notificationWindow.webContents.send('notification-error', 'Error al subir: ' + (res.error || 'Sin conexión'));
+                        }
                     }
                 }
-                return; // Handled via fallback
-            } else {
-                 log.error('Single item too large to sync', { id: changes[0].clientId });
+            }
+            catch (e) {
+                log.error('Error saving file:', e);
+                if (notificationWindow && !notificationWindow.isDestroyed()) {
+                    notificationWindow.webContents.send('notification-error', 'Error local: ' + e.message);
+                }
+            }
+            return; // Don't close window here, handled inside
+        }
+    }
+    // Close for cancel or non-file saves (images close immediately as they save locally)
+    if (notificationWindow && !notificationWindow.isDestroyed()) {
+        notificationWindow.close();
+    }
+    pendingNotificationImage = null;
+});
+// Clipboard Watcher
+let lastText = '';
+let lastImageHash = '';
+let clipboardWatcherInterval = null;
+function startClipboardWatcher() {
+    // Prevenir múltiples watchers
+    if (clipboardWatcherInterval) {
+        return;
+    }
+    clipboardWatcherInterval = setInterval(() => {
+        try {
+            const text = clipboard.readText();
+            // ... existing text logic ...
+            if (text && text.trim() !== '' && text !== lastText) {
+                lastText = text;
+                // Usar BackendDaemon para guardar (incluye deviceId automáticamente)
+                const backendDaemon = BackendDaemon_1.BackendDaemon.getInstance();
+                const result = backendDaemon.saveClipboardItem(text, 'text');
+                if (result) {
+                    broadcastUpdate();
+                    // Encolar para sincronización
+                    const syncEngine = SyncEngine_1.SyncEngine.getInstance();
+                    syncEngine.enqueueItem(result.id, 'CREATE').catch(err => {
+                        log.error('Failed to enqueue item for sync:', err);
+                    });
+                }
+            }
+            // 1. Detect Images
+            const image = clipboard.readImage();
+            if (!image.isEmpty()) {
+                const buffer = image.getBitmap();
+                const hash = crypto.createHash('md5').update(buffer).digest('hex');
+                if (hash !== lastImageHash) {
+                    lastImageHash = hash;
+                    pendingNotificationImage = { image, hash, type: 'image' };
+                    createNotificationWindow();
+                }
+            }
+            // 2. Detect Files
+            let detectedFilePath = null;
+            if (process.platform === 'win32') {
+                // Windows: Try 'FileNameW'
+                // The buffer is UCS-2 (UTF-16LE) and might contain multiple paths separated by NULL
+                // We take the first valid path.
+                try {
+                    const buffer = clipboard.readBuffer('FileNameW');
+                    if (buffer.length > 0) {
+                        // Split by NULL character (0x0000 in UCS-2 is 2 bytes of zeros)
+                        // But since we decode to string first, we split by '\0'
+                        const allPaths = buffer.toString('ucs2').split('\0');
+                        // Find the first valid file path
+                        for (const p of allPaths) {
+                            const cleanPath = p.trim();
+                            if (cleanPath.length > 0 && cleanPath.match(/^[a-zA-Z]:\\/) && fs.existsSync(cleanPath)) {
+                                detectedFilePath = cleanPath;
+                                break;
+                            }
+                        }
+                    }
+                }
+                catch (e) {
+                    // ignore buffer read errors
+                }
+            }
+            else if (process.platform === 'darwin') {
+                // macOS: Try 'public.file-url'
+                // The clipboard often contains the file URL string e.g. file:///Users/name/file.png
+                const fileUrl = clipboard.read('public.file-url');
+                if (fileUrl && fileUrl.startsWith('file://')) {
+                    detectedFilePath = decodeURIComponent(fileUrl.replace('file://', ''));
+                }
+            }
+            else if (process.platform === 'linux') {
+                // Linux: Try 'text/uri-list' (Nautilus, etc) or 'text/plain' fallback
+                // usually contains file:///home/user/file.png\r\n...
+                // We take the first one for simplicity
+                const uriList = clipboard.read('text/uri-list');
+                if (uriList) {
+                    const lines = uriList.split(/[\r\n]+/);
+                    for (const line of lines) {
+                        if (line.startsWith('file://')) {
+                            detectedFilePath = decodeURIComponent(line.replace('file://', ''));
+                            break;
+                        }
+                    }
+                }
+            }
+            if (detectedFilePath && fs.existsSync(detectedFilePath)) {
+                try {
+                    const stat = fs.statSync(detectedFilePath);
+                    if (stat.isFile()) {
+                        // Unique hash for file based on path + modification time
+                        // Add type to hash to avoid collisions with text/images
+                        const fileHash = crypto.createHash('md5').update(`file:${detectedFilePath}:${stat.mtimeMs}`).digest('hex');
+                        if (fileHash !== lastImageHash) {
+                            lastImageHash = fileHash;
+                            const ext = path.extname(detectedFilePath).toLowerCase();
+                            const isImage = ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp', '.svg'].includes(ext);
+                            if (isImage) {
+                                // If it's an image file, treat it as an IMAGE type so it shows preview and saves to Image tab
+                                const image = nativeImage.createFromPath(detectedFilePath);
+                                pendingNotificationImage = {
+                                    image,
+                                    hash: fileHash,
+                                    type: 'image'
+                                };
+                            }
+                            else {
+                                // Otherwise treat as generic document/file
+                                pendingNotificationImage = {
+                                    filePath: detectedFilePath,
+                                    fileName: path.basename(detectedFilePath),
+                                    hash: fileHash,
+                                    type: 'file'
+                                };
+                            }
+                            createNotificationWindow();
+                        }
+                    }
+                }
+                catch (e) {
+                    // ignore access errors
+                }
             }
         }
-        throw e;
+        catch (e) {
+            log.error('Clipboard watcher error:', e);
+        }
+    }, 1000);
+}
+function stopClipboardWatcher() {
+    if (clipboardWatcherInterval) {
+        clearInterval(clipboardWatcherInterval);
+        clipboardWatcherInterval = null;
+        log.info('[Main] Clipboard watcher stopped');
     }
 }
-
-async function syncClipboardHistory () {
-  try {
-    if (syncLock) return
-    syncLock = true
-    if (!authToken) {
-       syncLock = false
-       return
-    }
-    
-    if (mainWindow?.webContents) { mainWindow.webContents.send('sync-progress', { percentage: 10, message: 'Iniciando sincronización en segundo plano' }) }
-    
-    // Get dirty items to send
-    const dirtyItems = db.getDirtyItems(getCurrentDeviceName())
-    
-    // Send to worker
-    const config = { backendUrl: BACKEND_URL, authToken }
-    
-    // If worker is not ready, we can't sync
-    if (!worker || !worker.connected) {
-       log.error('Worker not connected, skipping sync')
-       syncLock = false
-       return
-    }
-
-    worker.send({ type: 'sync', config, items: dirtyItems, device: getCurrentDeviceName() })
-    
-    // Logic continues in worker.on('message', 'sync-done')
-    
-  } catch (error) {
-    log.error('syncClipboardHistory error', error?.message || error)
-    if (mainWindow?.webContents) { mainWindow.webContents.send('sync-progress', { percentage: 100, message: 'Sincronización fallida' }) }
-    syncLock = false
-  }
-}
-
-async function fetchBackendFavorites () {
-  const axiosInstance = getAxiosInstance()
-  log.info('favorite get request', { url: `${BACKEND_URL}/favorite/get_favorites` })
-  const res = await axiosInstance.get('/favorite/get_favorites')
-  try { log.info('favorite get response', { status: res.status, data: res.data }) } catch {}
-  if (!res.data.status) throw new Error('Error al obtener favoritos')
-  return res.data.data
-}
-
-async function createFavorite (value) {
-  const axiosInstance = getAxiosInstance()
-  log.info('favorite save request', { url: `${BACKEND_URL}/favorite/save`, body: { value } })
-  const res = await axiosInstance.post('/favorite/save', { value })
-  try { log.info('favorite save response', { status: res.status, data: res.data }) } catch {}
-  if (!res.data.status) throw new Error('Error al crear favorito')
-  return res.data.data
-}
-
-async function deleteFavorite (value) {
-  const axiosInstance = getAxiosInstance()
-  log.info('favorite delete request', { url: `${BACKEND_URL}/favorite/delete`, body: { value } })
-  const res = await axiosInstance.post(`/favorite/delete`,{value})
-  try { log.info('favorite delete response', { status: res.status, data: res.data }) } catch {}
-  if (!res.data.status) {
-    log.error('Error al eliminar favorito:', res.data.message)
-    throw new Error('Error al eliminar favorito')
-  }
-}
-
-function readLocalFavorites () {
-  try {
-    const items = readDeviceHistory()
-    return items.filter(item => item.favorite).map(item => item.value)
-  } catch {
-    return []
-  }
-}
-
-async function syncFavorites () {
-  try {
-    if (!authToken) return
-    if (Date.now() < favoritesSyncCooldownUntil) return
-    const localFavorites = readLocalFavorites()
-    log.info('syncFavorites start', { localCount: localFavorites.length })
-    const backendFavorites = await fetchBackendFavorites()
-
-    const backendValues = backendFavorites.map(fav => fav.value)
-    log.info('syncFavorites local/remote', { local: localFavorites.slice(0, 50), remote: backendValues.slice(0, 50) })
-
-    for (const value of localFavorites) {
-      if (!backendValues.includes(value)) {
-        log.info('syncFavorites creando favorito', { value })
-        await createFavorite(value)
-      }
-    }
-
-    for (const fav of backendFavorites) {
-      if (!localFavorites.includes(fav.value)) {
-        log.info('syncFavorites eliminando favorito', { value: fav.value })
-        await deleteFavorite(fav.value)
-      }
-    }
-
-    log.info('syncFavorites sincronización completa')
-  } catch (error) {
-    const status = error && error.response && error.response.status
-    if (status === 404) {
-      favoritesSyncCooldownUntil = Date.now() + (10 * 60 * 1000)
-      log.warn('syncFavorites deshabilitado temporalmente (404)', { cooldownMin: 10 })
-    } else {
-      log.error('syncFavorites error', { message: error.message })
-    }
-  }
-}
-
-
-
-ipcMain.handle('register-device', async (_, clientId) => {
-  try {
-    const axiosInstance = getAxiosInstance()
-    const hostname = os.hostname()
-    const osName = process.platform === 'win32' ? 'Windows' : (process.platform === 'darwin' ? 'macOS' : 'Linux')
-    const payload = { clientId: hostname, name: hostname, metadata: { os: osName, appVersion: app.getVersion() } }
-    log.info('register-device request', payload)
-    const res = await axiosInstance.post('/devices', payload)
-    const data = res?.data
-    const obj = (data && typeof data === 'object' ? (data.data ?? data) : {})
-    deviceId = obj?.id || obj?.device?.id || null
-    log.info('register-device success')
-  } catch (error) {
-    log.error('register-device error', error?.message || error)
-  }
-})
-
-ipcMain.handle('auth-login', async (_, body) => {
-  try {
-    const url = `${BACKEND_URL}/auth/login`
-    const res = await axios.post(url, body, {
-      headers: { 'Content-Type': 'application/json' }
-    })
-    return res.data
-  } catch (error) {
-    log.error('auth-login error', error?.message || error)
-    throw error
-  }
-})
-
-ipcMain.handle('clear-user-data', async () => {
-  try {
-    try { fs.rmSync(legacyHistoryPath, { force: true }) } catch {}
-    // Limpiar configuración de la DB
-    try {
-      db.removeConfig('session')
-      db.removeConfig('x-token')
-      db.removeConfig('preferences')
-      db.removeConfig('devices')
-    } catch {}
-    try {
-      // Limpiar archivos legacy en diferentes ubicaciones posibles (multiplataforma)
-      const legacyPaths = [
-        legacyHistoryPath, // Ya verificado arriba
-        path.join(os.homedir(), 'clipboard-history.json'), // Alternativa
-        path.join(app.getPath('userData'), 'clipboard-history.json'), // En userData
-      ]
-      
-      // Solo intentar limpiar __dirname si estamos en desarrollo (no empaquetado)
-      if (!app.isPackaged) {
-        legacyPaths.push(
-          path.join(__dirname, '.clipboard-history.json'),
-          path.join(__dirname, 'clipboard-history.json')
-        )
-      }
-      
-      for (const legacyPath of legacyPaths) {
-        try {
-          if (fs.existsSync(legacyPath)) {
-            fs.rmSync(legacyPath, { force: true })
-          }
-        } catch {}
-      }
-    } catch {}
-    authToken = null
-    deviceId = null
-    activeDeviceName = null
-    history = []
-    if (mainWindow?.webContents) {
-      mainWindow.webContents.send('clipboard-update', augmentHistoryWithImagePaths(history))
-    }
-  } catch (error) {
-    log.error('clear-user-data error', error?.message || error)
-  }
-})
-
-ipcMain.handle('get-preferences', async () => {
-  try {
-    const prefsStr = db.getConfig('preferences')
-    return prefsStr ? JSON.parse(prefsStr) : {}
-  } catch (e) {
-    log.error('get-preferences error:', e)
-    return {}
-  }
-})
-
-ipcMain.handle('set-preferences', async (_, patch) => {
-  try {
-    const prefsStr = db.getConfig('preferences')
-    const currentPrefs = prefsStr ? JSON.parse(prefsStr) : {}
-    const prefs = (patch && typeof patch === 'object') ? patch : {}
-    
-    // Si alguna preferencia es undefined, eliminarla del objeto
-    const newPrefs = { ...currentPrefs }
-    for (const key in prefs) {
-      if (prefs[key] === undefined || prefs[key] === null) {
-        delete newPrefs[key]
-      } else {
-        newPrefs[key] = prefs[key]
-      }
-    }
-    
-    db.setConfig('preferences', JSON.stringify(newPrefs))
-    
-    // Si cambiaron los atajos, recargar
-    if (prefs.shortcutModifier || prefs.shortcutKey) {
-      app.emit('update-shortcuts')
-    }
-    
-    return newPrefs
-  } catch (e) {
-    log.error('set-preferences error:', e)
-    return {}
-  }
-})
-ipcMain.handle('search-history', async (_, payload) => {
-  try {
-    const q = (payload && typeof payload === 'object') ? String(payload.query || '') : ''
-    const f = (payload && typeof payload === 'object') ? String(payload.filter || 'all') : 'all'
-    const page = (payload && typeof payload === 'object') ? Math.max(0, Number(payload.page || 0)) : 0
-    const limit = (payload && typeof payload === 'object') ? Math.max(1, Math.min(100, Number(payload.limit || 20))) : 20
-    
-    // Si hay búsqueda activa, usar función paginada
-    if (q.trim().length > 0) {
-      if (!authToken) {
-        if (f === 'favorite') return []
-        return augmentHistoryWithImagePaths(db.searchGuestPaginated(getCurrentDeviceName(), q, f, page, limit))
-      }
-      return augmentHistoryWithImagePaths(db.searchPaginated(getCurrentDeviceName(), q, f, page, limit))
-    } else {
-      // Sin búsqueda, usar función normal (limitada a 50 items como antes)
-      if (!authToken) {
-        if (f === 'favorite') return []
-        return augmentHistoryWithImagePaths(db.searchGuest(getCurrentDeviceName(), q, f))
-      }
-      return augmentHistoryWithImagePaths(db.search(getCurrentDeviceName(), q, f))
-    }
-  } catch {
-    return []
-  }
-})
-ipcMain.handle('list-recent', async (_, payload) => {
-  try {
-    const f = (payload && typeof payload === 'object') ? String(payload.filter || 'all') : 'all'
-    const limit = (payload && typeof payload === 'object') ? Number(payload.limit || 50) : 50
-    if (!authToken) {
-      if (f === 'favorite') return []
-      return augmentHistoryWithImagePaths(db.getRecentGuest(getCurrentDeviceName(), f, limit))
-    }
-    return augmentHistoryWithImagePaths(db.getRecent(getCurrentDeviceName(), f, limit))
-  } catch {
-    return []
-  }
-})
-
+// IPC Handlers
+// File Management IPC
 ipcMain.handle('list-files', async (_, params) => {
-  try {
-    // Validar autenticación - solo usuarios logueados pueden ver archivos
-    if (!authToken) {
-      log.info('Intento de listar archivos sin autenticación')
-      return { success: false, error: 'No autenticado', items: [] }
+    const backend = BackendDaemon_1.BackendDaemon.getInstance();
+    // Ensure we send deviceId instead of just forwarding raw params
+    // If params has clientId, replace/add deviceId
+    const queryParams = { ...params };
+    // Get current device ID if not provided
+    if (!queryParams.deviceId) {
+        const settings = db.getSettings();
+        if (settings.selectedDeviceId) {
+            queryParams.deviceId = settings.selectedDeviceId;
+        }
     }
-
-    const axiosInstance = getAxiosInstance()
-    
-    // Configurar parámetros de paginación con defaults correctos
-    const page = params?.page ? Math.max(1, parseInt(params.page)) : 1
-    const limit = params?.limit ? Math.min(200, Math.max(1, parseInt(params.limit))) : 50
-    
-    // Siempre incluir clientId - usar el de params si existe, sino activeDeviceName, sino hostname
-    const p = { page, limit }
-    p.clientId = params?.clientId || activeDeviceName || os.hostname()
-    
-    log.info('list-files FULL URL:', `${axiosInstance.defaults.baseURL}/api/files`, 'PARAMS:', p)
-    const res = await axiosInstance.get('/api/files', { params: p })
-    log.info('list-files response data:', JSON.stringify(res.data, null, 2))
-    return res.data
-  } catch (e) {
-    log.error('list-files error:', e.message)
-    if (e.response) log.error('list-files response error:', e.response.data)
-    return { success: false, error: e.message, items: [] }
-  }
-})
-
+    // Remove clientId if present to avoid confusion based on new requirement
+    if (queryParams.clientId)
+        delete queryParams.clientId;
+    const res = await backend.request({
+        url: '/api/files',
+        method: 'GET',
+        params: queryParams
+    });
+    // Return the whole response object so frontend can check success/data
+    return res;
+});
+ipcMain.handle('select-file', async () => {
+    const { canceled, filePaths } = await dialog.showOpenDialog(mainWindow, {
+        properties: ['openFile']
+    });
+    if (canceled || filePaths.length === 0)
+        return null;
+    return filePaths[0];
+});
+ipcMain.handle('upload-file', async (_, filePath) => {
+    try {
+        if (!fs.existsSync(filePath))
+            throw new Error('File not found');
+        const backend = BackendDaemon_1.BackendDaemon.getInstance();
+        const form = new FormData();
+        form.append('file', fs.createReadStream(filePath));
+        // Get selected device ID
+        const deviceId = db.getSettings().selectedDeviceId;
+        const res = await backend.request({
+            url: '/api/files/upload',
+            method: 'POST',
+            data: form,
+            headers: {
+                ...form.getHeaders(),
+                'x-device-id': deviceId
+            }
+        });
+        return res;
+    }
+    catch (e) {
+        return { success: false, error: e.message };
+    }
+});
 ipcMain.handle('delete-file', async (_, fileId) => {
-  try {
-    // Validar autenticación - solo usuarios logueados pueden eliminar archivos
-    if (!authToken) {
-      log.info('Intento de eliminar archivo sin autenticación')
-      return { success: false, error: 'No autenticado' }
-    }
-
-    const axiosInstance = getAxiosInstance()
-    const res = await axiosInstance.delete(`/api/files/${fileId}`)
-    return res.data
-  } catch (e) {
-    return { success: false, error: e.message }
-  }
-})
-
+    const backend = BackendDaemon_1.BackendDaemon.getInstance();
+    return await backend.request({
+        url: `/api/files/${fileId}`,
+        method: 'DELETE'
+    });
+});
 ipcMain.handle('download-file', async (_, fileId, fileName) => {
-  let writer = null
-  let progressStream = null
-  let responseStream = null
-  
-  try {
-    // Validar autenticación - solo usuarios logueados pueden descargar archivos
-    if (!authToken) {
-      log.info('Intento de descargar archivo sin autenticación')
-      return { success: false, error: 'No autenticado', canceled: false }
-    }
-
-    const axiosInstance = getAxiosInstance()
-    
-    let filePath
-    
-    // En Linux, descargar directamente sin abrir diálogo del sistema
-    if (process.platform === 'linux') {
-      // Obtener directorio de descargas
-      let defaultDir
-      try {
-        defaultDir = path.join(os.homedir(), 'Downloads')
-        // Si no existe Downloads, usar home
-        if (!fs.existsSync(defaultDir)) {
-          defaultDir = os.homedir()
-        }
-      } catch {
-        defaultDir = os.homedir()
-      }
-      
-      // Construir ruta completa
-      const defaultFileName = fileName || 'downloaded-file'
-      let finalPath = path.join(defaultDir, defaultFileName)
-      
-      // Si el archivo ya existe, agregar un número para evitar sobrescribir
-      if (fs.existsSync(finalPath)) {
-        const ext = path.extname(defaultFileName)
-        const baseName = path.basename(defaultFileName, ext)
-        let counter = 1
-        do {
-          finalPath = path.join(defaultDir, `${baseName} (${counter})${ext}`)
-          counter++
-        } while (fs.existsSync(finalPath) && counter < 1000)
-      }
-      
-      filePath = finalPath
-      
-      // Mostrar notificación informando al usuario
-      try {
-        const displayName = path.basename(filePath)
-        new Notification({
-          title: 'Descarga iniciada',
-          body: `El archivo se guardará en: ${defaultDir}\n${displayName}`,
-          silent: false
-        }).show()
-      } catch (notifError) {
-        log.warn('No se pudo mostrar notificación:', notifError)
-      }
-      
-      log.info('Linux: Descargando directamente a', filePath)
-    } else {
-      // Para Windows y macOS, usar el diálogo del sistema
-      // Obtener directorio de descargas por defecto
-      let defaultDir
-      try {
-        if (process.platform === 'win32') {
-          defaultDir = path.join(os.homedir(), 'Downloads')
-        } else if (process.platform === 'darwin') {
-          defaultDir = path.join(os.homedir(), 'Downloads')
-        } else {
-          defaultDir = path.join(os.homedir(), 'Downloads')
-        }
-      } catch {
-        defaultDir = os.homedir()
-      }
-      
-      // Construir ruta por defecto completa
-      const defaultFileName = fileName || 'downloaded-file'
-      const defaultPath = path.join(defaultDir, defaultFileName)
-      
-      // Preparar opciones del diálogo
-      const dialogOptions = {
-        title: 'Guardar archivo',
-        defaultPath: defaultPath,
-        buttonLabel: 'Guardar'
-      }
-      
-      // Agregar filtros si hay extensión
-      if (fileName && path.extname(fileName)) {
-        const ext = path.extname(fileName).slice(1)
-        if (ext) {
-          dialogOptions.filters = [
-            { name: 'Archivos', extensions: [ext] },
-            { name: 'Todos los archivos', extensions: ['*'] }
-          ]
-        }
-      }
-      
-      log.info('Mostrando diálogo de guardado', { defaultPath, fileName, platform: process.platform })
-      
-      // Mostrar el diálogo
-      let dialogResult
-      try {
-        // Para Windows y macOS, usar la ventana padre si está disponible
-        if (mainWindow && !mainWindow.isDestroyed()) {
-          // Asegurar que la ventana esté visible y enfocada
-          if (!mainWindow.isVisible()) {
-            mainWindow.show()
-          }
-          mainWindow.focus()
-          // Pequeño delay para asegurar que la ventana esté lista
-          await new Promise(resolve => setTimeout(resolve, 100))
-          dialogResult = await dialog.showSaveDialog(mainWindow, dialogOptions)
-        } else {
-          // Si no hay ventana, mostrar diálogo sin ventana padre
-          log.info('Mostrando diálogo sin ventana padre')
-          dialogResult = await dialog.showSaveDialog(dialogOptions)
-        }
-      } catch (dialogError) {
-        log.error('Error en showSaveDialog:', dialogError)
-        // Intentar una vez más sin ventana padre si falló con ventana
+    const { canceled, filePath } = await dialog.showSaveDialog(mainWindow, {
+        defaultPath: fileName,
+        title: 'Guardar archivo'
+    });
+    if (canceled || !filePath)
+        return { canceled: true };
+    const backend = BackendDaemon_1.BackendDaemon.getInstance();
+    const res = await backend.request({
+        url: `/api/files/${fileId}/download`,
+        method: 'GET',
+        responseType: 'arraybuffer'
+    });
+    if (res.success) {
         try {
-          log.info('Reintentando diálogo sin ventana padre')
-          dialogResult = await dialog.showSaveDialog(dialogOptions)
-        } catch (retryError) {
-          log.error('Error en segundo intento de diálogo:', retryError)
-          return { success: false, error: `Error al abrir diálogo de guardado: ${retryError.message || dialogError.message}`, canceled: true }
+            fs.writeFileSync(filePath, Buffer.from(res.data));
+            return { success: true, filePath };
         }
-      }
-      
-      if (!dialogResult) {
-        log.warn('Dialog result es null/undefined')
-        return { success: false, canceled: true }
-      }
-      
-      const { canceled, filePath: selectedPath } = dialogResult
-      if (canceled || !selectedPath || !selectedPath.trim()) {
-        log.info('Usuario canceló la descarga o no seleccionó ruta')
-        return { success: false, canceled: true }
-      }
-      
-      filePath = selectedPath
-      log.info('Ruta seleccionada para descarga:', filePath)
-    }
-    
-    // Validar que el directorio existe y es escribible
-    const dir = path.dirname(filePath)
-    try {
-      if (!fs.existsSync(dir)) {
-        fs.mkdirSync(dir, { recursive: true })
-      }
-      // Verificar permisos de escritura
-      fs.accessSync(dir, fs.constants.W_OK)
-    } catch (dirError) {
-      log.error('Error creando/verificando directorio:', dirError)
-      return { success: false, error: `No se pudo crear o escribir en el directorio: ${dirError.message}` }
-    }
-    
-    // En Linux, agregar un pequeño delay antes de iniciar la descarga para evitar bloqueos
-    if (process.platform === 'linux') {
-      await new Promise(resolve => setTimeout(resolve, 100))
-    }
-    
-    const res = await axiosInstance.get(`/api/files/${fileId}/download`, { responseType: 'stream' })
-    responseStream = res.data
-    
-    // Obtener el tamaño total del archivo desde los headers
-    const totalSize = parseInt(res.headers['content-length'] || '0', 10)
-    let downloadedSize = 0
-    
-    // Enviar evento inicial de inicio de descarga
-    if (mainWindow?.webContents && !mainWindow.webContents.isDestroyed()) {
-      mainWindow.webContents.send('download-progress', {
-        fileName: fileName || 'downloaded-file',
-        percentage: 0,
-        downloaded: 0,
-        total: totalSize
-      })
-    }
-    
-    // Crear un stream intermedio para monitorear el progreso
-    progressStream = new PassThrough()
-    writer = fs.createWriteStream(filePath)
-    
-    // Manejo de errores en el stream de respuesta
-    responseStream.on('error', (err) => {
-      log.error('Error en stream de respuesta:', err)
-      if (writer && !writer.destroyed) {
-        writer.destroy()
-      }
-      if (progressStream && !progressStream.destroyed) {
-        progressStream.destroy()
-      }
-      if (mainWindow?.webContents && !mainWindow.webContents.isDestroyed()) {
-        mainWindow.webContents.send('download-progress', {
-          fileName: fileName || 'downloaded-file',
-          percentage: 0,
-          error: err.message || 'Error en la descarga'
-        })
-      }
-    })
-    
-    // Manejo de errores en el progressStream
-    progressStream.on('error', (err) => {
-      log.error('Error en progressStream:', err)
-      if (writer && !writer.destroyed) {
-        writer.destroy()
-      }
-      if (responseStream && !responseStream.destroyed) {
-        responseStream.destroy()
-      }
-      if (mainWindow?.webContents && !mainWindow.webContents.isDestroyed()) {
-        mainWindow.webContents.send('download-progress', {
-          fileName: fileName || 'downloaded-file',
-          percentage: 0,
-          error: err.message || 'Error en el progreso de descarga'
-        })
-      }
-    })
-    
-    // Monitorear el progreso de descarga en el stream intermedio
-    progressStream.on('data', (chunk) => {
-      downloadedSize += chunk.length
-      if (mainWindow?.webContents && !mainWindow.webContents.isDestroyed()) {
-        const percentage = totalSize > 0 ? Math.min(100, Math.round((downloadedSize / totalSize) * 100)) : 0
-        mainWindow.webContents.send('download-progress', {
-          fileName: fileName || 'downloaded-file',
-          percentage,
-          downloaded: downloadedSize,
-          total: totalSize
-        })
-      }
-    })
-    
-    // Pipe el stream de respuesta a través del stream de progreso y luego al writer
-    responseStream.pipe(progressStream).pipe(writer)
-    
-    return new Promise((resolve, reject) => {
-      // Timeout de seguridad (30 minutos máximo)
-      const timeout = setTimeout(() => {
-        log.error('Timeout en descarga de archivo')
-        if (writer && !writer.destroyed) writer.destroy()
-        if (progressStream && !progressStream.destroyed) progressStream.destroy()
-        if (responseStream && !responseStream.destroyed) responseStream.destroy()
-        if (mainWindow?.webContents && !mainWindow.webContents.isDestroyed()) {
-          mainWindow.webContents.send('download-progress', {
-            fileName: fileName || 'downloaded-file',
-            percentage: 0,
-            error: 'Timeout en la descarga'
-          })
+        catch (e) {
+            return { success: false, error: e.message };
         }
-        reject({ success: false, error: 'Timeout en la descarga' })
-      }, 30 * 60 * 1000)
-      
-      writer.on('finish', () => {
-        clearTimeout(timeout)
-        // Enviar evento de finalización
-        if (mainWindow?.webContents && !mainWindow.webContents.isDestroyed()) {
-          mainWindow.webContents.send('download-progress', {
-            fileName: fileName || 'downloaded-file',
-            percentage: 100,
-            downloaded: totalSize || downloadedSize,
-            total: totalSize || downloadedSize
-          })
+    }
+    return res;
+});
+ipcMain.handle('get-clipboard-history', (_, { limit = 20, offset = 0, filter = {} } = {}) => {
+    // Automatically apply selected device filter if not explicitly requesting something else?
+    // User wants strict filtering by selected device.
+    const settings = db.getSettings();
+    // log.info(`[IPC] get-clipboard-history settings:`, JSON.stringify(settings))
+    // Ensure filter is not overwritten if passed by frontend (e.g. searching)
+    // But we want to enforce device scope.
+    if (settings.selectedDeviceId) {
+        // log.info(`[IPC] get-clipboard-history filtering by device: ${settings.selectedDeviceId}`)
+        filter.deviceId = settings.selectedDeviceId;
+        cachedSelectedDeviceId = settings.selectedDeviceId; // Update cache
+    }
+    else if (cachedSelectedDeviceId) {
+        log.warn(`[IPC] using CACHED device id: ${cachedSelectedDeviceId}`);
+        filter.deviceId = cachedSelectedDeviceId;
+    }
+    else {
+        log.warn(`[IPC] get-clipboard-history settings.selectedDeviceId IS MISSING/NULL!`);
+    }
+    const items = db.getItems(limit, offset, filter);
+    // log.info(`[IPC] get-clipboard-history returning ${items.length} items`)
+    return normalizeForIPC(items);
+});
+ipcMain.handle('delete-history-item', (_, id) => {
+    db.deleteItem(id);
+    broadcastUpdate();
+    return []; // Return empty or updated list? Frontend seems to expect list but usually re-fetches or uses broadcast
+});
+ipcMain.handle('search-history', (_, payload) => {
+    const filter = {};
+    if (payload && payload.query)
+        filter.search = payload.query;
+    if (payload && payload.type)
+        filter.type = payload.type;
+    // Apply selected device filter
+    const settings = db.getSettings();
+    if (settings.selectedDeviceId) {
+        filter.deviceId = settings.selectedDeviceId;
+    }
+    return normalizeForIPC(db.getItems(100, 0, filter));
+});
+ipcMain.handle('clear-history', () => {
+    db.clearAll();
+    return [];
+});
+ipcMain.on('toggle-favorite', (_, { id, isFavorite }) => {
+    db.setFavorite(id, isFavorite);
+    broadcastUpdate();
+});
+ipcMain.on('copy-to-clipboard', (_, text) => {
+    lastText = text;
+    clipboard.writeText(text);
+});
+ipcMain.on('paste-text', () => {
+    if (process.platform === 'win32') {
+        const pasteExe = path.join(__dirname, 'helpers', 'paste.exe');
+        if (fs.existsSync(pasteExe)) {
+            require('child_process').execFile(pasteExe, (err) => {
+                if (err)
+                    log.error('Paste error:', err);
+            });
         }
-        
-        // En Linux, mostrar notificación de descarga completada
-        if (process.platform === 'linux') {
-          try {
-            const displayName = path.basename(filePath)
-            new Notification({
-              title: 'Descarga completada',
-              body: `${displayName}\nGuardado en: ${path.dirname(filePath)}`,
-              silent: false
-            }).show()
-          } catch (notifError) {
-            log.warn('No se pudo mostrar notificación de completado:', notifError)
-          }
+    }
+});
+ipcMain.on('copy-image', (_, dataUrl) => {
+    if (dataUrl.startsWith('[LOCAL_IMAGE]:')) {
+        const p = dataUrl.replace('[LOCAL_IMAGE]:', '');
+        if (fs.existsSync(p)) {
+            const img = nativeImage.createFromPath(p);
+            clipboard.writeImage(img);
+            const hash = crypto.createHash('md5').update(img.toDataURL()).digest('hex');
+            lastImageHash = hash;
         }
-        
-        resolve({ success: true })
-      })
-      
-      writer.on('error', (e) => {
-        clearTimeout(timeout)
-        log.error('Error en writer:', e)
-        // Limpiar streams
-        if (progressStream && !progressStream.destroyed) progressStream.destroy()
-        if (responseStream && !responseStream.destroyed) responseStream.destroy()
-        // Enviar evento de error
-        if (mainWindow?.webContents && !mainWindow.webContents.isDestroyed()) {
-          mainWindow.webContents.send('download-progress', {
-            fileName: fileName || 'downloaded-file',
-            percentage: 0,
-            error: e.message || 'Error al escribir archivo'
-          })
+    }
+});
+ipcMain.handle('get-config', (_, key) => {
+    const s = db.getSettings();
+    if (key === 'session') {
+        return s.accessToken ? JSON.stringify({
+            token: s.accessToken,
+            refreshToken: s.refreshToken
+        }) : null;
+    }
+    if (key === 'darkMode')
+        return s.isDarkMode ? 'true' : 'false';
+    if (key === 'selectedDeviceId')
+        return s.selectedDeviceId || null;
+    return null;
+});
+ipcMain.handle('set-config', (_, key, value) => {
+    if (key === 'session') {
+        try {
+            const v = JSON.parse(value);
+            db.updateSettings({ AccessToken: v.token, RefreshToken: v.refreshToken });
         }
-        reject({ success: false, error: e.message || 'Error al escribir archivo' })
-      })
-      
-      // Manejar cierre del stream de respuesta
-      responseStream.on('end', () => {
-        // El stream terminó, esperar a que el writer termine
-      })
-    })
-  } catch (e) {
-    log.error('Error en download-file:', e)
-    // Limpiar recursos en caso de error
-    try {
-      if (writer && !writer.destroyed) writer.destroy()
-      if (progressStream && !progressStream.destroyed) progressStream.destroy()
-      if (responseStream && !responseStream.destroyed) responseStream.destroy()
-    } catch (cleanupError) {
-      log.error('Error limpiando recursos:', cleanupError)
+        catch (e) { }
     }
-    
-    // Enviar evento de error en caso de excepción
-    if (mainWindow?.webContents && !mainWindow.webContents.isDestroyed()) {
-      mainWindow.webContents.send('download-progress', {
-        fileName: fileName || 'downloaded-file',
-        percentage: 0,
-        error: e.message || 'Error desconocido'
-      })
+    if (key === 'darkMode') {
+        db.updateSettings({ IsDarkMode: value === 'true' });
     }
-    return { success: false, error: e.message || 'Error desconocido' }
-  }
-})
-
-process.on('unhandledRejection', (reason) => {
-  try { log.error('unhandledRejection', reason?.message || reason) } catch {}
-})
-process.on('uncaughtException', (error) => {
-  try { log.error('uncaughtException', error?.message || error) } catch {}
-})
-
-function detectPkgManager () {
-  const which = name => {
-    try {
-      const r = spawnSync(process.platform === 'win32' ? 'where' : 'which', [name], { stdio: 'ignore' })
-      return r && r.status === 0
-    } catch {
-      return false
+});
+ipcMain.handle('remove-config', (_, key) => {
+    if (key === 'session') {
+        db.updateSettings({ AccessToken: null, RefreshToken: null });
     }
-  }
-  if (which('apt-get')) return 'apt'
-  if (which('dnf')) return 'dnf'
-  if (which('pacman')) return 'pacman'
-  if (which('zypper')) return 'zypper'
-  return null
-}
-
-function getRootRunner () {
-  const which = name => {
-    try {
-      const r = spawnSync(process.platform === 'win32' ? 'where' : 'which', [name], { stdio: 'ignore' })
-      return r && r.status === 0
-    } catch {
-      return false
+});
+ipcMain.handle('get-app-version', () => app.getVersion());
+ipcMain.handle('get-system-locale', () => app.getLocale());
+ipcMain.handle('get-hostname', () => os.hostname());
+ipcMain.handle('hide-window', () => mainWindow && mainWindow.hide());
+ipcMain.handle('close-window', () => {
+    const win = BrowserWindow.getFocusedWindow();
+    if (win && win !== mainWindow)
+        win.close();
+    else if (win === mainWindow)
+        win.hide();
+});
+ipcMain.handle('get-preferences', () => {
+    return db.getSettings();
+});
+ipcMain.handle('set-preferences', (_, prefs) => {
+    const dbUpdate = {};
+    if (prefs.isDarkMode !== undefined)
+        dbUpdate.IsDarkMode = prefs.isDarkMode;
+    if (prefs.language)
+        dbUpdate.Language = prefs.language;
+    if (prefs.globalShortcut)
+        dbUpdate.GlobalShortcut = prefs.globalShortcut;
+    if (prefs.colorPrimary || prefs.colorSecondary || prefs.colorBg || prefs.colorSurface || prefs.colorText || prefs.fontSize) {
+        const currentTheme = JSON.parse(db.getSettings().theme || '{}');
+        if (prefs.colorPrimary)
+            currentTheme.primary = prefs.colorPrimary;
+        if (prefs.colorSecondary)
+            currentTheme.secondary = prefs.colorSecondary;
+        if (prefs.colorBg)
+            currentTheme.bg = prefs.colorBg;
+        if (prefs.colorSurface)
+            currentTheme.surface = prefs.colorSurface;
+        if (prefs.colorText)
+            currentTheme.text = prefs.colorText;
+        if (prefs.fontSize)
+            currentTheme.fontSize = prefs.fontSize;
+        dbUpdate.Theme = JSON.stringify(currentTheme);
     }
-  }
-  if (which('pkexec')) return 'pkexec'
-  if (which('sudo')) return 'sudo'
-  return null
-}
-
-async function installLinuxPasteSupport () {
-  try {
-    if (process.platform !== 'linux') return { ok: false, message: 'Solo Linux' }
-    const isWayland = !!(process.env.XDG_SESSION_TYPE === 'wayland' || process.env.WAYLAND_DISPLAY)
-    const pkg = detectPkgManager()
-    const runner = getRootRunner()
-    if (!pkg) return { ok: false, message: 'No se detectó gestor de paquetes' }
-    if (!runner) return { ok: false, message: 'No se detectó pkexec/sudo' }
-    const buildCmd = names => {
-      if (pkg === 'apt') return `apt-get update && apt-get install -y ${names.join(' ')}`
-      if (pkg === 'dnf') return `dnf install -y ${names.join(' ')}`
-      if (pkg === 'pacman') return `pacman -Sy --noconfirm ${names.join(' ')}`
-      if (pkg === 'zypper') return `zypper --non-interactive install ${names.join(' ')}`
-      return ''
+    const newSettings = db.updateSettings(dbUpdate);
+    if (dbUpdate.GlobalShortcut) {
+        ipcMain.emit('update-global-shortcut', null, dbUpdate.GlobalShortcut);
     }
-    const names = isWayland ? ['wtype', 'ydotool'] : ['xdotool']
-    const cmd = buildCmd(names.filter(Boolean))
-    if (!cmd) return { ok: false, message: 'No se pudo construir comando de instalación' }
-    const full = runner === 'pkexec' ? `pkexec bash -lc "${cmd}"` : `sudo bash -lc "${cmd}"`
-    return await new Promise(resolve => {
-      exec(full, err => {
-        if (err) {
-          log.error('installLinuxPasteSupport error', err)
-          resolve({ ok: false, message: 'Instalación fallida' })
-        } else {
-          resolve({ ok: true, message: 'Instalación completada' })
+    return newSettings;
+});
+ipcMain.handle('get-current-device', () => {
+    // Return explicitly selected device, or fallback to the local one logic?
+    // User wants: "que cuando se cierre la app y se inicie este sea el seleccionado"
+    // So we check AppSettings.SelectedDeviceId first.
+    const settings = db.getSettings();
+    if (settings.selectedDeviceId) {
+        // Find this device info
+        const devices = db.getDevices();
+        const found = devices.find((d) => d.Id === settings.selectedDeviceId);
+        if (found)
+            return found;
+    }
+    // Fallback to default behavior (e.g. current machine or last updated)
+    return db.getDevice();
+});
+ipcMain.handle('get-all-devices', () => {
+    return db.getDevices();
+});
+ipcMain.handle('register-new-device', (_, name) => {
+    // Note: db.registerDevice now handles duplicate checks and merging automatically
+    // so we can just pass the new info. If ID is not provided, db generates one or reuses existing by name.
+    // However, for explicit creation from UI, we might want to generate an ID if it's "new"
+    // but db.registerDevice handles that too.
+    const resId = db.registerDevice({
+        Id: null, // Let DB decide (reuse or create)
+        OsName: process.platform,
+        Name: name,
+        VersionApp: app.getVersion()
+    });
+    if (resId) {
+        // Update items to belong to this new device if they were orphans
+        db.updateAllItemsDevice(resId);
+        return { id: resId, name };
+    }
+    return null;
+});
+ipcMain.handle('set-active-device', (_, id) => {
+    log.info('IPC set-active-device called with:', id);
+    const result = db.setActiveDevice(id);
+    // Verify persistence
+    const settings = db.getSettings();
+    // log.info(`[IPC] db.getSettings() result:`, JSON.stringify(settings))
+    // log.info(`[IPC] Device set to: ${settings.selectedDeviceId} (Requested: ${id})`)
+    // Update cache
+    cachedSelectedDeviceId = id;
+    // Force a fresh filter application on broadcast
+    if (mainWindow && !mainWindow.isDestroyed()) {
+        const filter = {};
+        // Use the ID we just set, because DB might be slow to return it in getSettings() immediately
+        // or there is a race condition.
+        // We TRUST the ID passed to this function.
+        filter.deviceId = id;
+        // log.info(`[IPC] Forcing update with device filter: ${filter.deviceId}`)
+        const items = db.getItems(20, 0, filter);
+        // log.info(`[IPC] Found ${items.length} items for device`)
+        mainWindow.webContents.send('clipboard-update', normalizeForIPC(items));
+    }
+    // broadcastUpdate() // Replaced by explicit block above for debugging
+    return result;
+});
+// App Lifecycle
+app.whenReady().then(async () => {
+    await db.init(app);
+    configureAutoLaunch();
+    if (process.platform === 'darwin' && app.dock) {
+        app.dock.hide();
+    }
+    // --- Integration Start ---
+    // Initialize the BackendDaemon which sets up the request handling and IPC
+    BackendDaemon_1.BackendDaemon.getInstance();
+    log.info('Backend Daemon Initialized');
+    // Initialize SyncEngine and start hourly scheduler
+    const syncEngine = SyncEngine_1.SyncEngine.getInstance();
+    syncEngine.startScheduler();
+    log.info('Sync Engine Initialized - Hourly sync enabled');
+    // --- Integration End ---
+    const device = db.getDevice();
+    let deviceId = device ? device.Id : null;
+    if (deviceId) {
+        db.registerDevice({
+            Id: deviceId,
+            OsName: process.platform,
+            Name: device.Name,
+            VersionApp: app.getVersion()
+        });
+        // Claim orphan items (legacy items with NULL deviceId) for this local device
+        db.claimOrphanItems(deviceId);
+        // Ensure we have a selected device in settings (default to local)
+        if (!db.getSettings().selectedDeviceId) {
+            db.setActiveDevice(deviceId);
         }
-      })
-    })
-  } catch (e) {
-    log.error('installLinuxPasteSupport error', e?.message || e)
-    return { ok: false, message: 'Error instalando' }
-  }
-}
-
-ipcMain.handle('install-linux-paste-support', async () => {
-  const res = await installLinuxPasteSupport()
-  try {
-    if (mainWindow?.webContents) {
-      mainWindow.webContents.send('paste-status', res)
     }
-  } catch {}
-  return res
-})
+    protocol.registerFileProtocol('local-image', (request, callback) => {
+        const url = request.url.replace('local-image://', '');
+        try {
+            const decodedUrl = decodeURIComponent(url);
+            return callback(decodedUrl);
+        }
+        catch (error) {
+            console.error('Failed to register protocol', error);
+        }
+    });
+    createWindow();
+    let iconName = '64x64.png';
+    if (process.platform === 'darwin')
+        iconName = 'iconTemplate.png';
+    else if (process.platform === 'linux')
+        iconName = '32x32.png';
+    let iconPath = path.join(__dirname, 'frontend', 'media', iconName);
+    if (!fs.existsSync(iconPath)) {
+        iconPath = path.join(__dirname, 'frontend', 'media', '64x64.png'); // fallback
+    }
+    if (fs.existsSync(iconPath)) {
+        tray = new Tray(nativeImage.createFromPath(iconPath));
+        const contextMenu = Menu.buildFromTemplate([
+            { label: 'Show', click: () => mainWindow.show() },
+            { label: 'Quit', click: () => { isQuitting = true; app.quit(); } }
+        ]);
+        tray.setToolTip('Copyfy Local');
+        tray.setContextMenu(contextMenu);
+        tray.on('click', () => mainWindow.isVisible() ? mainWindow.hide() : mainWindow.show());
+    }
+    startClipboardWatcher();
+    const settings = db.getSettings();
+    const shortcut = settings.globalShortcut || 'Alt+X';
+    const registerShortcut = (accelerator) => {
+        globalShortcut.unregisterAll();
+        try {
+            const ret = globalShortcut.register(accelerator, () => {
+                if (mainWindow.isVisible())
+                    mainWindow.hide();
+                else {
+                    mainWindow.show();
+                    mainWindow.focus();
+                }
+            });
+            if (!ret) {
+                console.log('Registration failed for shortcut:', accelerator);
+            }
+        }
+        catch (e) {
+            console.error('Error registering shortcut', e);
+        }
+    };
+    registerShortcut(shortcut);
+    ipcMain.on('update-global-shortcut', (_, newShortcut) => {
+        db.updateSettings({ GlobalShortcut: newShortcut });
+        registerShortcut(newShortcut);
+    });
+});
+app.on('window-all-closed', () => {
+});
+app.on('before-quit', () => {
+    isQuitting = true;
+    globalShortcut.unregisterAll();
+    // Cleanup: Detener clipboard watcher
+    stopClipboardWatcher();
+    // Cleanup: Detener SyncEngine
+    const syncEngine = SyncEngine_1.SyncEngine.getInstance();
+    syncEngine.destroy();
+    log.info('[Main] App cleanup completed');
+});
+ipcMain.on('open-image-viewer', (_, dataUrl) => {
+    if (dataUrl.startsWith('[LOCAL_IMAGE]:')) {
+        const p = dataUrl.replace('[LOCAL_IMAGE]:', '');
+        createOCRWindow(`local-image://${p}`);
+        return;
+    }
+    if (dataUrl.startsWith('local-image://')) {
+        createOCRWindow(dataUrl);
+        return;
+    }
+    if (dataUrl.startsWith('data:image')) {
+        try {
+            const match = dataUrl.match(/^data:image\/([a-zA-Z0-9.+-]+);base64,(.*)$/);
+            const ext = match && match[1] ? (match[1].includes('svg') ? 'svg' : match[1].split('+')[0].split('.').pop()) : 'png';
+            const b64 = match && match[2] ? match[2] : dataUrl.split(',')[1];
+            if (b64) {
+                const buf = Buffer.from(b64, 'base64');
+                const imagesDir = path.join(app.getPath('userData'), 'images', 'tmp');
+                if (!fs.existsSync(imagesDir))
+                    fs.mkdirSync(imagesDir, { recursive: true });
+                const filename = `view-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext || 'png'}`;
+                const filePath = path.join(imagesDir, filename);
+                fs.writeFileSync(filePath, buf);
+                createOCRWindow(`local-image://${filePath}`);
+                return;
+            }
+        }
+        catch (e) {
+            console.error('Failed to persist data URL image:', e);
+        }
+    }
+    createOCRWindow(`local-image://${dataUrl}`);
+});
+ipcMain.on('open-ocr-window', (_, imagePath) => {
+    if (imagePath.startsWith('[LOCAL_IMAGE]:')) {
+        const p = imagePath.replace('[LOCAL_IMAGE]:', '');
+        createOCRWindow(`local-image://${p}`);
+        return;
+    }
+    if (imagePath.startsWith('local-image://')) {
+        createOCRWindow(imagePath);
+        return;
+    }
+    if (imagePath.startsWith('data:image')) {
+        try {
+            const match = imagePath.match(/^data:image\/([a-zA-Z0-9.+-]+);base64,(.*)$/);
+            const ext = match && match[1] ? (match[1].includes('svg') ? 'svg' : match[1].split('+')[0].split('.').pop()) : 'png';
+            const b64 = match && match[2] ? match[2] : imagePath.split(',')[1];
+            if (b64) {
+                const buf = Buffer.from(b64, 'base64');
+                const imagesDir = path.join(app.getPath('userData'), 'images', 'tmp');
+                if (!fs.existsSync(imagesDir))
+                    fs.mkdirSync(imagesDir, { recursive: true });
+                const filename = `view-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext || 'png'}`;
+                const filePath = path.join(imagesDir, filename);
+                fs.writeFileSync(filePath, buf);
+                createOCRWindow(`local-image://${filePath}`);
+                return;
+            }
+        }
+        catch (e) {
+            console.error('Failed to persist data URL image (OCR):', e);
+        }
+    }
+    if ((/^[a-zA-Z]:\\/.test(imagePath) || imagePath.startsWith('/')) && fs.existsSync(imagePath)) {
+        createOCRWindow(`local-image://${imagePath}`);
+        return;
+    }
+    createOCRWindow(imagePath);
+});
+ipcMain.on('open-code-editor', (_, content) => {
+    createCodeWindow(content);
+});

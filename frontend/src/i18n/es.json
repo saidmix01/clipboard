@@ -3,6 +3,14 @@
     "title": "Ajustes",
     "general": "Configuración general",
     "sync_now": "Sincronizar ahora",
+    "sync_now_desc": "Sincroniza tus datos con la nube inmediatamente",
+    "syncing": "Sincronizando...",
+    "last_sync": "Última sincronización: {{time}}",
+    "last_sync_just_now": "hace un momento",
+    "last_sync_mins": "hace {{mins}} min",
+    "last_sync_hours": "hace {{hours}}h",
+    "never_synced": "Nunca sincronizado",
+    "sync_stats": "{{synced}} sincronizados, {{pending}} pendientes",
     "change_device": "Cambiar dispositivo",
     "check_updates": "Buscar actualizaciones",
     "dark_mode": "Modo oscuro",
@@ -77,7 +85,8 @@
     "error_password_length": "La contraseña debe tener al menos 8 caracteres",
     "error_connection": "Error de conexión",
     "error_login": "Error en login",
-    "error_register": "Error en registro"
+    "error_register": "Error en registro",
+    "error_credentials": "Credenciales inválidas"
   },
   "user": {
     "title": "Datos del usuario",
@@ -125,6 +134,32 @@
     "profile": "Perfil",
     "logout": "Cerrar sesión",
     "login": "Iniciar sesión",
-    "register": "Registrarse"
+    "register": "Registrarse",
+    "filters": "Filtros",
+    "filter_text": "Texto",
+    "filter_image": "Imagen",
+    "filter_favorites": "Favoritos",
+    "filter_docs": "Docs"
+  },
+  "notification_window": {
+    "uploading": "Subiendo...",
+    "document": "Documento:",
+    "new_image": "Nueva imagen detectada",
+    "close": "Cerrar",
+    "cancel": "Cancelar",
+    "upload": "Subir",
+    "save": "Guardar"
+  },
+  "ocr": {
+    "title": "OCR - Extracción de Texto",
+    "select_area": "Selecciona el área a escanear",
+    "loading_image": "Cargando imagen...",
+    "extract_text": "Extraer Texto",
+    "result": "Resultado",
+    "placeholder": "El texto extraído aparecerá aquí...",
+    "copy_clipboard": "Copiar al portapapeles",
+    "copied": "Copiado",
+    "no_text_detected": "No se detectó texto",
+    "ocr_error": "Error en OCR"
   }
 }

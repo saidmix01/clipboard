@@ -24,8 +24,8 @@ function CodeBlock({ code }: { code: string }) {
   const ref = useRef<HTMLElement>(null)
   useEffect(() => { if (ref.current) hljs.highlightElement(ref.current) }, [code])
   return (
-    <pre className="code-block">
-      <code ref={ref} className="language-javascript">{code}</code>
+    <pre className="code-block m-0 p-0 bg-transparent">
+      <code ref={ref} className="language-javascript text-[12px] leading-[1.3] font-mono p-0 bg-transparent" style={{ background: 'transparent' }}>{code}</code>
     </pre>
   )
 }
@@ -46,6 +46,8 @@ type Props = {
 function Card({ item, selected, onCopy, onToggleFavorite, onDelete, highlightMatch, search, canFavorite = true, canOpenModal = true, onContextMenu }: Props) {
   const { t } = useTranslation()
   const [expanded, setExpanded] = useState(false)
+  const [copied, setCopied] = useState(false)
+  
   const isImage = item.value.startsWith('data:image') || !!(item as any).imagePath || item.value.startsWith('[LOCAL_IMAGE]:') || !!item.previewPath || !!item.originalPath
   const isCode = !isImage && isCodeSnippet(item.value)
 
@@ -77,84 +79,118 @@ function Card({ item, selected, onCopy, onToggleFavorite, onDelete, highlightMat
     legacyImageSrc = `local-image://${item.value.replace('[LOCAL_IMAGE]:', '')}`
   }
 
+  const handleCopy = (e: React.MouseEvent) => {
+    setCopied(true)
+    setTimeout(() => setCopied(false), 400)
+    onCopy()
+  }
+
   return (
     <div
-      className={`relative mb-2 p-2 rounded-[12px] border border-[color:var(--color-border)] ${selected ? 'ring-2 ring-[color:var(--color-primary)]' : ''}`}
-      style={{ cursor: 'pointer', backgroundColor: 'var(--color-surface)', overflow: 'hidden' }}
-      onClick={onCopy}
+      className={`group relative mb-1.5 p-2 rounded-[var(--radius-card)] border transition-all duration-150 ease-out select-none
+        ${item.favorite 
+          ? 'bg-[color:var(--color-accent)]/5 border-[color:var(--color-accent)]/30' 
+          : 'bg-[color:var(--color-surface)] border-[color:var(--color-border)]'
+        }
+        ${selected ? 'ring-1 ring-[color:var(--color-primary)] border-[color:var(--color-primary)]' : ''}
+        ${copied ? 'bg-[color:var(--color-secondary)]/10 border-[color:var(--color-secondary)]' : 'hover:bg-black/5 dark:hover:bg-[#2a2a2a]'}
+      `}
+      style={{ cursor: 'pointer', overflow: 'hidden', boxShadow: 'var(--shadow-soft)' }}
+      onClick={handleCopy}
       onContextMenu={onContextMenu}
     >
-      <div>
+      <div className="relative z-10">
         {isImage ? (
-          // Usar LazyImage si hay paths en disco, sino usar img legacy para data URLs
-          (previewPath || originalPath || imagePath) ? (
-            <LazyImage
-              previewPath={previewPath}
-              originalPath={originalPath}
-              imagePath={imagePath}
-              alt="imagen"
-              className="max-w-full rounded-[10px]"
-              style={{ maxHeight: expanded ? undefined : 120, objectFit: 'cover' }}
-            />
-          ) : legacyImageSrc ? (
-            <img
-              src={legacyImageSrc}
-              alt="imagen"
-              className="max-w-full rounded-[10px]"
-              style={{ maxHeight: expanded ? undefined : 120, objectFit: 'cover' }}
-            />
-          ) : null
+          <div className="relative rounded-[calc(var(--radius-card)-2px)] overflow-hidden">
+            {(previewPath || originalPath || imagePath) ? (
+              <LazyImage
+                previewPath={previewPath}
+                originalPath={originalPath}
+                imagePath={imagePath}
+                alt="imagen"
+                className="max-w-full w-full object-cover"
+                style={{ maxHeight: expanded ? undefined : 80 }}
+              />
+            ) : legacyImageSrc ? (
+              <img
+                src={legacyImageSrc}
+                alt="imagen"
+                className="max-w-full w-full object-cover"
+                style={{ maxHeight: expanded ? undefined : 80 }}
+              />
+            ) : null}
+            {!expanded && <div className="absolute inset-0 bg-gradient-to-t from-black/20 to-transparent pointer-events-none" />}
+          </div>
         ) : isCode ? (
-          <div style={{ maxHeight: expanded ? undefined : 120, overflow: 'hidden' }}>
-            <CodeBlock code={item.value} />
+          <div className="relative rounded-[calc(var(--radius-card)-2px)] overflow-hidden bg-black/5 dark:bg-white/5 border border-[color:var(--color-border)]/30 p-1">
+            <div style={{ maxHeight: expanded ? undefined : 60, overflow: 'hidden' }}>
+              <CodeBlock code={item.value} />
+            </div>
+            {!expanded && <div className="absolute bottom-0 left-0 right-0 h-6 bg-gradient-to-t from-[color:var(--color-surface)] to-transparent pointer-events-none" />}
           </div>
         ) : (
-          <div className="text-[color:var(--color-text)] break-words" style={{ fontSize: 'var(--font-size-card)', maxHeight: expanded ? undefined : 120, overflow: 'hidden' }}>
+          <div 
+            className="text-[color:var(--color-text)] break-words text-[13px] leading-[1.4] font-medium" 
+            style={{ 
+              display: '-webkit-box', 
+              WebkitLineClamp: expanded ? 'unset' : 2, 
+              WebkitBoxOrient: 'vertical', 
+              overflow: 'hidden' 
+            }}
+          >
             {highlightMatch(item.value, search)}
           </div>
         )}
       </div>
 
-      <div
-        className="-mx-2 -mb-2 mt-2 flex items-center justify-between text-xs py-1 px-2 border-t border-[color:var(--color-border)] bg-[color:var(--color-surface)]"
-      >
-        {(item.value.length > 300 || isImage) && (
+      {/* Floating Action Buttons */}
+      <div className="absolute top-1 right-1 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity duration-150 z-20">
+        {(item.value.length > 200 || isImage || isCode) && (
           <button
-            className="p-1 rounded-md hover:bg-[color:var(--color-bg)] transition-colors"
+            className="p-1 rounded-[var(--radius-button)] bg-[color:var(--color-surface)] border border-[color:var(--color-border)] hover:bg-[color:var(--color-primary)] hover:text-white hover:border-[color:var(--color-primary)] text-[color:var(--color-muted)] hover:text-white transition-colors shadow-sm"
             title={expanded ? t('see_less') : t('see_more')}
             onClick={(e) => {
               e.stopPropagation()
-              if (canOpenModal && isImage) { (window as any).electronAPI?.openImageViewer?.(item.value); return }
-              if (canOpenModal) { (window as any).electronAPI?.openCodeEditor?.(item.value); return }
+              if (canOpenModal && isImage) {
+                 let path = item.value
+                 if (item.value.startsWith('[LOCAL_IMAGE]:')) {
+                     path = `local-image://${item.value.replace('[LOCAL_IMAGE]:', '')}`
+                 } else if ((item as any).imagePath) {
+                     path = `local-image://${(item as any).imagePath}`
+                 }
+                 (window as any).electronAPI?.openOCRWindow?.(path)
+                 return 
+              }
+              if (canOpenModal || isCode) { 
+                  (window as any).electronAPI?.openCodeEditor?.(item.value); 
+                  return 
+              }
               setExpanded(!expanded)
             }}
-            style={{ color: 'var(--color-text)' }}
           >
-            <EyeIcon className="w-4 h-4" />
+            <EyeIcon className="w-3.5 h-3.5" />
           </button>
         )}
-        <div className="flex items-center gap-2 ml-auto">
-          {onDelete && (
-            <button
-              onClick={(e) => { e.stopPropagation(); onDelete() }}
-              title={t('delete.title')}
-              className="p-1 rounded-md hover:bg-[color:var(--color-bg)] transition-colors"
-              style={{ color: '#ef4444' }}
-            >
-              <TrashIcon className="w-4 h-4" />
-            </button>
-          )}
-          {canFavorite && (
-            <button
-              onClick={(e) => { e.stopPropagation(); onToggleFavorite() }}
-              title={t('favorite')}
-              className="p-1 rounded-md hover:bg-[color:var(--color-bg)] transition-colors"
-              style={{ color: item.favorite ? 'var(--color-accent)' : 'gray' }}
-            >
-              {item.favorite ? <StarSolid className="w-4 h-4" /> : <StarOutline className="w-4 h-4" />}
-            </button>
-          )}
-        </div>
+        {canFavorite && (
+          <button
+            onClick={(e) => { e.stopPropagation(); onToggleFavorite() }}
+            title={t('favorite')}
+            className={`p-1 rounded-[var(--radius-button)] bg-[color:var(--color-surface)] border border-[color:var(--color-border)] hover:bg-[color:var(--color-accent)] hover:text-white hover:border-[color:var(--color-accent)] transition-colors shadow-sm
+              ${item.favorite ? 'text-[color:var(--color-accent)]' : 'text-[color:var(--color-muted)]'}
+            `}
+          >
+            {item.favorite ? <StarSolid className="w-3.5 h-3.5" /> : <StarOutline className="w-3.5 h-3.5" />}
+          </button>
+        )}
+        {onDelete && (
+          <button
+            onClick={(e) => { e.stopPropagation(); onDelete() }}
+            title={t('delete.title')}
+            className="p-1 rounded-[var(--radius-button)] bg-[color:var(--color-surface)] border border-[color:var(--color-border)] hover:bg-red-500 hover:text-white hover:border-red-500 text-[color:var(--color-muted)] transition-colors shadow-sm"
+          >
+            <TrashIcon className="w-3.5 h-3.5" />
+          </button>
+        )}
       </div>
     </div>
   )

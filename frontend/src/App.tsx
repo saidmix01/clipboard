@@ -3,981 +3,494 @@ import type { ReactNode } from 'react'
 import { Toaster, toast } from 'react-hot-toast'
 import { useTranslation } from 'react-i18next'
 import { motion } from 'framer-motion'
-import { Cog6ToothIcon, UserCircleIcon, ArrowRightStartOnRectangleIcon, ArrowLeftEndOnRectangleIcon, UserPlusIcon } from '@heroicons/react/24/outline'
+import { Cog6ToothIcon, UserCircleIcon, ArrowRightStartOnRectangleIcon, ArrowLeftEndOnRectangleIcon, UserPlusIcon, DocumentPlusIcon } from '@heroicons/react/24/outline'
 import LoginModal from './Login'
 import UserModal from './UserModal'
-import DeviceSwitchModal from './DeviceSwitchModal'
-import { API_BASE } from './config'
 import AppShell from './components/AppShell'
 import TopBar from './components/TopBar'
 import Dock from './components/Dock'
-import HistoryList from './components/HistoryList'
+import HistoryList, { type HistoryListRef } from './components/HistoryList'
 import FileList from './components/FileList'
-// filtros movidos a la barra inferior
-import SearchQuickSwitcher from './components/SearchQuickSwitcher'
 import SettingsMenu from './components/SettingsMenu'
 import AboutModal from './components/AboutModal'
 import OnboardingTour from './components/OnboardingTour'
 import ContextMenu from './components/ContextMenu'
 import DeleteModal from './components/DeleteModal'
+import OCRModal from './components/OCRModal'
+import DeviceRegistrationModal from './components/DeviceRegistrationModal'
+import DeviceSelectionModal from './components/DeviceSelectionModal'
 import type { HistoryItem, FilterType } from './types'
+import { API_BASE } from './config'
+import { backendRequest } from './api/backend'
 
-const formatBytes = (bytes: number, decimals = 2) => {
-  if (!+bytes) return '0 B'
-  const k = 1024
-  const dm = decimals < 0 ? 0 : decimals
-  const sizes = ['B', 'KB', 'MB', 'GB', 'TB']
-  const i = Math.floor(Math.log(bytes) / Math.log(k))
-  return `${parseFloat((bytes / Math.pow(k, i)).toFixed(dm))} ${sizes[i]}`
+const resolveAvatar = (s?: string | null): string | null => {
+  if (!s) return null
+  let v = String(s)
+  v = v.replace(/\\/g, '/')
+  if (v.startsWith('http://') || v.startsWith('https://') || v.startsWith('data:')) return v
+  if (v.startsWith('localhost:') || v.startsWith('127.0.0.1:')) return `http://${v}`
+  if (v.startsWith('/')) return `${API_BASE}${v}`
+  if (v.startsWith('uploads/')) return `${API_BASE}/${v}`
+  if (v.includes('/uploads/')) return `${API_BASE}${v.substring(v.indexOf('/uploads/'))}`
+  return `${API_BASE}/uploads/${v}`
 }
 
 function App () {
   const [filter, setFilter] = useState<FilterType>('text')
   const [displayed, setDisplayed] = useState<HistoryItem[]>([])
-  const [listLoading, setListLoading] = useState<boolean>(false)
-  const [searchPage, setSearchPage] = useState<number>(0)
-  const [hasMore, setHasMore] = useState<boolean>(false)
+  const [, setListLoading] = useState<boolean>(false)
+  const [hasMore, setHasMore] = useState<boolean>(true)
   const [isLoadingMore, setIsLoadingMore] = useState<boolean>(false)
-  const searchAbortControllerRef = useRef<AbortController | null>(null)
-  const MAX_ITEMS_IN_MEMORY = 100 // Límite duro de items en RAM
-  const [syncing, setSyncing] = useState<boolean>(false)
-  const [syncPct, setSyncPct] = useState<number>(0)
-  const [downloading, setDownloading] = useState<boolean>(false)
-  const [downloadPct, setDownloadPct] = useState<number>(0)
-  const [downloadFileName, setDownloadFileName] = useState<string>('')
-  const [downloadBytes, setDownloadBytes] = useState<number>(0)
-  const [downloadTotal, setDownloadTotal] = useState<number>(0)
-  const [, setHistory] = useState<HistoryItem[]>([])
+  const [page, setPage] = useState<number>(0)
+  const PAGE_SIZE = 20
+
   const [search, setSearch] = useState<string>('')
   const searchInputRef = useRef<HTMLInputElement>(null)
-  const [searchLocked, setSearchLocked] = useState<boolean>(false)
-  const containerRef = useRef<HTMLDivElement>(null)
-  const [showLogin, setShowLogin] = useState(false)
-  const [showRegister, setShowRegister] = useState(false)
-  const [showUserModal, setShowUserModal] = useState(false)
+  const historyListRef = useRef<HistoryListRef>(null)
+  
+  const { t } = useTranslation()
+  const [darkMode, setDarkMode] = useState<boolean>(false)
+  const [settingsOpen, setSettingsOpen] = useState<boolean>(false)
+  const [aboutOpen, setAboutOpen] = useState<boolean>(false)
+  const [showLogin, setShowLogin] = useState<boolean>(false)
+  const [showRegister, setShowRegister] = useState<boolean>(false)
+  const [showUserModal, setShowUserModal] = useState<boolean>(false)
   const [token, setToken] = useState<string | null>(null)
-  const [globalLoading, setGlobalLoading] = useState(false)
+  const [globalLoading, setGlobalLoading] = useState<boolean>(false)
+  const [appVersion, setAppVersion] = useState<string>('')
+  const [showTour, setShowTour] = useState<boolean>(false)
+  const [contextMenu, setContextMenu] = useState<{x: number, y: number, item: HistoryItem} | null>(null)
+  const [itemToDelete, setItemToDelete] = useState<HistoryItem | null>(null)
+  const [deletingLoading, setDeletingLoading] = useState<boolean>(false)
+  const [ocrImage, setOcrImage] = useState<string | null>(null)
   const [userAvatar, setUserAvatar] = useState<string | null>(null)
+  const [showDeviceSelection, setShowDeviceSelection] = useState<boolean>(false)
+  const [isSearchFocused, setIsSearchFocused] = useState<boolean>(false)
 
-  // Función para cargar más resultados (infinite scroll)
-  const loadMoreResults = useCallback(() => {
-    const q = search.trim()
-    if (q.length === 0 || !hasMore || isLoadingMore || listLoading) return
+  // Files state
+  const [files, setFiles] = useState<any[]>([])
+  const [storage, setStorage] = useState<any>(null)
 
-    setIsLoadingMore(true)
-    const currentPage = searchPage
-    const payload = { query: q, filter: 'text', page: currentPage, limit: 20 }
-    
-    Promise.resolve((window as any).electronAPI?.searchHistory?.(payload))
-      .then((res: HistoryItem[]) => {
-        if (Array.isArray(res) && res.length > 0) {
-          // Verificar si ya alcanzamos el límite de memoria
-          const currentTotal = displayed.length
-          const remaining = MAX_ITEMS_IN_MEMORY - currentTotal
-          
-          if (remaining > 0) {
-            // Agregar solo los que quepan en memoria
-            const newItems = res.slice(0, remaining)
-            setDisplayed(prev => [...prev, ...newItems])
-            setHasMore(res.length === 20 && (currentTotal + newItems.length) < MAX_ITEMS_IN_MEMORY)
-            setSearchPage(currentPage + 1)
-          } else {
-            // Ya alcanzamos el límite
-            setHasMore(false)
-          }
-        } else {
-          setHasMore(false)
-        }
-      })
-      .catch(() => {
-        setHasMore(false)
-      })
-      .finally(() => {
-        setIsLoadingMore(false)
-      })
-  }, [search, hasMore, isLoadingMore, listLoading, searchPage, displayed.length])
-
-  const logout = async () => {
-    setToken(null)
-    try {
-      await (window as any).electronAPI?.removeConfig?.('x-token')
-      await (window as any).electronAPI?.removeConfig?.('session')
-      await (window as any).electronAPI?.removeConfig?.('clientId')
-      await (window as any).electronAPI?.clearSessionFile?.()
-      ;(window as any).electronAPI?.setAuthToken?.('')
-      await (window as any).electronAPI?.clearUserData?.()
-    } catch {}
-    toast.success(t('notifications.session_closed'))
-  }
-
-  async function refreshAuthToken () {
+  const loadSession = useCallback(async () => {
     try {
       const sessionStr = await (window as any).electronAPI?.getConfig?.('session')
-      if (!sessionStr) {
-        return false
+      if (sessionStr) {
+        const session = JSON.parse(sessionStr)
+        if (session?.token) {
+          setToken(session.token)
+          // Also set legacy stub if needed, though backend request handles it via main process
+          ;(window as any).electronAPI?.setAuthToken?.(session.token)
+          
+          // Fetch user profile from backend since local storage only has tokens now
+          try {
+             // We use the raw fetch here or backendRequest? 
+             // backendRequest uses IPC to Main -> Axios
+             const userData: any = await backendRequest('/users/me')
+             // Response might be { success: true, data: { user: ... } } or just the user object depending on API
+             // Based on UserModal, it seems response is { data: { user: ... } } or { user: ... }
+             // UserModal: const payload = (data && typeof data === 'object' ? (data.data ?? data) : {}) as any
+             // backendRequest returns response.data directly.
+             
+             const payload = (userData && typeof userData === 'object' ? (userData.data ?? userData) : {}) as any
+             const u = payload?.user
+             
+             if (u && u.avatarUrl) {
+                setUserAvatar(resolveAvatar(u.avatarUrl))
+             } else {
+                setUserAvatar(null)
+             }
+          } catch (err) {
+             console.error('Failed to load user profile', err)
+             // If 401, it might be cleared by now or we should clear it
+             // But backendDaemon handles refresh.
+          }
+        }
       }
-      const sess = JSON.parse(sessionStr)
-      const rt = sess?.refreshToken
-      if (!rt || rt === null || rt === undefined) {
-        return false
-      }
-
-      const requestPayload = { refreshToken: rt }
-      
-      const res = await fetch(`${API_BASE}/auth/refresh`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(requestPayload)
-      })
-      const data = await res.json()
-      const payload = (data && typeof data === 'object' ? (data.data ?? data) : {}) as any
-      const okFlag = (data && typeof data === 'object') ? (data.success ?? data.status) : undefined
-      const newToken = payload?.token
-      const newRefresh = payload?.refreshToken
-      if ((okFlag ?? res.ok) && newToken) {
-        await handleLoginSuccess(newToken)
-        const newSession = { ...sess, token: newToken, refreshToken: newRefresh || rt }
-        await (window as any).electronAPI?.setConfig?.('session', JSON.stringify(newSession))
-        await (window as any).electronAPI?.saveSession?.(newSession)
-        return true
-      }
-      return false
-    } catch (error) {
-      return false
-    }
-  }
-
-  const handleLoginSuccess = async (newToken: string) => {
-    setToken(newToken)
-    await (window as any).electronAPI?.setConfig?.('x-token', newToken)
-
-    if ((window as any).electronAPI?.setAuthToken) {
-      ;(window as any).electronAPI?.setAuthToken(newToken)
-    }
-
-    try {
-      setTimeout(() => {
-        ;(window as any).electronAPI?.registerDevice?.('')
-      }, 200)
     } catch {}
-  }
+  }, [])
 
-  // Scroll gestionado internamente por HistoryList
-  // const itemRefs = useRef... eliminado ya que HistoryList maneja su propio scroll
+  useEffect(() => {
+    loadSession()
+    // Signal main process that UI is ready to receive updates
+    ;(window as any).electronAPI?.signalAppReady?.()
+  }, [loadSession])
 
-  const [files, setFiles] = useState<any[]>([])
-  const [filesLoading, setFilesLoading] = useState(false)
-  const [storageInfo, setStorageInfo] = useState<{ usedBytes: number, availableBytes: number, quotaBytes: number } | null>(null)
-  const [filesPage, setFilesPage] = useState<number>(1)
-  const [filesLimit, setFilesLimit] = useState<number>(50)
-  const [filesTotal, setFilesTotal] = useState<number>(0)
-  
-  // Ref para mantener el valor actual de filesLimit en callbacks
-  const filesLimitRef = useRef(filesLimit)
-  filesLimitRef.current = filesLimit
-
-  const loadFiles = useCallback(async (page: number = 1, limit: number = 50) => {
-     if (!token) {
-        return
-     }
-     setFilesLoading(true)
-     try {
-        if (!(window as any).electronAPI?.listFiles) {
-           setFiles([])
-           return
+  // Reset UI state when window is shown (on open)
+  useEffect(() => {
+    if ((window as any).electronAPI?.onUiReset) {
+      const off = (window as any).electronAPI.onUiReset(() => {
+        console.log('UI Reset triggered by window show')
+        
+        // Reset search completely
+        setSearch('')
+        setIsSearchFocused(false)
+        if (searchInputRef.current) {
+          searchInputRef.current.blur()
+          searchInputRef.current.value = '' // Force clear
         }
-        
-        const res = await (window as any).electronAPI.listFiles({ 
-          page, 
-          limit 
-        })
-        
-        // Manejar la nueva estructura de respuesta con paginación
-        let items = []
-        let total = 0
-        let responsePage = page
-        let responseLimit = limit
-        
-        if (res?.success && res?.data) {
-          // Nueva estructura: { success: true, data: { items, page, limit, total, storage } }
-          if (Array.isArray(res.data.items)) {
-            items = res.data.items
-          }
-          total = typeof res.data.total === 'number' ? res.data.total : 0
-          responsePage = typeof res.data.page === 'number' ? res.data.page : page
-          responseLimit = typeof res.data.limit === 'number' ? res.data.limit : limit
-          
-          // Extraer info de storage
-          if (res.data.storage) {
-            setStorageInfo(res.data.storage)
-          }
-        } else {
-          // Soporte para estructura anterior (backward compatibility)
-          if (res?.data?.items && Array.isArray(res.data.items)) {
-            items = res.data.items
-          } else if (res?.items && Array.isArray(res.items)) {
-            items = res.items
-          } else if (Array.isArray(res?.data)) {
-            items = res.data
-          }
-          
-          if (res?.data?.storage) {
-            setStorageInfo(res.data.storage)
-          } else if (res?.storage) {
-            setStorageInfo(res.storage)
-          }
-        }
-        
-        setFiles(items)
-        setFilesTotal(total)
-        setFilesPage(responsePage)
-        setFilesLimit(responseLimit)
-     } catch (err) {
-        setFiles([])
-        setFilesTotal(0)
-     } finally {
-        setFilesLoading(false)
-     }
-  }, [token])
 
-  useEffect(() => {
-    if (filter === 'documents') {
-       setFilesPage(1) // Resetear a página 1 al cambiar a documentos
-       loadFiles(1, filesLimitRef.current)
-    }
-  }, [filter, token, loadFiles])
-  
-  useEffect(() => {
-    if ((window as any).electronAPI?.onFileUploaded) {
-      const off = (window as any).electronAPI.onFileUploaded(() => {
-         toast.success(t('notifications.file_uploaded'))
-         if (filter === 'documents') {
-            // Recargar la primera página después de subir un archivo
-            setFilesPage(1)
-            loadFiles(1, filesLimitRef.current)
-         }
-      })
-      return () => { try { off?.() } catch {} }
-    }
-  }, [filter, loadFiles])
-
-  useEffect(() => {
-    if ((window as any).electronAPI?.onFileUploadError) {
-      const off = (window as any).electronAPI.onFileUploadError((err: any) => {
-         const msg = err?.error || t('notifications.upload_error', { msg: 'Unknown' })
-         // Mensaje para el usuario si no hay internet
-         if (String(msg).includes('Network') || String(msg).includes('EAI_AGAIN') || String(msg).includes('ENOTFOUND')) {
-            toast.error(t('notifications.no_internet_upload'))
-         } else {
-            toast.error(t('notifications.upload_error', { msg }))
-         }
+        // Close all modals
+        setSettingsOpen(false)
+        setAboutOpen(false)
+        setShowLogin(false)
+        setShowRegister(false)
+        setShowUserModal(false)
+        setContextMenu(null)
+        setItemToDelete(null)
+        setOcrImage(null)
+        setShowDeviceSelection(false)
+        setShowTour(false)
       })
       return () => { try { off?.() } catch {} }
     }
   }, [])
 
+  // Global search shortcut (Ctrl+F / Cmd+F)
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'f') {
+        e.preventDefault()
+        if (searchInputRef.current) {
+          searchInputRef.current.focus()
+          searchInputRef.current.select()
+        }
+      }
+    }
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [])
 
-  const highlightMatch = (
-    text: string,
-    query: string
-  ): ReactNode[] | string => {
+  // File fetching
+  const fetchFiles = useCallback(async () => {
+    setListLoading(true)
+    try {
+        const res = await (window as any).electronAPI?.listFiles?.()
+        console.log("Fetch files response:", res) // Debug
+        
+        if (res && typeof res === 'object') {
+            let targetData = res;
+            
+            // Check for nested "data" property (common in backend responses)
+            if (res.data) {
+                // If res.data has items, use it
+                if (res.data.items || res.data.storage) {
+                    targetData = res.data;
+                }
+                // Double nested check: res.data.data (axios response + backend response wrapper)
+                else if (res.data.data && (res.data.data.items || res.data.data.storage)) {
+                    targetData = res.data.data;
+                }
+            }
+            
+            // Ensure items is an array
+            const items = Array.isArray(targetData.items) ? targetData.items : [];
+            setFiles(items)
+            
+            if (targetData.storage) {
+                setStorage(targetData.storage)
+            }
+        } else {
+            // Handle undefined or null response
+            console.warn("listFiles returned invalid response:", res);
+            setFiles([]);
+        }
+    } catch (e) {
+        console.error(e)
+        setFiles([]);
+    } finally {
+        setListLoading(false)
+    }
+  }, [])
+
+  // Centralized Data Fetching
+  const fetchData = useCallback(async (isLoadMore = false) => {
+      if (filter === 'documents') {
+          fetchFiles()
+          return
+      }
+
+      if (isLoadMore) {
+          setIsLoadingMore(true)
+      } else {
+          setListLoading(true)
+          setPage(0) // Reset page on new filter/search
+      }
+
+      try {
+          const currentOffset = isLoadMore ? (page + 1) * PAGE_SIZE : 0
+          
+          // Build query object
+          const queryOpts: any = {
+              limit: PAGE_SIZE,
+              offset: currentOffset,
+              filter: {}
+          }
+
+          // Apply filters
+          if (filter === 'favorite') queryOpts.filter.favorite = true
+          // Backend supports type filter, but 'text' tab implies no images.
+          // However, our backend SQL 'Type' is 'text' or 'image'.
+          if (filter === 'image') queryOpts.filter.type = 'image'
+          if (filter === 'text') queryOpts.filter.type = 'text'
+
+          // Apply search (global)
+          if (search.trim()) {
+             queryOpts.filter.search = search
+             // User said: "buscar si busque en todo" (search everything)
+             // Override type filter for search if we want "search everything"
+             delete queryOpts.filter.type 
+          }
+
+          // Get current selected device to filter history
+          try {
+            const currentDevice = await (window as any).electronAPI?.getCurrentDevice?.()
+            if (currentDevice && currentDevice.Id) {
+                queryOpts.filter.deviceId = currentDevice.Id
+            }
+          } catch (e) {
+            console.error('Error getting current device for filter:', e)
+          }
+
+          const results = await (window as any).electronAPI?.getClipboardHistory?.(queryOpts)
+          
+          if (Array.isArray(results)) {
+              if (isLoadMore) {
+                  setDisplayed(prev => [...prev, ...results])
+                  setPage(p => p + 1)
+              } else {
+                  setDisplayed(results)
+              }
+              setHasMore(results.length === PAGE_SIZE)
+          }
+      } catch (e) {
+          console.error(e)
+      } finally {
+          setListLoading(false)
+          setIsLoadingMore(false)
+      }
+  }, [search, filter, page])
+
+  // Debounced Search
+  useEffect(() => {
+      const timer = setTimeout(() => {
+          fetchData(false)
+      }, 300)
+      return () => clearTimeout(timer)
+  }, [search, filter])
+
+  // Load More Handler
+  const loadMoreResults = () => {
+      if (!hasMore || isLoadingMore) return
+      fetchData(true)
+  }
+
+  // Background updates: Refresh completely to stay consistent?
+  // Or just prepend? Prepending is hard with pagination.
+  // Simplest is to re-fetch page 0.
+  useEffect(() => {
+    if ((window as any).electronAPI?.onClipboardUpdate) {
+      const off = (window as any).electronAPI.onClipboardUpdate((_data: any) => {
+          // Always fetch data from source to respect current filters (deviceId, search, etc.)
+          // The data coming from backend broadcast might be unfiltered or stale regarding current view context.
+          console.log('Clipboard update signal received, refreshing list...')
+          fetchData(false)
+      })
+      return () => { try { off?.() } catch {} }
+    }
+  }, [fetchData])
+
+  const highlightMatch = (text: string, query: string): ReactNode[] | string => {
     if (!query) return text
-
     const regex = new RegExp(`(${query})`, 'gi')
-    const parts = text.split(regex)
-
-    return parts.map((part, idx) =>
+    return text.split(regex).map((part, idx) =>
       part.toLowerCase() === query.toLowerCase() ? (
-        <mark key={idx} className='bg-yellow-200 font-semibold rounded'>
-          {part}
-        </mark>
+        <mark key={idx} className='bg-[color:var(--color-primary)] text-white font-semibold rounded px-0.5'>{part}</mark>
       ) : (
         <span key={idx}>{part}</span>
       )
     )
   }
 
-  useEffect(() => {
-    async function restoreSession () {
-      try {
-        // Cargar desde DB local
-        let sessionStr = await (window as any).electronAPI?.getConfig?.('session')
-        let sess = null
-        
-        if (sessionStr) {
-          try {
-            sess = JSON.parse(sessionStr)
-          } catch (e) {
-            // Si falla parsear, intentar desde archivo (migración)
-          }
-        }
-        
-        // Si no hay sesión en DB, intentar desde archivo (migración)
-        if (!sess) {
-          try {
-            sess = await (window as any).electronAPI?.readSession?.()
-            if (sess) {
-              // Migrar a DB
-              await (window as any).electronAPI?.setConfig?.('session', JSON.stringify(sess))
-            }
-          } catch (e) {
-            // Silenciar errores
-          }
-        }
-        
-        if (sess) {
-          // Si hay refreshToken, intentar refrescar primero
-          if (sess?.refreshToken) {
-            const refreshed = await refreshAuthToken()
-            if (refreshed) {
-              // Si refreshAuthToken fue exitoso, handleLoginSuccess ya fue llamado
-              return
-            }
-            // Si el refresh falla, intentar usar el token existente como fallback
-            if (sess?.token) {
-              await handleLoginSuccess(sess.token)
-              ;(window as any).electronAPI?.setAuthToken(sess.token)
-              return
-            }
-          }
-          // Si no hay refreshToken pero hay token, usarlo directamente
-          if (sess?.token) {
-            await handleLoginSuccess(sess.token)
-            ;(window as any).electronAPI?.setAuthToken(sess.token)
-            return
-          }
-        }
-      } catch (e) {
-        // Si falla parsear session, intentar con x-token como fallback
-      }
-      // Fallback: usar x-token directamente desde DB
-      try {
-        const token = await (window as any).electronAPI?.getConfig?.('x-token')
-        if (token) {
-          await handleLoginSuccess(token)
-          ;(window as any).electronAPI?.setAuthToken(token)
-        }
-      } catch {}
-    }
-    restoreSession()
-  }, [])
-
-  useEffect(() => {
-    const id = setInterval(() => {
-      refreshAuthToken()
-    }, 15 * 60 * 1000)
-    return () => clearInterval(id)
-  }, [])
-
-  // Listener para cuando el token se refresca desde el main process
-  useEffect(() => {
-    const off = (window as any).electronAPI?.onTokenRefreshed?.((newToken: string) => {
-      handleLoginSuccess(newToken)
-    })
-    return () => {
-      if (off) off()
-    }
-  }, [])
-
-  useEffect(() => {
-    async function fetchAvatar() {
-      try {
-        
-        if (!token) { setUserAvatar(null); return }
-        const res = await fetch(`${API_BASE}/users/me`, { headers: { Authorization: `Bearer ${token}` } })
-        const data = await res.json()
-        const payload: any = (data && typeof data === 'object' ? (data.data ?? data) : {})
-        const u = payload?.user
-        const src: string | undefined = u?.avatarUrl
-        const resolve = (s?: string | null): string | null => {
-          if (!s) return null
-          let v = String(s).replace(/\\/g, '/')
-          if (v.startsWith('http://') || v.startsWith('https://') || v.startsWith('data:')) return v
-          if (v.startsWith('/')) return `${API_BASE}${v}`
-          if (v.startsWith('uploads/')) return `${API_BASE}/${v}`
-          if (v.includes('/uploads/')) return `${API_BASE}${v.substring(v.indexOf('/uploads/'))}`
-          return `${API_BASE}/uploads/${v}`
-        }
-        setUserAvatar(resolve(src))
-      } catch {
-        setUserAvatar(null)
-      }
-    }
-    fetchAvatar()
-  }, [token])
-
-  useEffect(() => {
-    if (!showUserModal && token) {
-      (async () => {
-        try {
-          
-          const res = await fetch(`${API_BASE}/users/me`, { headers: { Authorization: `Bearer ${token}` } })
-          const data = await res.json()
-          const payload: any = (data && typeof data === 'object' ? (data.data ?? data) : {})
-          const u = payload?.user
-          const src: string | undefined = u?.avatarUrl
-          const resolve = (s?: string | null): string | null => {
-            if (!s) return null
-            let v = String(s).replace(/\\/g, '/')
-            if (v.startsWith('http://') || v.startsWith('https://') || v.startsWith('data:')) return v
-            if (v.startsWith('/')) return `${API_BASE}${v}`
-            if (v.startsWith('uploads/')) return `${API_BASE}/${v}`
-            if (v.includes('/uploads/')) return `${API_BASE}${v.substring(v.indexOf('/uploads/'))}`
-            return `${API_BASE}/uploads/${v}`
-          }
-          setUserAvatar(resolve(src))
-        } catch {}
-      })()
-    }
-  }, [showUserModal, token])
-
-
-  useEffect(() => {
-    if ((window as any).electronAPI?.onClipboardUpdate) {
-      const off = (window as any).electronAPI.onClipboardUpdate((data: HistoryItem[]) => {
-        setHistory(data)
-        setFilter('text')
-        if (!searchLocked) {
-          setSearch('')
-          if (Array.isArray(data)) {
-            const textOnly = data.filter(d => 
-              !d.value.startsWith('data:image') && 
-              !d.value.startsWith('[LOCAL_IMAGE]:') && 
-              !(d as any).imagePath
-            )
-            setDisplayed(textOnly.slice(0, 50))
-          }
-        }
-        setListLoading(false)
-      })
-      return () => { try { off?.() } catch {} }
-    }
-  }, [searchLocked])
-
-  useEffect(() => {
-    if ((window as any).electronAPI?.getClipboardHistory) {
-      ;(window as any).electronAPI.getClipboardHistory().then((data: HistoryItem[]) => {
-        if (Array.isArray(data)) setHistory(data)
-      })
-    }
-  }, [])
-
-  useEffect(() => {
-    const escListener = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        ;(window as any).electronAPI?.hideWindow?.()
-      }
-    }
-    window.addEventListener('keydown', escListener)
-    return () => window.removeEventListener('keydown', escListener)
-  }, [])
-
-  useEffect(() => {
-    function handleClickOutside (event: MouseEvent) {
-      if (
-        containerRef.current &&
-        !containerRef.current.contains(event.target as Node)
-      ) {
-        ;(window as any).electronAPI?.hideWindow?.()
-      }
-    }
-    document.addEventListener('mousedown', handleClickOutside)
-    return () => {
-      document.removeEventListener('mousedown', handleClickOutside)
-    }
-  }, [])
-
-  // Optimización de memoria: reducir carga cuando la ventana está oculta
-  useEffect(() => {
-    const handleVisibilityChange = (event: any) => {
-      const { visible } = event || {}
-      if (!visible) {
-        // Cuando la ventana se oculta, optimizar memoria
-        // Limpiar imágenes grandes del DOM que no estén visibles
-        try {
-          const images = document.querySelectorAll('img')
-          images.forEach((element) => {
-            const img = element as HTMLImageElement
-            // Guardar el src original si no está guardado
-            if (img.dataset.srcOriginal === undefined && img.src) {
-              img.dataset.srcOriginal = img.src
-            }
-            // Para imágenes muy grandes (más de 1MB aproximado), usar placeholder
-            if (img.dataset.lazyLoad !== 'false') {
-              img.src = 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMTAwIiBoZWlnaHQ9IjEwMCIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48L3N2Zz4='
-            }
-          })
-        } catch (err) {
-          console.error('Error optimizando imágenes:', err)
-        }
-      } else {
-        // Cuando la ventana se muestra, restaurar imágenes
-        try {
-          const images = document.querySelectorAll('img[data-src-original]')
-          images.forEach((element) => {
-            const img = element as HTMLImageElement
-            const originalSrc = img.dataset.srcOriginal
-            if (originalSrc && img.src !== originalSrc) {
-              img.src = originalSrc
-            }
-          })
-        } catch (err) {
-          console.error('Error restaurando imágenes:', err)
-        }
-      }
-    }
-
-    // Escuchar eventos de Electron
-    const electronAPI = (window as any).electronAPI
-    if (electronAPI?.onWindowVisibilityChanged) {
-      const off = electronAPI.onWindowVisibilityChanged(handleVisibilityChange)
-      return () => { try { off?.() } catch {} }
-    }
-  }, [])
-
-  const [darkMode, setDarkMode] = useState<boolean>(false)
-  const [darkModeLoaded, setDarkModeLoaded] = useState<boolean>(false)
-
+  // Dark Mode
   useEffect(() => {
     async function loadDarkMode() {
-      try {
         const stored = await (window as any).electronAPI?.getConfig?.('darkMode')
-        if (stored !== null && stored !== undefined) {
-          setDarkMode(stored === 'true')
-        }
-        setDarkModeLoaded(true)
-      } catch {
-        setDarkModeLoaded(true)
-      }
+        if (stored === 'true') setDarkMode(true)
     }
     loadDarkMode()
   }, [])
 
   useEffect(() => {
-    if (!darkModeLoaded) return
-    async function saveDarkMode() {
-      try {
-        await (window as any).electronAPI?.setConfig?.('darkMode', darkMode.toString())
-      } catch {}
-    }
-    saveDarkMode()
-  }, [darkMode, darkModeLoaded])
-
-  useEffect(() => {
-    if (!darkModeLoaded) return
     const root = document.documentElement
     root.setAttribute('data-theme', darkMode ? 'dark' : 'light')
-  }, [darkMode, darkModeLoaded])
+    ;(window as any).electronAPI?.setConfig?.('darkMode', darkMode.toString())
+  }, [darkMode])
 
+  // App Version
   useEffect(() => {
-    async function loadPreferences() {
-      try {
-        const prefs = await (window as any).electronAPI?.getPreferences?.()
-        if (prefs) {
-          if (prefs.colorPrimary) {
-            document.documentElement.style.setProperty('--color-primary', prefs.colorPrimary)
-          }
-          if (prefs.colorSecondary) {
-            document.documentElement.style.setProperty('--color-secondary', prefs.colorSecondary)
-          }
-          if (prefs.colorBg) {
-            document.documentElement.style.setProperty('--color-bg', prefs.colorBg)
-          }
-          if (prefs.colorSurface) {
-            document.documentElement.style.setProperty('--color-surface', prefs.colorSurface)
-          }
-          if (prefs.colorText) {
-            document.documentElement.style.setProperty('--color-text', prefs.colorText)
-          }
-          if (prefs.fontSize) {
-            document.documentElement.style.setProperty('--font-size-card', `${prefs.fontSize}px`)
-          }
-        }
-      } catch {}
-    }
-    loadPreferences()
+    ;(window as any).electronAPI?.getAppVersion?.().then(setAppVersion)
   }, [])
 
-  const [appVersion, setAppVersion] = useState<string>('')
-  const [showTour, setShowTour] = useState<boolean>(false)
-
+  // Active Device Check & Listener
   useEffect(() => {
-    if ((window as any).electronAPI?.getAppVersion) {
-      ;(window as any).electronAPI.getAppVersion().then(setAppVersion)
-    }
-  }, [])
-
-  useEffect(() => {
-    if ((window as any).electronAPI?.onSyncProgress) {
-      const off = (window as any).electronAPI.onSyncProgress((data: any) => {
-        try {
-          const msg = (data && typeof data === 'object') ? String(data.message || '') : ''
-          const pct = (data && typeof data === 'object') ? Number(data.percentage || 0) : 0
-          setSyncing(pct > 0 && pct < 100)
-          setSyncPct(pct)
-          if (pct === 100) {
-            if (msg.toLowerCase().includes('fallida')) {
-              toast.error(t('notifications.sync_failed'))
-            } else {
-              toast.success(t('notifications.sync_completed'))
+    // 1. Check on startup if we need to select a device
+    const checkDevice = async () => {
+        const active = await (window as any).electronAPI?.getActiveDevice?.()
+        if (!active) {
+            const all = await (window as any).electronAPI?.getAllDevices?.()
+            if (all && all.length > 1) {
+                setShowDeviceSelection(true)
+            } else if (all && all.length === 1) {
+                 // Should be auto-selected by backend, but just in case
+                 await (window as any).electronAPI?.setActiveDevice?.(all[0].Id)
             }
-          }
-        } catch {}
-      })
-      return () => { try { off?.() } catch {} }
-    }
-  }, [])
-  
-  useEffect(() => {
-    if ((window as any).electronAPI?.onDownloadProgress) {
-      const off = (window as any).electronAPI.onDownloadProgress((data: any) => {
-        try {
-          if (data && typeof data === 'object') {
-            const pct = Number(data.percentage || 0)
-            const fileName = String(data.fileName || '')
-            const downloaded = Number(data.downloaded || 0)
-            const total = Number(data.total || 0)
-            const error = data.error
-            
-            if (error) {
-              setDownloading(false)
-              setDownloadPct(0)
-              setDownloadFileName('')
-              setDownloadBytes(0)
-              setDownloadTotal(0)
-              toast.error(t('notifications.download_error_msg', { error }))
-            } else {
-              setDownloadFileName(fileName)
-              setDownloadPct(pct)
-              setDownloadBytes(downloaded)
-              setDownloadTotal(total)
-              setDownloading(pct > 0 && pct < 100)
-              
-              if (pct === 100) {
-                setTimeout(() => {
-                  setDownloading(false)
-                  setDownloadPct(0)
-                  setDownloadFileName('')
-                  setDownloadBytes(0)
-                  setDownloadTotal(0)
-                }, 1000)
-              }
-            }
-          }
-        } catch {}
-      })
-      return () => { try { off?.() } catch {} }
-    }
-  }, [])
-  useEffect(() => {
-    if ((window as any).electronAPI?.onUpdateStatus) {
-      const off = (window as any).electronAPI.onUpdateStatus((message: string) => {
-        try {
-          if (typeof message === 'string' && message.trim()) {
-            toast(message)
-          }
-        } catch {}
-      })
-      return () => { try { off?.() } catch {} }
-    }
-  }, [])
-
-  useEffect(() => {
-    if ((window as any).electronAPI?.onOpenTutorial) {
-      const off = (window as any).electronAPI.onOpenTutorial(() => {
-        try { setShowTour(true) } catch {}
-      })
-      return () => { try { off?.() } catch {} }
-    }
-  }, [])
-
-  useEffect(() => {
-    async function checkFirstRun () {
-      try {
-        const prefs = await (window as any).electronAPI?.getPreferences?.()
-        if (!prefs || prefs.firstRunGuideDone !== true) {
-          setShowTour(true)
         }
-      } catch {}
     }
-    checkFirstRun()
-  }, [])
+    checkDevice()
 
-  const [selectedIndex, setSelectedIndex] = useState<number>(-1)
-  const [settingsOpen, setSettingsOpen] = useState<boolean>(false)
-  const [aboutOpen, setAboutOpen] = useState<boolean>(false)
-  const [showDeviceSwitch, setShowDeviceSwitch] = useState<boolean>(false)
-  const isQuick = (() => {
-    try { return new URLSearchParams(window.location.search).get('quick') === '1' } catch { return false }
-  })()
-  const [quickOpen, setQuickOpen] = useState<boolean>(isQuick)
-  const [contextMenu, setContextMenu] = useState<{ x: number, y: number, item: HistoryItem } | null>(null)
-  const [itemToDelete, setItemToDelete] = useState<HistoryItem | null>(null)
-  const [deletingLoading, setDeletingLoading] = useState<boolean>(false)
+    // 2. Listen for changes
+    if ((window as any).electronAPI?.onDeviceChanged) {
+        const off = (window as any).electronAPI.onDeviceChanged((dev: any) => {
+            console.log('Device changed to:', dev?.Name)
+            // Refresh history immediately
+            setDisplayed([])
+            setGlobalLoading(true)
+            fetchData(false).finally(() => setGlobalLoading(false))
+        })
+        return () => { try { off?.() } catch {} }
+    }
+  }, [fetchData])
 
-  // Screenshot Confirmation State
-  const [_showScreenshotModal, setShowScreenshotModal] = useState(false)
-  const [_screenshotPreview, setScreenshotPreview] = useState<string | null>(null)
-  
-  const { t } = useTranslation()
-
+  // Sync Listener
   useEffect(() => {
-    if ((window as any).electronAPI?.onConfirmScreenshot) {
-      const off = (window as any).electronAPI.onConfirmScreenshot((data: { preview: string }) => {
-        setScreenshotPreview(data.preview)
-        setShowScreenshotModal(true)
-        // Bring window to front handled by main process
+    if ((window as any).electronAPI?.onDevicesSyncComplete) {
+      const off = (window as any).electronAPI.onDevicesSyncComplete((_devices: any[]) => {
+          setShowDeviceSelection(true)
+          toast.success(t('device.sync_complete') || 'Sincronización de dispositivos completada')
       })
       return () => { try { off?.() } catch {} }
     }
-  }, [])
+  }, [t])
 
-
-  if (isQuick) {
-    return (
-      <>
-        <SearchQuickSwitcher
-          open={quickOpen}
-          query={search}
-          onQueryChange={setSearch}
-          onClose={() => { try { window.close() } catch {}; setQuickOpen(false) }}
-        />
-      </>
-    )
+  const logout = async () => {
+    setToken(null)
+    await (window as any).electronAPI?.removeConfig?.('session')
+    toast.success(t('notifications.session_closed'))
   }
 
-  // Scroll automático movido a HistoryList para mejor control del DOM
-
-
-  useEffect(() => {
-    const keyListener = (e: KeyboardEvent) => {
-      if (displayed.length === 0) return
-      if (e.key === 'ArrowDown') {
-        e.preventDefault()
-        setSelectedIndex(prev => (prev + 1) % displayed.length)
-      } else if (e.key === 'ArrowUp') {
-        e.preventDefault()
-        setSelectedIndex(prev => (prev <= 0 ? displayed.length - 1 : prev - 1))
-      } else if (e.key === 'Enter') {
-        e.preventDefault()
-        if (selectedIndex >= 0 && selectedIndex < displayed.length) {
-          const item = displayed[selectedIndex]
-          if (item.value.startsWith('data:image') || item.value.startsWith('[LOCAL_IMAGE]:') || !!(item as any).imagePath) {
-            ;(window as any).electronAPI?.copyImage?.(item.value)
-            setTimeout(() => { ;(window as any).electronAPI.pasteImage() }, 300)
-            // toast.success(t('notifications.image_copied'))
-          } else {
-            ;(window as any).electronAPI?.copyText(item.value)
-            setTimeout(() => { ;(window as any).electronAPI?.pasteText() }, 100)
-            toast.success(t('notifications.auto_pasted'))
-          }
-          setTimeout(() => { ;(window as any).electronAPI?.hideWindow?.() }, 500)
-        }
-      }
+  const handleLoginSuccess = (newToken: string, user?: any) => {
+    setToken(newToken)
+    ;(window as any).electronAPI?.setAuthToken?.(newToken)
+    if (user?.avatarUrl) {
+      setUserAvatar(resolveAvatar(user.avatarUrl))
+    } else {
+      loadSession()
     }
-    window.addEventListener('keydown', keyListener)
-    return () => window.removeEventListener('keydown', keyListener)
-  }, [displayed, selectedIndex])
+  }
 
-  useEffect(() => {
-    if (isQuick) return
-    const handler = (e: KeyboardEvent) => {
-      const isK = e.key.toLowerCase() === 'k'
-      const meta = e.ctrlKey || e.metaKey
-      if (isK && meta) {
-        e.preventDefault()
-        try { (window as any).electronAPI?.openQuickSwitcher?.() } catch {}
-      }
-    }
-    window.addEventListener('keydown', handler)
-    return () => window.removeEventListener('keydown', handler)
-  }, [isQuick])
-
-  useEffect(() => {
-    if ((window as any).electronAPI?.onFocusSearch) {
-      ;(window as any).electronAPI.onFocusSearch(() => {
-        try {
-          // Reset UI state on window show
-          setSettingsOpen(false)
-          setShowLogin(false)
-          setShowRegister(false)
-          setShowUserModal(false)
-          setShowDeviceSwitch(false)
-          setAboutOpen(false)
-          setContextMenu(null)
-          setItemToDelete(null)
-          setSelectedIndex(0)
-
-          const el = searchInputRef.current
-          el?.focus()
-          ;(el as any)?.select?.()
-          setTimeout(() => {
-            try {
-              el?.focus()
-              ;(el as any)?.select?.()
-            } catch {}
-          }, 80)
-          setTimeout(() => {
-            try {
-              el?.focus()
-              ;(el as any)?.select?.()
-            } catch {}
-          }, 200)
-        } catch {}
-      })
-    }
-  }, [])
-  useEffect(() => {
-    if ((window as any).electronAPI?.onApplySearch) {
-      const off = (window as any).electronAPI.onApplySearch((payload: any) => {
-        try {
-          const q = (payload && typeof payload === 'object') ? String(payload.query || '') : ''
-          const items = (payload && typeof payload === 'object' && Array.isArray(payload.items)) ? payload.items : []
-          if (q) {
-            setSearchLocked(true)
-            setSearch(q)
-          }
-          if (Array.isArray(items)) {
-            setDisplayed(items)
-            setListLoading(false)
-          }
-        } catch {}
-      })
-      return () => { try { off?.() } catch {} }
-    }
-  }, [])
-  // Efecto con debounce para búsqueda paginada
-  useEffect(() => {
-    // Cancelar búsqueda anterior si existe
-    if (searchAbortControllerRef.current) {
-      searchAbortControllerRef.current.abort()
-      searchAbortControllerRef.current = null
-    }
-
-    const q = search.trim()
+  const handleUpload = async () => {
+    const path = await (window as any).electronAPI?.selectFile?.()
+    if (!path) return
     
-    // Si no hay token y filter es favorite, limpiar y salir
-    if (!token && filter === 'favorite') { 
-      setDisplayed([])
-      setSearchPage(0)
-      setHasMore(false)
-      return 
+    const toastId = toast.loading('Subiendo archivo...')
+    try {
+        const res = await (window as any).electronAPI?.uploadFile?.(path)
+        if (res && res.success) {
+            toast.success('Archivo subido correctamente', { id: toastId })
+            fetchFiles()
+        } else {
+            toast.error('Error al subir archivo: ' + (res?.error || 'Desconocido'), { id: toastId })
+        }
+    } catch (e) {
+        toast.error('Error al subir archivo', { id: toastId })
     }
+  }
 
-    // Si se limpia la búsqueda, resetear estado
-    if (q.length === 0) {
-      setDisplayed([])
-      setSearchPage(0)
-      setHasMore(false)
-      setListLoading(true)
-      const payload = { filter, limit: 50 }
-      Promise.resolve((window as any).electronAPI?.listRecent?.(payload))
-        .then((res: HistoryItem[]) => { 
-          if (Array.isArray(res)) {
-            // Limitar a MAX_ITEMS_IN_MEMORY
-            setDisplayed(res.slice(0, MAX_ITEMS_IN_MEMORY))
-          }
-        })
-        .finally(() => setListLoading(false))
-      return
-    }
-
-    // Búsqueda con debounce (400ms)
-    const debounceTimer = setTimeout(() => {
-      // Resetear página y limpiar resultados anteriores al iniciar nueva búsqueda
-      setSearchPage(0)
-      setDisplayed([])
-      setListLoading(true)
-      setHasMore(false)
-
-      // Crear nuevo AbortController para esta búsqueda
-      const abortController = new AbortController()
-      searchAbortControllerRef.current = abortController
-
-      const payload = { query: q, filter: 'text', page: 0, limit: 20 }
-      const searchPromise = Promise.resolve((window as any).electronAPI?.searchHistory?.(payload))
-      
-      searchPromise
-        .then((res: HistoryItem[]) => {
-          // Verificar si la búsqueda fue cancelada
-          if (abortController.signal.aborted) return
-          
-          if (Array.isArray(res)) {
-            // Si retornó 20 items, asumir que puede haber más
-            setHasMore(res.length === 20)
-            // Limitar a MAX_ITEMS_IN_MEMORY
-            setDisplayed(res.slice(0, MAX_ITEMS_IN_MEMORY))
-            setSearchPage(1) // Siguiente página sería 1
+  const handleDeleteFile = async (file: any) => {
+      if (!confirm('¿Eliminar archivo?')) return
+      const toastId = toast.loading('Eliminando...')
+      try {
+          const res = await (window as any).electronAPI?.deleteFile?.(file.id)
+          if (res && res.success) {
+              toast.success('Archivo eliminado', { id: toastId })
+              setFiles(prev => prev.filter(f => f.id !== file.id))
           } else {
-            setHasMore(false)
-            setDisplayed([])
+              toast.error('Error al eliminar', { id: toastId })
           }
-        })
-        .catch((err: any) => {
-          // Ignorar errores de cancelación
-          if (err?.name === 'AbortError' || abortController.signal.aborted) return
-          setDisplayed([])
-          setHasMore(false)
-        })
-        .finally(() => {
-          if (!abortController.signal.aborted) {
-            setListLoading(false)
-          }
-          if (searchAbortControllerRef.current === abortController) {
-            searchAbortControllerRef.current = null
-          }
-        })
-    }, 400) // Debounce de 400ms
-
-    return () => {
-      clearTimeout(debounceTimer)
-      // Cancelar búsqueda pendiente si el componente se desmonta o cambian las dependencias
-      if (searchAbortControllerRef.current) {
-        searchAbortControllerRef.current.abort()
-        searchAbortControllerRef.current = null
+      } catch (e) {
+          toast.error('Error al eliminar', { id: toastId })
       }
-    }
-  }, [search, filter, token])
+  }
 
   return (
     <>
       <Toaster position='top-center' />
       <motion.div initial={{ opacity: 0, y: 30 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.5, ease: 'easeOut' }}>
         <AppShell darkMode={darkMode}>
-          <TopBar />
+          <TopBar 
+            actions={[
+              { label: 'Ajustes', icon: <Cog6ToothIcon className="w-5 h-5" />, onClick: () => setSettingsOpen(true) },
+              ...(token ? [
+                { label: 'Perfil', icon: <UserCircleIcon className="w-5 h-5" />, onClick: () => setShowUserModal(true) },
+                { label: 'Cerrar sesión', icon: <ArrowRightStartOnRectangleIcon className="w-5 h-5" />, onClick: logout }
+              ] : [
+                { label: 'Iniciar sesión', icon: <ArrowLeftEndOnRectangleIcon className="w-5 h-5" />, onClick: () => setShowLogin(true) },
+                { label: 'Registrarse', icon: <UserPlusIcon className="w-5 h-5" />, onClick: () => setShowRegister(true) }
+              ])
+            ]}
+            userAvatar={userAvatar}
+          />
           <SettingsMenu
             open={settingsOpen}
             darkMode={darkMode}
             onClose={() => setSettingsOpen(false)}
-            onChangeDevice={() => { setSettingsOpen(false); setShowDeviceSwitch(true) }}
-            onForceUpdate={() => { setSettingsOpen(false); toast(t('notifications.checking_updates')); (window as any).electronAPI?.forceUpdate?.() }}
+            onChangeDevice={() => { setSettingsOpen(false); setShowDeviceSelection(true) }}
+            onForceUpdate={() => { /* Removed */ }}
             onToggleDark={() => { setSettingsOpen(false); setDarkMode(prev => !prev) }}
             onClearHistory={() => { setSettingsOpen(false); (window as any).electronAPI?.clearHistory?.(); toast.success(t('notifications.history_cleared')) }}
-            onSyncNow={async () => {
-              try {
-                setSettingsOpen(false)
-                const dev = await (window as any).electronAPI?.getActiveDevice?.()
-                await (window as any).electronAPI?.switchActiveDevice?.(dev || '')
-              } catch {
-                toast.error(t('notifications.sync_error'))
-              }
-            }}
+            onSyncNow={() => { /* Removed */ }}
             onOpenAbout={() => { setSettingsOpen(false); setAboutOpen(true) }}
           />
-          <div className="px-3 pt-1">
+          
+          {/* Overlay for search focus */}
+          <div 
+            className={`fixed inset-0 bg-black/60 z-40 transition-opacity duration-300 backdrop-blur-[1px]
+              ${isSearchFocused ? 'opacity-100 pointer-events-auto' : 'opacity-0 pointer-events-none'}
+            `}
+            onClick={() => {
+              setIsSearchFocused(false)
+              searchInputRef.current?.blur()
+            }}
+          />
+
+          <div className="px-3 pt-3 pb-2 relative z-50">
             <input
               type='text'
               placeholder={t('search_placeholder')}
               value={search}
               onChange={e => setSearch(e.target.value)}
+              onFocus={() => setIsSearchFocused(true)}
+              onBlur={() => setTimeout(() => setIsSearchFocused(false), 150)}
+              onKeyDown={(e) => {
+                if (e.key === 'Escape' || e.key === 'Enter') {
+                  e.preventDefault()
+                  setIsSearchFocused(false)
+                  searchInputRef.current?.blur()
+                  historyListRef.current?.focus()
+                }
+              }}
               ref={searchInputRef}
               autoFocus
-              data-app-search
-              className="w-full px-3 py-2 rounded-md border border-[color:var(--color-border)] bg-[color:var(--color-surface)] text-[color:var(--color-text)] outline-none focus:bg-[color:var(--color-surface)]"
+              className={`w-full px-3 h-[36px] rounded-[var(--radius-input)] outline-none transition-colors duration-100 text-[13px] font-medium placeholder:font-normal
+                ${isSearchFocused 
+                  ? 'bg-[color:var(--color-surface)] text-[color:var(--color-text)] ring-1 ring-[color:var(--color-primary)] border border-[color:var(--color-primary)]' 
+                  : 'bg-[color:var(--color-surface)] text-[color:var(--color-text)] border border-[color:var(--color-border)] hover:border-[color:var(--color-muted)]'
+                }
+              `}
             />
           </div>
 
-            <LoginModal
+          <LoginModal
               isOpen={showLogin}
               onClose={() => setShowLogin(false)}
               onLoginSuccess={handleLoginSuccess}
@@ -995,180 +508,98 @@ function App () {
               isOpen={showUserModal}
               onClose={() => setShowUserModal(false)}
             />
-            <DeviceSwitchModal
-              isOpen={showDeviceSwitch}
-              onClose={() => setShowDeviceSwitch(false)}
-              onApplied={(newHistory: HistoryItem[]) => {
-                if (Array.isArray(newHistory)) setHistory(newHistory)
-              }}
-              onBack={() => { setShowDeviceSwitch(false); setSettingsOpen(true) }}
-            />
-
-          {/* filtros ahora en Dock */}
 
           {filter === 'documents' ? (
-            !token ? (
-              <div className="flex-1 px-3 py-1 flex flex-col items-center justify-center text-[color:var(--color-muted)] text-xs gap-2 min-h-[200px]">
-                <div>{t('ui.login_required_docs')}</div>
-                <button 
-                  onClick={() => setShowLogin(true)}
-                  className="px-4 py-2 rounded-md bg-[color:var(--color-primary)] text-white hover:opacity-80 transition text-sm"
-                >
-                  {t('ui.login_button')}
-                </button>
-              </div>
-            ) : filesLoading ? (
-               <div className="flex-1 px-3 py-1 flex items-center justify-center text-[color:var(--color-muted)] text-xs">{t('ui.loading_docs')}</div>
-             ) : (
-               <FileList
-                  items={files.filter(f => !search || f.originalName?.toLowerCase().includes(search.toLowerCase()))}
-                  storage={storageInfo}
-                  currentPage={filesPage}
-                  totalPages={filesTotal > 0 ? Math.max(1, Math.ceil(filesTotal / filesLimit)) : 1}
-                  totalItems={filesTotal}
-                  limit={filesLimit}
-                  onPageChange={(newPage) => {
-                     setFilesPage(newPage)
-                     loadFiles(newPage, filesLimit)
-                  }}
-                  onLimitChange={(newLimit) => {
-                     setFilesLimit(newLimit)
-                     setFilesPage(1)
-                     loadFiles(1, newLimit)
-                  }}
-                  onDelete={async (item) => {
-                     if (!window.confirm(t('notifications.confirm_delete_file'))) return
-                     await (window as any).electronAPI.deleteFile(item.id)
-                     loadFiles(filesPage, filesLimit)
-                     toast.success(t('notifications.item_deleted'))
-                  }}
-                  onDownload={async (item) => {
-                     const res = await (window as any).electronAPI.downloadFile(item.id, item.originalName)
-                     if (res.success) toast.success(t('notifications.download_completed'))
-                     else if (!res.canceled) toast.error(t('notifications.download_error'))
-                  }}
-               />
-             )
+             <div className="flex-1 flex flex-col overflow-hidden">
+                <div className="px-3 py-2 flex justify-between items-center border-b border-[color:var(--color-border)]">
+                    <span className="text-sm font-medium text-[color:var(--color-text)]">Mis Documentos</span>
+                    <button 
+                        onClick={handleUpload}
+                        className="flex items-center gap-1 px-2 py-1 bg-[color:var(--color-primary)] text-white rounded-md text-xs hover:opacity-90 transition"
+                    >
+                        <DocumentPlusIcon className="w-4 h-4" />
+                        <span>Subir</span>
+                    </button>
+                </div>
+                <FileList 
+                    items={files} 
+                    storage={storage} 
+                    onDelete={handleDeleteFile}
+                    onDownload={(item) => {
+                        (window as any).electronAPI?.downloadFile?.(item.id, item.originalName)
+                    }}
+                />
+             </div>
           ) : (
           <HistoryList
+            ref={historyListRef}
             items={displayed}
             search={search}
-            selectedIndex={selectedIndex}
-            hasMore={hasMore}
+            selectedIndex={-1}
+            hasMore={false}
             onLoadMore={loadMoreResults}
-            isLoadingMore={isLoadingMore}
+            isLoadingMore={false}
             onToggleFavorite={(item) => {
-              if (!token) { toast.error(t('notifications.login_required')); return }
-              ;(window as any).electronAPI?.toggleFavorite?.(item)
-              // Recargar la búsqueda actual después de toggle favorite
-              const q = search.trim()
-              if (q.length > 0) {
-                const payload = { query: q, filter: 'text', page: 0, limit: 20 }
-                setListLoading(true)
-                Promise.resolve((window as any).electronAPI?.searchHistory?.(payload))
-                  .then((res: HistoryItem[]) => { 
-                    if (Array.isArray(res)) {
-                      setHasMore(res.length === 20)
-                      setDisplayed(res.slice(0, MAX_ITEMS_IN_MEMORY))
-                      setSearchPage(1)
-                    }
-                  })
-                  .finally(() => setListLoading(false))
-              } else {
-                const payload = { filter, limit: 50 }
-                setListLoading(true)
-                Promise.resolve((window as any).electronAPI?.listRecent?.(payload))
-                  .then((res: HistoryItem[]) => { 
-                    if (Array.isArray(res)) setDisplayed(res.slice(0, MAX_ITEMS_IN_MEMORY))
-                  })
-                  .finally(() => setListLoading(false))
-              }
+              (window as any).electronAPI?.toggleFavorite?.({ id: item.id, isFavorite: !item.favorite })
             }}
             onCopy={(item) => {
               const isImage = item.value.startsWith('data:image') || item.value.startsWith('[LOCAL_IMAGE]:') || !!(item as any).imagePath
               if (isImage) {
+                // Keep direct copy on card click? Or should card click also open OCR?
+                // User said "al dar clic en el ojo del item ... abrir otra ventana"
+                // The Card component's onCopy is the main click handler.
+                // But the user specifically said "clic en el ojo".
+                // So onCopy (main click) should probably just copy the image as before.
                 ;(window as any).electronAPI?.copyImage?.(item.value)
-                setTimeout(() => { ;(window as any).electronAPI.pasteImage() }, 300)
-                // toast.success(t('notifications.image_copied'))
+                ;(window as any).electronAPI?.pasteText?.()
+                setTimeout(() => { ;(window as any).electronAPI?.hideWindow?.() }, 100)
               } else {
                 ;(window as any).electronAPI?.copyText(item.value)
-                setTimeout(() => { ;(window as any).electronAPI?.pasteText() }, 100)
-                toast.success(t('notifications.auto_pasted'))
+                ;(window as any).electronAPI?.pasteText?.()
+                setTimeout(() => { ;(window as any).electronAPI?.hideWindow?.() }, 100)
               }
-              setTimeout(() => { ;(window as any).electronAPI?.hideWindow?.() }, 500)
             }}
             onDelete={(item) => {
               setItemToDelete(item)
             }}
             highlightMatch={highlightMatch}
-            canFavorite={!!token}
-            canOpenModal={!!token}
+            canFavorite={true}
+            canOpenModal={true}
           />
           )}
-          {listLoading && (
-            <div className="px-3 py-1 text-[color:var(--color-muted)] text-xs">{t('ui.loading')}</div>
-          )}
-          {syncing && (
-            <div className="fixed top-2 right-2 z-[20000] glass px-3 py-2">
-              <div className="spinner"><span className="ring"></span><span>{t('ui.syncing', { percent: Math.round(syncPct) })}</span></div>
-            </div>
-          )}
-          {downloading && (
-            <div className="fixed top-2 right-2 z-[20000] glass px-3 py-2 rounded-lg shadow-lg" style={{ top: syncing ? '70px' : '8px' }}>
-              <div className="flex flex-col gap-2 min-w-[200px]">
-                <div className="text-xs font-medium text-[color:var(--color-text)] truncate" title={downloadFileName}>
-                  {t('ui.downloading', { file: downloadFileName })}
-                </div>
-                <div className="flex items-center gap-2">
-                  <div className="flex-1 h-2 bg-[color:var(--color-bg)] rounded-full overflow-hidden border border-[color:var(--color-border)]">
-                    <div 
-                      className="h-full bg-[color:var(--color-primary)] transition-all duration-300"
-                      style={{ width: `${Math.max(0, Math.min(100, downloadPct))}%` }}
-                    />
-                  </div>
-                  <span className="text-xs text-[color:var(--color-muted)] whitespace-nowrap">{Math.round(downloadPct)}%</span>
-                </div>
-                {downloadTotal > 0 && (
-                  <div className="text-[10px] text-[color:var(--color-muted)]">
-                    {formatBytes(downloadBytes)} / {formatBytes(downloadTotal)}
-                  </div>
-                )}
-              </div>
-            </div>
-          )}
-
 
           <Dock
-            items={[
-              { label: 'Ajustes', icon: <Cog6ToothIcon className="w-5 h-5" />, onClick: () => { if (!token) { toast.error(t('notifications.login_required')); return } setSettingsOpen(true) } },
-              ...(token ? [
-                { label: 'Perfil', icon: <UserCircleIcon className="w-5 h-5" />, onClick: () => setShowUserModal(true) },
-                { label: 'Cerrar sesión', icon: <ArrowRightStartOnRectangleIcon className="w-5 h-5" />, onClick: logout }
-              ] : [
-                { label: 'Iniciar sesión', icon: <ArrowLeftEndOnRectangleIcon className="w-5 h-5" />, onClick: () => setShowLogin(true) },
-                { label: 'Registrarse', icon: <UserPlusIcon className="w-5 h-5" />, onClick: () => setShowRegister(true) }
-              ])
-            ]}
+            items={[]}
             userAvatar={userAvatar}
             filter={filter}
-            onChangeFilter={(f) => { 
-              if (!token && (f === 'favorite' || f === 'documents')) { 
-                toast.error(t('notifications.login_required_section')); 
-                return 
-              } 
-              setFilter(f) 
-            }}
-            disabledFavorites={!token}
+            onChangeFilter={(f) => setFilter(f)}
+            disabledFavorites={false}
             hasAuth={!!token}
           />
           <div className="px-3 pb-1 text-right text-[11px] text-[color:var(--color-muted)]" title='Versión de la app'>v{appVersion}</div>
+
+          <DeviceRegistrationModal onSuccess={() => {
+              // Refresh or just close
+          }} />
+
+          <DeviceSelectionModal
+            open={showDeviceSelection}
+            onClose={() => setShowDeviceSelection(false)}
+            onSuccess={() => {
+                setDisplayed([]) // Clear current list to verify update
+                setGlobalLoading(true)
+                setTimeout(() => {
+                    fetchData(false).finally(() => setGlobalLoading(false))
+                }, 500) // Small delay to ensure DB persistence if needed
+            }}
+          />
 
           <OnboardingTour
             open={showTour}
             onClose={() => setShowTour(false)}
             onComplete={async () => {
               try {
-                await (window as any).electronAPI?.setPreferences?.({ firstRunGuideDone: true })
+                await (window as any).electronAPI?.setConfig?.('firstRunGuideDone', 'true')
               } catch {}
               setShowTour(false)
             }}
@@ -1180,14 +611,6 @@ function App () {
             </div>
           )}
 
-          {isQuick && (
-            <SearchQuickSwitcher
-              open={quickOpen}
-              query={search}
-              onQueryChange={setSearch}
-              onClose={() => { try { window.close() } catch {}; setQuickOpen(false) }}
-            />
-          )}
         </AppShell>
       </motion.div>
 
@@ -1210,12 +633,11 @@ function App () {
           if (itemToDelete && itemToDelete.id) {
             try {
               setDeletingLoading(true)
-              const res = await (window as any).electronAPI.deleteHistoryItem(itemToDelete.id)
-              if (res?.success) {
-                toast.success(t('notifications.item_deleted'))
-              } else {
-                toast.error(t('notifications.delete_error'))
-              }
+              // The backend now broadcasts the update, so we just need to wait for the call to finish
+              await (window as any).electronAPI.deleteHistoryItem(itemToDelete.id)
+              toast.success(t('notifications.item_deleted'))
+              // Manually remove from local state just in case the broadcast is slow or fails
+              setDisplayed(prev => prev.filter(i => i.id !== itemToDelete.id))
             } catch {
               toast.error(t('notifications.delete_error'))
             }
@@ -1230,10 +652,14 @@ function App () {
         onClose={() => setAboutOpen(false)}
         onBack={() => { setAboutOpen(false); setSettingsOpen(true) }}
       />
+      
+      <OCRModal
+        isOpen={!!ocrImage}
+        imageUrl={ocrImage}
+        onClose={() => setOcrImage(null)}
+      />
     </>
   )
 }
-
-// componentes de tarjeta y código movidos a ./components
 
 export default App

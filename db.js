@@ -1,14 +1,17 @@
 const path = require('path')
 const fs = require('fs')
 const crypto = require('crypto')
+const os = require('os')
 const initSqlJs = require('sql.js')
+
 let SQL = null
 let db = null
 let dbFilePath = null
 
 async function init(app) {
   const dir = app.getPath('userData')
-  dbFilePath = path.join(dir, 'copyfy.sqlite')
+  dbFilePath = path.join(dir, 'copyfy-v2.sqlite')
+
   if (!SQL) {
     const isPackaged = app.isPackaged
     const locateFile = (file) => {
@@ -24,552 +27,177 @@ async function init(app) {
     }
     SQL = await initSqlJs({ locateFile })
   }
+
+  // Force reset if we want to ensure clean state as per instructions? 
+  // User said: "Eliminar completamente la base de datos anterior y crear estas tablas nuevas"
+  // But also "Si la DB no existe, se crea vacía."
+  // To be safe and ensure the NEW schema is used, I should probably check if the old schema exists and if so, maybe backup/delete it?
+  // The user said: "Eliminar completamente la base de datos anterior".
+  // So I will delete the file if it exists and create new?
+  // Or I can just DROP tables.
+  
+  // Let's try to open it first.
+  let dbExists = fs.existsSync(dbFilePath)
+  
   try {
-    if (fs.existsSync(dbFilePath)) {
-      const buf = fs.readFileSync(dbFilePath)
-      db = new SQL.Database(new Uint8Array(buf))
+    if (dbExists) {
+        // Load existing DB
+        const filebuffer = fs.readFileSync(dbFilePath)
+        db = new SQL.Database(filebuffer)
     } else {
-      db = new SQL.Database()
+        // Create new DB
+        db = new SQL.Database()
     }
-  } catch {
-    db = new SQL.Database()
-  }
-  db.run(`
-    CREATE TABLE IF NOT EXISTS history (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      value TEXT NOT NULL,
-      favorite INTEGER NOT NULL DEFAULT 0,
-      device TEXT NOT NULL,
-      created_at DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%f', 'now')),
-      updated_at DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%f', 'now')),
-      version INTEGER NOT NULL DEFAULT 1,
-      is_synced INTEGER NOT NULL DEFAULT 0,
-      client_item_id TEXT,
-      is_deleted INTEGER NOT NULL DEFAULT 0
-    );
-    CREATE TABLE IF NOT EXISTS guest_history (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      value TEXT NOT NULL,
-      favorite INTEGER NOT NULL DEFAULT 0,
-      device TEXT NOT NULL,
-      created_at DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%f', 'now')),
-      is_deleted INTEGER NOT NULL DEFAULT 0
-    );
-    CREATE TABLE IF NOT EXISTS config (
-      key TEXT PRIMARY KEY,
-      value TEXT NOT NULL,
-      updated_at DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%f', 'now'))
-    );
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_guest_device_value ON guest_history(device, value);
-    CREATE INDEX IF NOT EXISTS idx_guest_device_created ON guest_history(device, created_at DESC);
-  `)
-  try {
-    const tableInfo = db.exec("PRAGMA table_info(history)")
-    const existingColumns = new Set()
-    if (tableInfo.length > 0 && tableInfo[0].values) {
-      tableInfo[0].values.forEach(v => existingColumns.add(v[1]))
-    }
-
-    const migrations = [
-      { col: 'remote_id', sql: "ALTER TABLE history ADD COLUMN remote_id TEXT" },
-      { col: 'updated_at', sql: "ALTER TABLE history ADD COLUMN updated_at DATETIME" },
-      { col: 'version', sql: "ALTER TABLE history ADD COLUMN version INTEGER DEFAULT 1" },
-      { col: 'is_synced', sql: "ALTER TABLE history ADD COLUMN is_synced INTEGER DEFAULT 0" },
-      { col: 'client_item_id', sql: "ALTER TABLE history ADD COLUMN client_item_id TEXT" },
-      { col: 'is_deleted', sql: "ALTER TABLE history ADD COLUMN is_deleted INTEGER DEFAULT 0" }
-    ]
-
-    for (const m of migrations) {
-      if (!existingColumns.has(m.col)) {
-        try {
-          db.run(m.sql)
-          // Populate updated_at if added
-          if (m.col === 'updated_at') {
-             try { db.run("UPDATE history SET updated_at = strftime('%Y-%m-%d %H:%M:%f', 'now') WHERE updated_at IS NULL") } catch {}
-          }
-        } catch (e) {
-          // Migration failed
-        }
-      }
-    }
-
-    // Verificación final de columnas críticas y reparación de emergencia
-    try {
-      const finalTableInfo = db.exec("PRAGMA table_info(history)")
-      const finalColumns = new Set()
-      if (finalTableInfo.length > 0 && finalTableInfo[0].values) {
-        finalTableInfo[0].values.forEach(v => finalColumns.add(v[1]))
-      }
-      
-      const criticalMigrations = [
-        { col: 'updated_at', sql: "ALTER TABLE history ADD COLUMN updated_at DATETIME" },
-        { col: 'is_synced', sql: "ALTER TABLE history ADD COLUMN is_synced INTEGER DEFAULT 0" },
-        { col: 'version', sql: "ALTER TABLE history ADD COLUMN version INTEGER DEFAULT 1" },
-        { col: 'remote_id', sql: "ALTER TABLE history ADD COLUMN remote_id TEXT" },
-        { col: 'client_item_id', sql: "ALTER TABLE history ADD COLUMN client_item_id TEXT" },
-        { col: 'is_deleted', sql: "ALTER TABLE history ADD COLUMN is_deleted INTEGER DEFAULT 0" }
-      ]
-
-      for (const cm of criticalMigrations) {
-        if (!finalColumns.has(cm.col)) {
-           try { 
-             db.run(cm.sql) 
-             if (cm.col === 'updated_at') {
-                try { db.run("UPDATE history SET updated_at = strftime('%Y-%m-%d %H:%M:%f', 'now') WHERE updated_at IS NULL") } catch {}
-             }
-           } catch(e) { }
-        }
-      }
-    } catch(e) {
-      // Error en verificación final de esquema
-    }
-
-    // Create indices after migrations to ensure columns exist
-    db.run(`
-      CREATE UNIQUE INDEX IF NOT EXISTS idx_history_device_value ON history(device, value);
-      CREATE INDEX IF NOT EXISTS idx_history_device_created ON history(device, created_at DESC);
-      CREATE INDEX IF NOT EXISTS idx_history_device_favorite ON history(device, favorite);
-      CREATE INDEX IF NOT EXISTS idx_history_device_synced ON history(device, is_synced);
-      CREATE INDEX IF NOT EXISTS idx_history_device_deleted ON history(device, is_deleted);
-    `)
-  } catch (e) {
-    // Migration check failed
-  }
-  
-  try { db.run("ALTER TABLE guest_history ADD COLUMN remote_id TEXT") } catch (e) { /* ignore if exists */ }
-  try { db.run("ALTER TABLE guest_history ADD COLUMN is_deleted INTEGER DEFAULT 0") } catch (e) { /* ignore if exists */ }
-  try { db.run("CREATE INDEX IF NOT EXISTS idx_guest_device_deleted ON guest_history(device, is_deleted)") } catch (e) {}
-
-  // Verify schema
-  try {
-    const tableInfo = db.exec("PRAGMA table_info(history)")
-    if (tableInfo.length > 0 && tableInfo[0].values) {
-      const cols = tableInfo[0].values.map(v => v[1])
-    }
-  } catch (e) { }
-
-  // Ensure all items have a client_item_id
-  try {
-    const rows = db.exec("SELECT id FROM history WHERE client_item_id IS NULL")
-    if (rows.length > 0 && rows[0].values) {
-      for (const r of rows[0].values) {
-        db.run("UPDATE history SET client_item_id=? WHERE id=?", [crypto.randomUUID(), r[0]])
-      }
-    }
-  } catch (e) {
-    // Failed to backfill client_item_id
-  }
-
-  persist()
-}
-
-function getAll(device) {
-  try {
-    const stmt = db.prepare('SELECT id, value, favorite, remote_id, client_item_id, version, updated_at, is_synced FROM history WHERE device=? AND is_deleted=0 ORDER BY created_at DESC, id DESC')
-    const rows = []
-    stmt.bind([device])
-    while (stmt.step()) {
-      const r = stmt.getAsObject()
-      rows.push({ 
-        id: String(r.id), 
-        value: String(r.value), 
-        favorite: !!r.favorite, 
-        remote_id: r.remote_id ? String(r.remote_id) : null,
-        client_item_id: r.client_item_id ? String(r.client_item_id) : null,
-        version: r.version,
-        updated_at: r.updated_at,
-        is_synced: !!r.is_synced
-      })
-    }
-    stmt.free()
-    return rows
-  } catch (e) {
-    if (e.message && e.message.includes('no such column')) {
-      try {
-        const stmt = db.prepare('SELECT id, value, favorite, remote_id FROM history WHERE device=? ORDER BY created_at DESC, id DESC')
-        const rows = []
-        stmt.bind([device])
-        while (stmt.step()) {
-          const r = stmt.getAsObject()
-          rows.push({ 
-            id: String(r.id), 
-            value: String(r.value), 
-            favorite: !!r.favorite, 
-            remote_id: r.remote_id ? String(r.remote_id) : null,
-            client_item_id: null,
-            version: 1,
-            updated_at: null,
-            is_synced: false
-          })
-        }
-        stmt.free()
-        return rows
-      } catch (e2) {
-        return []
-      }
-    }
-    return []
-  }
-}
-
-function insert(device, value, remoteId = null) {
-  // If exists, update timestamp and version. If new, insert.
-  const existing = db.prepare('SELECT id, version, client_item_id FROM history WHERE device=? AND value=?')
-  existing.bind([device, value])
-  if (existing.step()) {
-    const r = existing.getAsObject()
-    const newVer = (r.version || 0) + 1
-    let stmt
-    try {
-        stmt = db.prepare('UPDATE history SET created_at=strftime(\'%Y-%m-%d %H:%M:%f\', \'now\'), updated_at=strftime(\'%Y-%m-%d %H:%M:%f\', \'now\'), version=?, is_synced=0, remote_id=coalesce(?, remote_id) WHERE id=?')
-        stmt.bind([newVer, remoteId, r.id])
-    } catch (e) {
-        // Fallback for legacy schema
-        stmt = db.prepare('UPDATE history SET created_at=strftime(\'%Y-%m-%d %H:%M:%f\', \'now\'), remote_id=coalesce(?, remote_id) WHERE id=?')
-        stmt.bind([remoteId, r.id])
-    }
-    stmt.step()
-    stmt.free()
-  } else {
-    let stmt
-    try {
-        stmt = db.prepare('INSERT INTO history(value, favorite, device, created_at, updated_at, remote_id, client_item_id, version, is_synced) VALUES(?, ?, ?, strftime(\'%Y-%m-%d %H:%M:%f\', \'now\'), strftime(\'%Y-%m-%d %H:%M:%f\', \'now\'), ?, ?, 1, 0)')
-        stmt.bind([value, 0, device, remoteId, crypto.randomUUID()])
-    } catch(e) {
-        // Fallback
-        stmt = db.prepare('INSERT INTO history(value, favorite, device, created_at, remote_id) VALUES(?, ?, ?, strftime(\'%Y-%m-%d %H:%M:%f\', \'now\'), ?)')
-        stmt.bind([value, 0, device, remoteId])
-    }
-    stmt.step()
-    stmt.free()
-  }
-  existing.free()
-  persist()
-}
-
-function setFavorite(device, value, fav) {
-  const existing = db.prepare('SELECT id, version FROM history WHERE device=? AND value=?')
-  existing.bind([device, value])
-  if (existing.step()) {
-    const r = existing.getAsObject()
-    const newVer = (r.version || 0) + 1
-    const stmt = db.prepare('UPDATE history SET favorite=?, updated_at=strftime(\'%Y-%m-%d %H:%M:%f\', \'now\'), version=?, is_synced=0 WHERE id=?')
-    stmt.bind([fav ? 1 : 0, newVer, r.id])
-    stmt.step()
-    stmt.free()
-  }
-  existing.free()
-  persist()
-}
-
-function getDirtyItems(device) {
-  try {
-    const stmt = db.prepare('SELECT id, value, favorite, remote_id, client_item_id, version, updated_at FROM history WHERE device=? AND is_synced=0 AND is_deleted=0')
-    const rows = []
-    stmt.bind([device])
-    while (stmt.step()) {
-      const r = stmt.getAsObject()
-      rows.push({
-        db_id: r.id,
-        id: r.remote_id, // server id if exists
-        clientId: r.client_item_id, // client unique id
-        value: r.value,
-        favorite: !!r.favorite,
-        version: r.version,
-        updatedAt: r.updated_at
-      })
-    }
-    stmt.free()
-    return rows
-  } catch (e) {
-    return []
-  }
-}
-
-function markSynced(device, clientItemIds) {
-  if (!Array.isArray(clientItemIds) || clientItemIds.length === 0) return
-  const placeholders = clientItemIds.map(() => '?').join(',')
-  const stmt = db.prepare(`UPDATE history SET is_synced=1 WHERE device=? AND client_item_id IN (${placeholders})`)
-  stmt.bind([device, ...clientItemIds])
-  stmt.step()
-  stmt.free()
-  persist()
-}
-
-function clear(device) {
-  const stmt = db.prepare('DELETE FROM history WHERE device=?')
-  stmt.bind([device])
-  stmt.step()
-  stmt.free()
-  persist()
-}
-
-function updateFromConflict(device, serverItem) {
-  // serverItem: { id (server-uuid), clientId (client-uuid), value, favorite, version, updatedAt }
-  // Update local item with server data and set is_synced=1
-  // We match by client_item_id if possible, or value?
-  // The strategy says "server wins".
-  
-  if (!serverItem.clientId) return // Need client id to match
-  
-  try {
-    const stmt = db.prepare(`
-      UPDATE history 
-      SET value=?, favorite=?, remote_id=?, version=?, updated_at=?, is_synced=1 
-      WHERE device=? AND client_item_id=?
-    `)
-    stmt.bind([
-      serverItem.value, 
-      serverItem.favorite ? 1 : 0, 
-      serverItem.id, 
-      serverItem.version, 
-      serverItem.updatedAt, 
-      device, 
-      serverItem.clientId
-    ])
-    stmt.step()
-    stmt.free()
+    
+    // Run initial schema creation (IF NOT EXISTS will handle it)
+    createTables()
     persist()
   } catch (e) {
-    // Try fallback without is_synced/version if schema is old
+    console.error('Error initializing DB:', e)
+    
+    // Si la base de datos está corrupta, intentar recuperarse eliminándola y creando una nueva
+    if (e.message && e.message.includes('malformed')) {
+        console.warn('DB corruption detected. Recreating database...')
+        try {
+            if (fs.existsSync(dbFilePath)) {
+                // Backup corrupted file just in case
+                const backupPath = dbFilePath + '.corrupted.' + Date.now()
+                fs.copyFileSync(dbFilePath, backupPath)
+                console.log('Corrupted DB backed up to:', backupPath)
+                fs.unlinkSync(dbFilePath)
+            }
+        } catch (cleanupErr) {
+            console.error('Failed to cleanup corrupted DB:', cleanupErr)
+        }
+    }
+
+    // Fallback
     try {
-      const stmt = db.prepare(`
-        UPDATE history 
-        SET value=?, favorite=?, remote_id=?, updated_at=?
-        WHERE device=? AND client_item_id=?
-      `)
-      stmt.bind([
-        serverItem.value, 
-        serverItem.favorite ? 1 : 0, 
-        serverItem.id, 
-        serverItem.updatedAt, 
-        device, 
-        serverItem.clientId
-      ])
-      stmt.step()
-      stmt.free()
-      persist()
-    } catch (e2) {
-      // updateFromConflict fallback failed
+        db = new SQL.Database()
+        createTables()
+        persist() // Save the fresh DB immediately
+    } catch(err) {
+        console.error('Critical DB Error', err)
     }
   }
 }
 
-function updateRemoteId(device, clientItemId, remoteId) {
-  const stmt = db.prepare('UPDATE history SET remote_id=? WHERE device=? AND client_item_id=?')
-  stmt.bind([remoteId, device, clientItemId])
-  stmt.step()
-  stmt.free()
-  persist()
-}
+function createTables() {
+  // ClipboardItem
+  db.run(`
+    CREATE TABLE IF NOT EXISTS ClipboardItem (
+      Id TEXT PRIMARY KEY,
+      Value TEXT,
+      Type TEXT,
+      IsFavorite BOOLEAN DEFAULT 0,
+      CreatedAt DATETIME,
+      UpdatedAt DATETIME,
+      IsDeleted BOOLEAN DEFAULT 0,
+      Pending BOOLEAN DEFAULT 0,
+      DeviceId TEXT,
+      Version INTEGER DEFAULT 1
+    );
+  `)
 
-function importItems(device, items) {
-  const insertStmt = db.prepare('INSERT OR IGNORE INTO history(value, favorite, device, created_at) VALUES(?, ?, ?, strftime(\'%Y-%m-%d %H:%M:%f\', \'now\'))')
-  const updateStmt = db.prepare('UPDATE history SET remote_id=?, favorite=?, updated_at=strftime(\'%Y-%m-%d %H:%M:%f\', \'now\'), is_synced=1 WHERE device=? AND value=?')
-  for (const it of Array.isArray(items) ? items : []) {
-    if (!it || typeof it.value !== 'string') continue
-    const fav = it.favorite ? 1 : 0
-    insertStmt.bind([it.value, fav, device])
-    insertStmt.step()
-    insertStmt.reset()
-    const rid = it.id ? String(it.id) : null
-    updateStmt.bind([rid, fav, device, it.value])
-    updateStmt.step()
-    updateStmt.reset()
-  }
-  insertStmt.free()
-  updateStmt.free()
-  persist()
-}
+  // Devices (Informational Local)
+  db.run(`
+    CREATE TABLE IF NOT EXISTS Devices (
+      Id TEXT PRIMARY KEY,
+      OsName TEXT,
+      Name TEXT,
+      VersionApp TEXT,
+      Synced BOOLEAN DEFAULT 0,
+      LastSync DATETIME,
+      CreatedAt DATETIME,
+      UpdatedAt DATETIME
+    );
+  `)
 
-function trimToLimit(device, limit) {
-  const n = Math.max(1, Number(limit || 50))
-  const sql = `UPDATE history SET is_deleted=1 WHERE device=? AND is_deleted=0 AND id NOT IN (SELECT id FROM history WHERE device=? AND is_deleted=0 ORDER BY created_at DESC LIMIT ?)`
-  const stmt = db.prepare(sql)
-  stmt.bind([device, device, n])
-  stmt.step()
-  stmt.free()
-  persist()
-}
+  // Migrations for Devices table
+  try {
+      const info = db.exec("PRAGMA table_info(Devices)")[0].values;
+      const hasCol = info.some(col => col[1] === 'LastSync');
+      if (!hasCol) {
+          db.run("ALTER TABLE Devices ADD COLUMN LastSync DATETIME")
+      }
+  } catch (e) {
+      console.error('Migration error for LastSync:', e)
+  }
 
-function insertGuest(device, value) {
-  const stmt = db.prepare('INSERT INTO guest_history(value, favorite, device, created_at) VALUES(?, ?, ?, strftime(\'%Y-%m-%d %H:%M:%f\', \'now\')) ON CONFLICT(device, value) DO UPDATE SET created_at=strftime(\'%Y-%m-%d %H:%M:%f\', \'now\')')
-  stmt.bind([value, 0, device])
-  stmt.step()
-  stmt.free()
-  persist()
-}
+  // AppSettings
+  db.run(`
+    CREATE TABLE IF NOT EXISTS AppSettings (
+      Id TEXT PRIMARY KEY,
+      AccessToken TEXT,
+      RefreshToken TEXT,
+      IsDarkMode BOOLEAN DEFAULT 0,
+      Theme TEXT,
+      Language TEXT,
+      UiScale REAL,
+      GlobalShortcut TEXT,
+      SelectedDeviceId TEXT,
+      CreatedAt DATETIME,
+      UpdatedAt DATETIME
+    );
+  `)
 
-function getAllGuest(device) {
-  const stmt = db.prepare('SELECT value, favorite FROM guest_history WHERE device=? AND is_deleted=0 ORDER BY created_at DESC, id DESC')
-  const rows = []
-  stmt.bind([device])
-  while (stmt.step()) {
-    const r = stmt.getAsObject()
-    rows.push({ value: String(r.value), favorite: !!r.favorite })
+  // Migration for existing DBs
+  try {
+      db.run("ALTER TABLE AppSettings ADD COLUMN GlobalShortcut TEXT")
+  } catch (e) {
+      // Ignore error if column exists
   }
-  stmt.free()
-  return rows
-}
+  try {
+      // Check if column exists first to avoid error spam or silent failures
+      const info = db.exec("PRAGMA table_info(AppSettings)")[0].values;
+      const hasCol = info.some(col => col[1] === 'SelectedDeviceId');
+      if (!hasCol) {
+          db.run("ALTER TABLE AppSettings ADD COLUMN SelectedDeviceId TEXT")
+      }
+  } catch (e) {
+      console.error('Migration error for SelectedDeviceId:', e)
+  }
 
-function clearGuest(device) {
-  const stmt = db.prepare('DELETE FROM guest_history WHERE device=?')
-  stmt.bind([device])
-  stmt.step()
-  stmt.free()
-  persist()
-}
+  try {
+      const info = db.exec("PRAGMA table_info(AppSettings)")[0].values;
+      const hasCol = info.some(col => col[1] === 'LocalDeviceId');
+      if (!hasCol) {
+          db.run("ALTER TABLE AppSettings ADD COLUMN LocalDeviceId TEXT")
+      }
+  } catch (e) {}
 
-function trimGuestToLimit(device, limit) {
-  const n = Math.max(1, Number(limit || 50))
-  const sql = `UPDATE guest_history SET is_deleted=1 WHERE device=? AND is_deleted=0 AND id NOT IN (SELECT id FROM guest_history WHERE device=? AND is_deleted=0 ORDER BY created_at DESC LIMIT ?)`
-  const stmt = db.prepare(sql)
-  stmt.bind([device, device, n])
-  stmt.step()
-  stmt.free()
-  persist()
-}
+  // Add Meta column to ClipboardItem for conflict resolution
+  try {
+      const info = db.exec("PRAGMA table_info(ClipboardItem)")[0].values;
+      const hasCol = info.some(col => col[1] === 'Meta');
+      if (!hasCol) {
+          db.run("ALTER TABLE ClipboardItem ADD COLUMN Meta TEXT")
+          console.log('[DB] Added Meta column to ClipboardItem')
+      }
+  } catch (e) {
+      console.error('Migration error for Meta column:', e)
+  }
 
-function searchGuest(device, query, filter) {
-  const where = ['device=?']
-  const params = [device]
-  const q = String(query || '').trim()
-  if (q.length > 0) {
-    where.push('value LIKE ?')
-    params.push('%' + q + '%')
-    where.push("(value NOT LIKE 'data:image%' AND value NOT LIKE '[LOCAL_IMAGE]:%')")
-  }
-  const f = String(filter || 'all')
-  if (f === 'image') where.push("(value LIKE 'data:image%' OR value LIKE '[LOCAL_IMAGE]:%')")
-  else if (f === 'text') where.push("(value NOT LIKE 'data:image%' AND value NOT LIKE '[LOCAL_IMAGE]:%')")
-  where.push('is_deleted=0')
-  const sql = `SELECT value, favorite FROM guest_history WHERE ${where.join(' AND ')} ORDER BY created_at DESC, id DESC`
-  const stmt = db.prepare(sql)
-  stmt.bind(params)
-  const out = []
-  while (stmt.step()) {
-    const r = stmt.getAsObject()
-    out.push({ value: String(r.value), favorite: !!r.favorite })
-  }
-  stmt.free()
-  return out
-}
+  // SyncQueue table for persistent queue
+  db.run(`
+    CREATE TABLE IF NOT EXISTS SyncQueue (
+      Id TEXT PRIMARY KEY,
+      OperationType TEXT,
+      ItemId TEXT,
+      ItemData TEXT,
+      Timestamp INTEGER,
+      Retries INTEGER DEFAULT 0,
+      NextRetryAt INTEGER,
+      CreatedAt DATETIME
+    );
+  `)
 
-// Función de búsqueda paginada para guest - retorna items paginados con value completo
-function searchGuestPaginated(device, query, filter, page = 0, limit = 20) {
-  const where = ['device=?']
-  const params = [device]
-  const q = String(query || '').trim()
-  if (q.length > 0) {
-    where.push('value LIKE ?')
-    params.push('%' + q + '%')
-    where.push("(value NOT LIKE 'data:image%' AND value NOT LIKE '[LOCAL_IMAGE]:%')")
-  }
-  const f = String(filter || 'all')
-  if (f === 'image') where.push("(value LIKE 'data:image%' OR value LIKE '[LOCAL_IMAGE]:%')")
-  else if (f === 'text') where.push("(value NOT LIKE 'data:image%' AND value NOT LIKE '[LOCAL_IMAGE]:%')")
-  where.push('is_deleted=0')
-  
-  const offset = Math.max(0, Number(page || 0)) * Math.max(1, Math.min(100, Number(limit || 20)))
-  const pageLimit = Math.max(1, Math.min(100, Number(limit || 20)))
-  
-  // Retornar items con value completo pero paginado (solo 20 items por página)
-  const sql = `SELECT id, value, favorite, created_at FROM guest_history WHERE ${where.join(' AND ')} ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?`
-  const stmt = db.prepare(sql)
-  stmt.bind([...params, pageLimit, offset])
-  const out = []
-  while (stmt.step()) {
-    const r = stmt.getAsObject()
-    out.push({
-      id: String(r.id),
-      value: String(r.value),
-      favorite: !!r.favorite,
-      created_at: String(r.created_at || '')
-    })
-  }
-  stmt.free()
-  return out
-}
-
-function getRecentGuest(device, filter, limit) {
-  const f = String(filter || 'all')
-  const where = ['device=?']
-  if (f === 'image') where.push("(value LIKE 'data:image%' OR value LIKE '[LOCAL_IMAGE]:%')")
-  else if (f === 'text') where.push("(value NOT LIKE 'data:image%' AND value NOT LIKE '[LOCAL_IMAGE]:%')")
-  const n = Math.max(1, Math.min(1000, Number(limit || 50)))
-  where.push('is_deleted=0')
-  const sql = `SELECT value, favorite FROM guest_history WHERE ${where.join(' AND ')} ORDER BY created_at DESC, id DESC LIMIT ${n}`
-  const stmt = db.prepare(sql)
-  stmt.bind([device])
-  const out = []
-  while (stmt.step()) {
-    const r = stmt.getAsObject()
-    out.push({ value: String(r.value), favorite: !!r.favorite })
-  }
-  stmt.free()
-  return out
-}
-function search(device, query, filter) {
-  const where = ['device=?']
-  const params = [device]
-  const q = String(query || '').trim()
-  if (q.length > 0) {
-    where.push('value LIKE ?')
-    params.push('%' + q + '%')
-    where.push("(value NOT LIKE 'data:image%' AND value NOT LIKE '[LOCAL_IMAGE]:%')")
-  }
-  const f = String(filter || 'all')
-  if (f === 'image') where.push("(value LIKE 'data:image%' OR value LIKE '[LOCAL_IMAGE]:%')")
-  else if (f === 'text') where.push("(value NOT LIKE 'data:image%' AND value NOT LIKE '[LOCAL_IMAGE]:%')")
-  else if (f === 'favorite') where.push('favorite=1')
-  where.push('is_deleted=0')
-  const sql = `SELECT value, favorite FROM history WHERE ${where.join(' AND ')} ORDER BY created_at DESC, id DESC`
-  const stmt = db.prepare(sql)
-  stmt.bind(params)
-  const out = []
-  while (stmt.step()) {
-    const r = stmt.getAsObject()
-    out.push({ value: String(r.value), favorite: !!r.favorite })
-  }
-  stmt.free()
-  return out
-}
-
-// Función de búsqueda paginada para usuarios autenticados - retorna items paginados con value completo
-function searchPaginated(device, query, filter, page = 0, limit = 20) {
-  const where = ['device=?']
-  const params = [device]
-  const q = String(query || '').trim()
-  if (q.length > 0) {
-    where.push('value LIKE ?')
-    params.push('%' + q + '%')
-    where.push("(value NOT LIKE 'data:image%' AND value NOT LIKE '[LOCAL_IMAGE]:%')")
-  }
-  const f = String(filter || 'all')
-  if (f === 'image') where.push("(value LIKE 'data:image%' OR value LIKE '[LOCAL_IMAGE]:%')")
-  else if (f === 'text') where.push("(value NOT LIKE 'data:image%' AND value NOT LIKE '[LOCAL_IMAGE]:%')")
-  else if (f === 'favorite') where.push('favorite=1')
-  where.push('is_deleted=0')
-  
-  const offset = Math.max(0, Number(page || 0)) * Math.max(1, Math.min(100, Number(limit || 20)))
-  const pageLimit = Math.max(1, Math.min(100, Number(limit || 20)))
-  
-  // Retornar items con value completo pero paginado (solo 20 items por página)
-  const sql = `SELECT id, value, favorite, created_at FROM history WHERE ${where.join(' AND ')} ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?`
-  const stmt = db.prepare(sql)
-  stmt.bind([...params, pageLimit, offset])
-  const out = []
-  while (stmt.step()) {
-    const r = stmt.getAsObject()
-    out.push({
-      id: String(r.id),
-      value: String(r.value),
-      favorite: !!r.favorite,
-      created_at: String(r.created_at || '')
-    })
-  }
-  stmt.free()
-  return out
+  // Indexes
+  db.run(`CREATE INDEX IF NOT EXISTS idx_clipboard_created ON ClipboardItem(CreatedAt DESC);`)
+  db.run(`CREATE INDEX IF NOT EXISTS idx_clipboard_favorite ON ClipboardItem(IsFavorite);`)
+  db.run(`CREATE INDEX IF NOT EXISTS idx_clipboard_device ON ClipboardItem(DeviceId, CreatedAt DESC);`)
+  db.run(`CREATE INDEX IF NOT EXISTS idx_clipboard_pending ON ClipboardItem(Pending) WHERE Pending = 1;`)
+  db.run(`CREATE INDEX IF NOT EXISTS idx_syncqueue_retry ON SyncQueue(NextRetryAt);`)
 }
 
 function persist() {
@@ -578,252 +206,815 @@ function persist() {
     const data = db.export()
     fs.writeFileSync(dbFilePath, Buffer.from(data))
   } catch (e) {
-    // Persist error
+    console.error('Error persisting DB:', e)
+    throw e // Propagar error para que el caller lo maneje
   }
 }
 
-function sanitize(name) {
-  const s = String(name || '').trim()
-  return s.replace(/[<>:"/\\|?*]/g, '').slice(0, 64) || 'device'
-}
-
-function getRecent(device, filter, limit) {
-  const f = String(filter || 'all')
-  const where = ['device=?']
-  if (f === 'image') where.push("(value LIKE 'data:image%' OR value LIKE '[LOCAL_IMAGE]:%')")
-  else if (f === 'text') where.push("(value NOT LIKE 'data:image%' AND value NOT LIKE '[LOCAL_IMAGE]:%')")
-  else if (f === 'favorite') where.push('favorite=1')
-  const n = Math.max(1, Math.min(1000, Number(limit || 50)))
-  where.push('is_deleted=0')
-  const sql = `SELECT id, value, favorite FROM history WHERE ${where.join(' AND ')} ORDER BY created_at DESC, id DESC LIMIT ${n}`
-  const stmt = db.prepare(sql)
-  stmt.bind([device])
-  const out = []
-  while (stmt.step()) {
-    const r = stmt.getAsObject()
-    out.push({ id: String(r.id), value: String(r.value), favorite: !!r.favorite })
-  }
-  stmt.free()
-  return out
-}
-
-function getByValues(device, values) {
-  const arr = Array.isArray(values) ? values.filter(v => typeof v === 'string' && v.length > 0) : []
-  if (arr.length === 0) return []
-  const placeholders = arr.map(() => '?').join(',')
-  const sql = `SELECT id, value, favorite FROM history WHERE device=? AND is_deleted=0 AND value IN (${placeholders})`
-  const stmt = db.prepare(sql)
-  stmt.bind([device, ...arr])
-  const out = []
-  while (stmt.step()) {
-    const r = stmt.getAsObject()
-    out.push({ id: String(r.id), value: String(r.value), favorite: !!r.favorite })
-  }
-  stmt.free()
-  return out
-}
-
-function getNotIn(device, values) {
-  const arr = Array.isArray(values) ? values.filter(v => typeof v === 'string' && v.length > 0) : []
-  if (arr.length === 0) return []
-  const placeholders = arr.map(() => '?').join(',')
-  const sql = `SELECT id, value, favorite FROM history WHERE device=? AND is_deleted=0 AND value NOT IN (${placeholders})`
-  const stmt = db.prepare(sql)
-  stmt.bind([device, ...arr])
-  const out = []
-  while (stmt.step()) {
-    const r = stmt.getAsObject()
-    out.push({ id: String(r.id), value: String(r.value), favorite: !!r.favorite })
-  }
-  stmt.free()
-  return out
-}
-
-function deleteById(id) {
-  // Try deleting from both tables since we only have the ID and want to be sure
-  const stmt1 = db.prepare('DELETE FROM history WHERE id=?')
-  stmt1.bind([id])
-  stmt1.step()
-  stmt1.free()
-  
-  const stmt2 = db.prepare('DELETE FROM guest_history WHERE id=?')
-  stmt2.bind([id])
-  stmt2.step()
-  stmt2.free()
-  
-  persist()
-}
-
-function getById(id) {
-  const stmt = db.prepare('SELECT id, value, favorite, remote_id FROM history WHERE id=? AND is_deleted=0')
-  stmt.bind([id])
-  let res = null
-  if (stmt.step()) {
-    const r = stmt.getAsObject()
-    res = { id: String(r.id), value: String(r.value), favorite: !!r.favorite, remote_id: r.remote_id ? String(r.remote_id) : null }
-  }
-  stmt.free()
-  return res
-}
-
-function updateRemoteIdByValue(device, value, remoteId) {
-  const stmt = db.prepare('UPDATE history SET remote_id=? WHERE device=? AND value=?')
-  stmt.bind([remoteId, device, value])
-  stmt.step()
-  stmt.free()
-  persist()
-}
-
-function countActive(device) {
-  try {
-    const stmt = db.prepare('SELECT COUNT(1) AS c FROM history WHERE device=? AND is_deleted=0')
-    stmt.bind([device])
-    let c = 0
-    if (stmt.step()) {
-      const r = stmt.getAsObject()
-      c = Number(r.c || 0)
+// Versión asíncrona de persist para operaciones no críticas
+async function persistAsync() {
+  if (!dbFilePath || !db) return
+  return new Promise((resolve, reject) => {
+    try {
+      const data = db.export()
+      fs.writeFile(dbFilePath, Buffer.from(data), (err) => {
+        if (err) {
+          console.error('Error persisting DB async:', err)
+          reject(err)
+        } else {
+          resolve()
+        }
+      })
+    } catch (e) {
+      console.error('Error exporting DB:', e)
+      reject(e)
     }
-    stmt.free()
-    return c
-  } catch (e) {
-    return 0
-  }
+  })
 }
 
-function countGuestActive(device) {
-  try {
-    const stmt = db.prepare('SELECT COUNT(1) AS c FROM guest_history WHERE device=? AND is_deleted=0')
-    stmt.bind([device])
-    let c = 0
-    if (stmt.step()) {
-      const r = stmt.getAsObject()
-      c = Number(r.c || 0)
+// --- CRUD Operations ---
+
+// ClipboardItem
+
+function ensureLocalDevice() {
+    try {
+        const settings = getSettings()
+        if (settings.localDeviceId) {
+            // Verify it exists in Devices table
+            const stmt = db.prepare("SELECT Id FROM Devices WHERE Id = ?")
+            stmt.bind([settings.localDeviceId])
+            if (stmt.step()) {
+                stmt.free()
+                return settings.localDeviceId
+            }
+            stmt.free()
+        }
+
+        // If not set or invalid, find or create one
+        const hostname = os.hostname()
+        const platform = process.platform
+        const now = new Date().toISOString()
+
+        // 1. Try to match by name and OS (most reliable for existing setups)
+        const checkName = db.prepare("SELECT Id FROM Devices WHERE Name = ? AND OsName = ? LIMIT 1")
+        checkName.bind([hostname, platform])
+        if (checkName.step()) {
+            const dev = checkName.getAsObject()
+            checkName.free()
+            // Set this as local
+            updateSettings({ LocalDeviceId: dev.Id })
+            return dev.Id
+        }
+        checkName.free()
+
+        // 2. If no match, check if we have ANY device. If so, pick the most recently updated one?
+        // This is risky if user synced other devices.
+        // Better: Create a new one for THIS machine.
+        
+        const newId = crypto.randomUUID()
+        const stmt = db.prepare("INSERT INTO Devices (Id, OsName, Name, VersionApp, CreatedAt, UpdatedAt) VALUES (?, ?, ?, ?, ?, ?)")
+        // We don't have app version here easily without passing it, but it's okay.
+        stmt.bind([newId, platform, hostname, '1.0.0', now, now])
+        stmt.step()
+        stmt.free()
+        
+        updateSettings({ LocalDeviceId: newId })
+        persist()
+        
+        return newId
+    } catch (e) {
+        console.error('Error ensuring local device:', e)
+        return 'unknown'
     }
-    stmt.free()
-    return c
-  } catch (e) {
-    return 0
-  }
 }
 
-function deleteNotInRemote(device, remoteValues) {
-  const values = Array.isArray(remoteValues) ? remoteValues.filter(v => typeof v === 'string') : []
-  if (values.length === 0) {
-    const stmt = db.prepare('DELETE FROM history WHERE device=? AND is_deleted=0 AND remote_id IS NOT NULL')
-    stmt.bind([device])
+function insertItem(value, type = 'text', deviceId = null, options = {}) {
+  try {
+    if (!db) {
+        console.warn('DB not initialized in insertItem')
+        return null
+    }
+    const now = new Date().toISOString()
+    const createdAt = options.createdAt || now
+    const updatedAt = options.updatedAt || now
+    
+    // Resolve deviceId if not provided
+    if (!deviceId) {
+        deviceId = ensureLocalDevice()
+    }
+    
+    // Si no es una inserción forzada (con ID específico), intentar deduplicar por contenido
+    if (!options.id) {
+        // Deduplicación por (Value, Type, DeviceId) ignorando eliminados
+        const check = db.prepare(`
+          SELECT Id, CreatedAt FROM ClipboardItem
+          WHERE Value = ? AND Type = ? AND DeviceId = ? AND IsDeleted = 0
+          LIMIT 1
+        `)
+        check.bind([value || '', type || 'text', deviceId])
+        if (check.step()) {
+          const existing = check.getAsObject()
+          check.free()
+          const upd = db.prepare(`UPDATE ClipboardItem SET UpdatedAt = ? WHERE Id = ?`)
+          upd.bind([updatedAt, existing.Id])
+          upd.step()
+          upd.free()
+          persist()
+          return { id: existing.Id, value, type, createdAt: existing.CreatedAt }
+        }
+        check.free()
+    }
+    
+    // Insertar nuevo
+    const id = options.id || crypto.randomUUID()
+    
+    // Verificar si ya existe por ID para evitar errores de PK (si viene de sync)
+    if (options.id) {
+        const checkId = db.prepare("SELECT Id FROM ClipboardItem WHERE Id = ?")
+        checkId.bind([id])
+        if (checkId.step()) {
+            checkId.free()
+            // Ya existe, actualizamos timestamps y contenido si es necesario
+            // Esto actúa como un "upsert" simple para sync
+            const upd = db.prepare(`UPDATE ClipboardItem SET Value = ?, Type = ?, UpdatedAt = ? WHERE Id = ?`)
+            upd.bind([value || '', type || 'text', updatedAt, id])
+            upd.step()
+            upd.free()
+            persist()
+            return { id, value, type, createdAt }
+        }
+        checkId.free()
+    }
+
+    const stmt = db.prepare(`
+      INSERT INTO ClipboardItem (Id, Value, Type, IsFavorite, CreatedAt, UpdatedAt, IsDeleted, Pending, DeviceId, Version)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+    `)
+    // Pending logic:
+    // If it's a forced insert (options.id exists, e.g. from remote sync), pending should be 0 (false)
+    // If it's a new local copy (options.id undefined), pending should be 1 (true) to trigger sync
+    const pendingStatus = options.id ? 0 : 1;
+    
+    stmt.bind([
+        id, 
+        value || '', 
+        type || 'text', 
+        options.favorite ? 1 : 0, 
+        createdAt, 
+        updatedAt, 
+        options.isDeleted ? 1 : 0, 
+        pendingStatus, 
+        deviceId
+    ])
     stmt.step()
     stmt.free()
     persist()
-    return
-  }
-  const placeholders = values.map(() => '?').join(',')
-  const sql = `DELETE FROM history WHERE device=? AND is_deleted=0 AND remote_id IS NOT NULL AND value NOT IN (${placeholders})`
-  const stmt = db.prepare(sql)
-  stmt.bind([device, ...values])
-  stmt.step()
-  stmt.free()
-  persist()
-}
-
-// Funciones para manejar configuración
-function getConfig(key) {
-  try {
-    const stmt = db.prepare('SELECT value FROM config WHERE key=?')
-    stmt.bind([key])
-    let result = null
-    if (stmt.step()) {
-      const r = stmt.getAsObject()
-      result = r.value ? String(r.value) : null
-    }
-    stmt.free()
-    return result
+    return { id, value, type, createdAt }
   } catch (e) {
+    console.error('Error inserting item:', e)
     return null
   }
 }
 
-function setConfig(key, value) {
+function getItems(limit = 20, offset = 0, filter = {}) {
   try {
-    const stmt = db.prepare('INSERT OR REPLACE INTO config(key, value, updated_at) VALUES(?, ?, strftime(\'%Y-%m-%d %H:%M:%f\', \'now\'))')
-    stmt.bind([key, value])
-    stmt.step()
-    stmt.free()
-    persist()
-    return true
-  } catch (e) {
-    return false
-  }
-}
+    // Si la DB no está inicializada correctamente, devolver array vacío para evitar crash
+    if (!db) {
+        console.warn('DB not initialized in getItems')
+        return []
+    }
 
-function removeConfig(key) {
-  try {
-    const stmt = db.prepare('DELETE FROM config WHERE key=?')
-    stmt.bind([key])
-    stmt.step()
-    stmt.free()
-    persist()
-    return true
-  } catch (e) {
-    return false
-  }
-}
+    let query = "SELECT * FROM ClipboardItem WHERE IsDeleted = 0"
+    const params = []
 
-function getAllConfig() {
-  try {
-    const stmt = db.prepare('SELECT key, value FROM config')
-    const result = {}
+    if (filter.favorite) {
+      query += " AND IsFavorite = 1"
+    }
+    
+    // Support type filtering in SQL if provided
+    if (filter.type) {
+        query += " AND Type = ?"
+        params.push(filter.type)
+    }
+
+    if (filter.search) {
+      query += " AND Value LIKE ?"
+      params.push(`%${filter.search}%`)
+    }
+
+    if (filter.deviceId) {
+      query += " AND DeviceId = ?"
+      params.push(filter.deviceId)
+    }
+
+    query += " ORDER BY CreatedAt DESC LIMIT ? OFFSET ?"
+    params.push(limit, offset)
+    
+    const stmt = db.prepare(query)
+    stmt.bind(params)
+    
+    const items = []
     while (stmt.step()) {
-      const r = stmt.getAsObject()
-      result[String(r.key)] = String(r.value)
+      const row = stmt.getAsObject()
+      items.push(normalizeItem(row))
     }
     stmt.free()
-    return result
+    return items
+  } catch (e) {
+    console.error('Error getting items:', e)
+    return []
+  }
+}
+
+function setFavorite(id, isFavorite) {
+  try {
+    const now = new Date().toISOString()
+    const stmt = db.prepare("UPDATE ClipboardItem SET IsFavorite = ?, UpdatedAt = ?, Pending = 1 WHERE Id = ?")
+    stmt.bind([isFavorite ? 1 : 0, now, id])
+    stmt.step()
+    stmt.free()
+    persist()
+    return true
+  } catch (e) {
+    console.error('Error setting favorite:', e)
+    return false
+  }
+}
+
+function deleteItem(id) {
+  try {
+    const stmt = db.prepare("UPDATE ClipboardItem SET IsDeleted = 1 WHERE Id = ?")
+    stmt.bind([id])
+    stmt.step()
+    stmt.free()
+    persist()
+    return true
+  } catch (e) {
+    return false
+  }
+}
+
+function clearAll() {
+    try {
+        db.run("UPDATE ClipboardItem SET IsDeleted = 1")
+        persist()
+        return true
+    } catch (e) {
+        return false
+    }
+}
+
+// AppSettings
+
+function getSettings() {
+  try {
+    const stmt = db.prepare("SELECT * FROM AppSettings LIMIT 1")
+    if (stmt.step()) {
+      const row = stmt.getAsObject()
+      return normalizeSettings(row)
+    }
+    // Create default if not exists
+    const id = crypto.randomUUID()
+    const now = new Date().toISOString()
+    db.run(`INSERT INTO AppSettings (Id, CreatedAt, UpdatedAt, IsDarkMode, Language) VALUES ('${id}', '${now}', '${now}', 0, 'en')`)
+    persist()
+    return { Id: id, IsDarkMode: false, Language: 'en' }
   } catch (e) {
     return {}
   }
 }
 
-function getLegacyImages(device) {
+function updateSettings(settings) {
   try {
-    const stmt = db.prepare("SELECT id, value FROM history WHERE device=? AND value LIKE 'data:image%' AND is_deleted=0")
-    stmt.bind([device])
-    const rows = []
-    while (stmt.step()) {
-      const r = stmt.getAsObject()
-      rows.push({ id: r.id, value: r.value })
-    }
+    const current = getSettings()
+    const now = new Date().toISOString()
+    
+    // Build update query dynamically
+    const fields = []
+    const values = []
+    
+    if (settings.IsDarkMode !== undefined) { fields.push("IsDarkMode = ?"); values.push(settings.IsDarkMode ? 1 : 0); }
+    if (settings.Theme !== undefined) { fields.push("Theme = ?"); values.push(settings.Theme); }
+    if (settings.Language !== undefined) { fields.push("Language = ?"); values.push(settings.Language); }
+    if (settings.UiScale !== undefined) { fields.push("UiScale = ?"); values.push(settings.UiScale); }
+    if (settings.AccessToken !== undefined) { fields.push("AccessToken = ?"); values.push(settings.AccessToken); }
+    if (settings.RefreshToken !== undefined) { fields.push("RefreshToken = ?"); values.push(settings.RefreshToken); }
+    if (settings.GlobalShortcut !== undefined) { fields.push("GlobalShortcut = ?"); values.push(settings.GlobalShortcut); }
+    if (settings.SelectedDeviceId !== undefined) { fields.push("SelectedDeviceId = ?"); values.push(settings.SelectedDeviceId); }
+    if (settings.LocalDeviceId !== undefined) { fields.push("LocalDeviceId = ?"); values.push(settings.LocalDeviceId); }
+    
+    if (fields.length === 0) return current
+
+    fields.push("UpdatedAt = ?")
+    values.push(now)
+    values.push(current.id) // <--- Check capitalization of ID in normalizeSettings
+
+    const stmt = db.prepare(`UPDATE AppSettings SET ${fields.join(', ')} WHERE Id = ?`)
+    stmt.bind(values)
+    stmt.step()
     stmt.free()
-    return rows
+    persist()
+    return getSettings()
   } catch (e) {
+    console.error('Error updating settings:', e)
+    return null
+  }
+}
+
+// Devices
+
+function registerDevice(deviceInfo) {
+    // deviceInfo: { OsName, Name, VersionApp, Id }
+    try {
+        let id = deviceInfo.Id || crypto.randomUUID()
+        const now = new Date().toISOString()
+        
+        // 1. Check if exists by ID (Primary Key)
+        const checkId = db.prepare("SELECT Id FROM Devices WHERE Id = ?")
+        checkId.bind([id])
+        const existsById = checkId.step()
+        checkId.free()
+
+        if (existsById) {
+            // Update existing by ID
+            const stmt = db.prepare("UPDATE Devices SET Name = ?, VersionApp = ?, UpdatedAt = ? WHERE Id = ?")
+            stmt.bind([deviceInfo.Name, deviceInfo.VersionApp, now, id])
+            stmt.step()
+            stmt.free()
+        } else {
+            // 2. Check if exists by (Name + OsName) to prevent semantic duplicates
+            // This is crucial for syncing: if backend sends a device that matches our local one by name/OS but has different ID,
+            // we should probably merge/adopt the backend ID.
+            
+            const checkName = db.prepare("SELECT Id FROM Devices WHERE Name = ? AND OsName = ? LIMIT 1")
+            checkName.bind([deviceInfo.Name, deviceInfo.OsName])
+            if (checkName.step()) {
+                const existing = checkName.getAsObject()
+                const oldId = existing.Id
+                
+                // If we are registering with a specific ID (e.g. from backend) and it differs from local ID
+                if (deviceInfo.Id && deviceInfo.Id !== oldId) {
+                    
+                    // Migrate related data
+                    db.run("UPDATE ClipboardItem SET DeviceId = ? WHERE DeviceId = ?", [deviceInfo.Id, oldId])
+                    db.run("UPDATE AppSettings SET SelectedDeviceId = ? WHERE SelectedDeviceId = ?", [deviceInfo.Id, oldId])
+                    
+                    // Delete old device record
+                    db.run("DELETE FROM Devices WHERE Id = ?", [oldId])
+                    
+                    // Insert new device record with the correct (new) ID
+                    const stmt = db.prepare("INSERT INTO Devices (Id, OsName, Name, VersionApp, CreatedAt, UpdatedAt) VALUES (?, ?, ?, ?, ?, ?)")
+                    stmt.bind([deviceInfo.Id, deviceInfo.OsName, deviceInfo.Name, deviceInfo.VersionApp, now, now])
+                    stmt.step()
+                    stmt.free()
+                    
+                    id = deviceInfo.Id // Return the new ID
+                } else {
+                    // Just update the existing one if no specific ID was requested or it's just a name collision on local creation
+                    // If deviceInfo.Id was null (local creation), we reuse the existing ID.
+                    id = oldId
+                    const stmt = db.prepare("UPDATE Devices SET VersionApp = ?, UpdatedAt = ? WHERE Id = ?")
+                    stmt.bind([deviceInfo.VersionApp, now, id])
+                    stmt.step()
+                    stmt.free()
+                }
+            } else {
+                // 3. Insert absolutely new
+                const stmt = db.prepare("INSERT INTO Devices (Id, OsName, Name, VersionApp, CreatedAt, UpdatedAt) VALUES (?, ?, ?, ?, ?, ?)")
+                stmt.bind([id, deviceInfo.OsName, deviceInfo.Name, deviceInfo.VersionApp, now, now])
+                stmt.step()
+                stmt.free()
+            }
+            checkName.free()
+        }
+        
+        // Clean up legacy 'local-device' if we just registered a real one
+        if (id !== 'local-device') {
+            db.run("DELETE FROM Devices WHERE Id = 'local-device'")
+        }
+        
+        persist()
+        return id
+    } catch(e) {
+        console.error('[DB] registerDevice error:', e)
+        return null
+    }
+}
+
+function getDevice() {
+    try {
+        // Return the PINNED local device if possible
+        const localId = ensureLocalDevice()
+        
+        const stmt = db.prepare("SELECT * FROM Devices WHERE Id = ?")
+        stmt.bind([localId])
+        if (stmt.step()) {
+            const dev = stmt.getAsObject()
+            stmt.free()
+            return dev
+        }
+        stmt.free()
+        
+        // Fallback (should be covered by ensureLocalDevice logic)
+        return null
+    } catch (e) {
+        return null
+    }
+}
+
+function getDevices() {
+    try {
+        // Force check table existence first
+        const checkTable = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='Devices'")
+        if (!checkTable.step()) {
+            return []
+        }
+
+        const stmt = db.prepare("SELECT * FROM Devices ORDER BY UpdatedAt DESC")
+        const devices = []
+        while (stmt.step()) {
+            devices.push(stmt.getAsObject())
+        }
+        stmt.free()
+        return devices
+    } catch (e) {
+        console.error('getDevices error:', e)
+        return []
+    }
+}
+
+function setActiveDevice(id) {
+    try {
+        const now = new Date().toISOString()
+        
+        // 1. Verify AppSettings row exists
+        const stmtGet = db.prepare("SELECT Id FROM AppSettings LIMIT 1")
+        if (!stmtGet.step()) {
+            stmtGet.free()
+            return false
+        }
+        const row = stmtGet.getAsObject()
+        const settingsId = row.Id
+        stmtGet.free()
+
+        // 2. Perform Update
+        db.run("UPDATE AppSettings SET SelectedDeviceId = ?, UpdatedAt = ? WHERE Id = ?", [String(id), now, settingsId])
+        
+        // 3. Update Device UpdatedAt
+        db.run("UPDATE Devices SET UpdatedAt = ? WHERE Id = ?", [now, id])
+        
+        // 4. Persist to Disk
+        persist()
+        
+        return true
+    } catch(e) {
+        console.error('Error setting active device:', e)
+        return false
+    }
+}
+
+function updateAllItemsDevice(deviceId) {
+    try {
+        // Only update items that do not have a DeviceId yet (orphans)
+        // or items that belonged to the previous local identifier?
+        // To be safe, we only update NULLs.
+        db.run("UPDATE ClipboardItem SET DeviceId = ? WHERE DeviceId IS NULL", [deviceId])
+        persist()
+        return true
+    } catch (e) {
+        return false
+    }
+}
+
+function claimOrphanItems(deviceId) {
+    try {
+        db.run("UPDATE ClipboardItem SET DeviceId = ? WHERE DeviceId IS NULL", [deviceId])
+        persist()
+        return true
+    } catch(e) {
+        return false
+    }
+}
+
+function markDeviceSynced(id) {
+    try {
+        db.run("UPDATE Devices SET Synced = 1 WHERE Id = ?", [id])
+        persist()
+        return true
+    } catch (e) {
+        return false
+    }
+}
+
+function getDeviceLastSync(deviceId) {
+    try {
+        const stmt = db.prepare("SELECT LastSync FROM Devices WHERE Id = ?")
+        stmt.bind([deviceId])
+        if (stmt.step()) {
+            const row = stmt.getAsObject()
+            stmt.free()
+            return row.LastSync
+        }
+        stmt.free()
+        return null
+    } catch (e) {
+        console.error('Error getting last sync:', e)
+        return null
+    }
+}
+
+function updateDeviceLastSync(deviceId, timestamp) {
+    try {
+        const stmt = db.prepare("UPDATE Devices SET LastSync = ?, UpdatedAt = ? WHERE Id = ?")
+        stmt.bind([timestamp, new Date().toISOString(), deviceId])
+        stmt.step()
+        stmt.free()
+        persist()
+        return true
+    } catch (e) {
+        console.error('Error updating last sync:', e)
+        return false
+    }
+}
+
+// Helpers
+
+function normalizeItem(row) {
+  return {
+    id: row.Id,
+    value: row.Value,
+    type: row.Type,
+    favorite: !!row.IsFavorite,
+    createdAt: row.CreatedAt,
+    isDeleted: !!row.IsDeleted,
+    deviceId: row.DeviceId
+  }
+}
+
+function normalizeSettings(row) {
+    // Case-insensitive lookup helper
+    const getVal = (key) => {
+        const k = Object.keys(row).find(k => k.toLowerCase() === key.toLowerCase())
+        return k ? row[k] : undefined
+    }
+
+    return {
+        id: getVal('Id'),
+        accessToken: getVal('AccessToken'),
+        refreshToken: getVal('RefreshToken'),
+        isDarkMode: !!getVal('IsDarkMode'),
+        theme: getVal('Theme'),
+        language: getVal('Language'),
+        uiScale: getVal('UiScale'),
+        globalShortcut: getVal('GlobalShortcut') || 'Alt+X',
+        selectedDeviceId: getVal('SelectedDeviceId'),
+        localDeviceId: getVal('LocalDeviceId')
+    }
+}
+
+// Helper to keep compatibility with main.js calls until updated
+// The old db.js had specific exports. I will try to map them or update main.js.
+// Since I'm refactoring main.js too, I'll export clean names.
+
+// --- Sync Queue Operations ---
+
+function saveSyncQueue(operations) {
+  try {
+    // Limpiar tabla actual
+    db.run("DELETE FROM SyncQueue")
+    
+    // Insertar operaciones
+    const stmt = db.prepare(`
+      INSERT INTO SyncQueue (Id, OperationType, ItemId, ItemData, Timestamp, Retries, NextRetryAt, CreatedAt)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `)
+    
+    operations.forEach(op => {
+      const id = crypto.randomUUID()
+      stmt.bind([
+        id,
+        op.type,
+        op.itemId,
+        JSON.stringify(op.item),
+        op.timestamp,
+        op.retries,
+        op.nextRetryAt || null,
+        new Date().toISOString()
+      ])
+      stmt.step()
+      stmt.reset()
+    })
+    
+    stmt.free()
+    persist()
+  } catch (e) {
+    console.error('Error saving sync queue:', e)
+  }
+}
+
+function getPendingSyncOperations() {
+  try {
+    const stmt = db.prepare("SELECT * FROM SyncQueue ORDER BY Timestamp ASC")
+    const operations = []
+    
+    while (stmt.step()) {
+      const row = stmt.getAsObject()
+      operations.push({
+        type: row.OperationType,
+        itemId: row.ItemId,
+        item: JSON.parse(row.ItemData),
+        timestamp: row.Timestamp,
+        retries: row.Retries,
+        nextRetryAt: row.NextRetryAt
+      })
+    }
+    
+    stmt.free()
+    return operations
+  } catch (e) {
+    console.error('Error getting pending sync operations:', e)
     return []
   }
 }
 
-function updateValue(id, newValue) {
+function getPendingItems(deviceId = null) {
   try {
-    const stmt = db.prepare("UPDATE history SET value=? WHERE id=?")
-    stmt.bind([newValue, id])
-    stmt.step()
-    stmt.free()
-    persist()
-  } catch (e) {}
-}
-
-function updateImagesBulk(updates) {
-  try {
-    const stmt = db.prepare("UPDATE history SET value=? WHERE id=?")
-    db.run("BEGIN TRANSACTION")
-    for (const u of updates) {
-       stmt.bind([u.path, u.id])
-       stmt.step()
-       stmt.reset()
+    let query = "SELECT * FROM ClipboardItem WHERE Pending = 1 AND IsDeleted = 0"
+    const params = []
+    
+    if (deviceId) {
+      query += " AND DeviceId = ?"
+      params.push(deviceId)
     }
-    db.run("COMMIT")
+    
+    query += " ORDER BY CreatedAt ASC" // FIFO for sync
+    
+    const stmt = db.prepare(query)
+    stmt.bind(params)
+    
+    const items = []
+    while (stmt.step()) {
+      items.push(normalizeItem(stmt.getAsObject()))
+    }
     stmt.free()
-    persist()
+    return items
   } catch (e) {
-    // updateImagesBulk failed
+    console.error('Error getting pending items:', e)
+    return []
   }
 }
 
-module.exports = { init, getAll, insert, setFavorite, clear, importItems, search, searchPaginated, getRecent, getByValues, getNotIn, trimToLimit, insertGuest, getAllGuest, clearGuest, trimGuestToLimit, searchGuest, searchGuestPaginated, getRecentGuest, deleteById, getById, updateRemoteIdByValue, getDirtyItems, markSynced, updateFromConflict, updateRemoteId, countActive, countGuestActive, deleteNotInRemote, getConfig, setConfig, removeConfig, getAllConfig, getLegacyImages, updateValue, updateImagesBulk }
+function getItem(id) {
+  try {
+    const stmt = db.prepare("SELECT * FROM ClipboardItem WHERE Id = ?")
+    stmt.bind([id])
+    if (stmt.step()) {
+      const item = normalizeItem(stmt.getAsObject())
+      stmt.free()
+      return item
+    }
+    stmt.free()
+    return null
+  } catch (e) {
+    console.error('Error getting item:', e)
+    return null
+  }
+}
+
+function markItemAsSynced(itemId) {
+  try {
+    const now = new Date().toISOString()
+    const stmt = db.prepare("UPDATE ClipboardItem SET Pending = 0, UpdatedAt = ? WHERE Id = ?")
+    stmt.bind([now, itemId])
+    stmt.step()
+    stmt.free()
+    persist()
+  } catch (e) {
+    console.error('Error marking item as synced:', e)
+  }
+}
+
+function updateItem(item) {
+  try {
+    const now = new Date().toISOString()
+    const stmt = db.prepare(`
+      UPDATE ClipboardItem 
+      SET Value = ?, Type = ?, IsFavorite = ?, UpdatedAt = ?, Version = ?, DeviceId = ?
+      WHERE Id = ?
+    `)
+    stmt.bind([
+      item.value || '', // Ensure value is not undefined
+      item.type || 'text', // Ensure type is not undefined
+      item.favorite ? 1 : 0,
+      item.updatedAt || now, // Use provided updatedAt or now
+      item.version || 1,
+      item.deviceId || null, // Allow null deviceId
+      item.id
+    ])
+    stmt.step()
+    stmt.free()
+    persist()
+  } catch (e) {
+    console.error('Error updating item:', e)
+  }
+}
+
+function markAsConflicted(itemId, remoteItem) {
+  try {
+    // Guardar datos del conflicto en un campo JSON temporal
+    const remoteData = JSON.stringify(remoteItem);
+    const stmt = db.prepare("UPDATE ClipboardItem SET Pending = 2, Meta = ? WHERE Id = ?")
+    stmt.bind([remoteData, itemId])
+    stmt.step()
+    stmt.free()
+    persist()
+    
+    // Pending = 2 significa "conflicto detectado"
+    // Meta almacena temporalmente los datos remotos
+    console.log(`[DB] Marked item ${itemId} as conflicted`)
+  } catch (e) {
+    console.error('Error marking as conflicted:', e)
+  }
+}
+
+function getConflictedItems() {
+  try {
+    const stmt = db.prepare("SELECT * FROM ClipboardItem WHERE Pending = 2")
+    const items = []
+    
+    while (stmt.step()) {
+      const row = stmt.getAsObject()
+      const localItem = normalizeItem(row);
+      
+      // Intentar parsear los datos remotos del campo Meta
+      let remoteItem = {};
+      try {
+        if (row.Meta) {
+          remoteItem = JSON.parse(row.Meta);
+        }
+      } catch (e) {
+        console.error('[DB] Failed to parse remote item from Meta:', e);
+      }
+      
+      items.push({
+        local: localItem,
+        remote: remoteItem
+      })
+    }
+    
+    stmt.free()
+    return items
+  } catch (e) {
+    console.error('Error getting conflicted items:', e)
+    return []
+  }
+}
+
+function clearConflict(itemId) {
+  if (!itemId) {
+    console.error('Error clearing conflict: itemId is required')
+    return
+  }
+  try {
+    // Limpiar el estado de conflicto y el campo Meta
+    const stmt = db.prepare("UPDATE ClipboardItem SET Pending = 0, Meta = NULL WHERE Id = ?")
+    stmt.bind([itemId])
+    stmt.step()
+    stmt.free()
+    persist()
+  } catch (e) {
+    console.error('Error clearing conflict:', e)
+  }
+}
+
+module.exports = {
+  init,
+  insertItem,
+  getItem,
+  getItems,
+  setFavorite,
+  deleteItem,
+  clearAll,
+  getSettings,
+  updateSettings,
+  registerDevice,
+  getDevice,
+  getDevices,
+  setActiveDevice,
+  updateAllItemsDevice,
+  claimOrphanItems,
+  markDeviceSynced,
+  getDeviceLastSync,
+  updateDeviceLastSync,
+  ensureLocalDevice,
+  // Sync operations
+  saveSyncQueue,
+  getPendingSyncOperations,
+  getPendingItems,
+  markItemAsSynced,
+  updateItem,
+  markAsConflicted,
+  getConflictedItems,
+  clearConflict,
+  persistAsync
+}

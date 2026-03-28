@@ -3,11 +3,11 @@
   "version": "1.2.5",
   "main": "main.js",
   "scripts": {
-    "dev": "concurrently \"npm run dev --prefix frontend\" \"wait-on http://localhost:5173 && electron .\"",
+    "dev": "concurrently \"npm run dev --prefix frontend\" \"tsc -p tsconfig.main.json --watch\" \"wait-on http://127.0.0.1:5173 && electron .\"",
     "build": "npm run build --prefix frontend",
     "start": "electron .",
-    "dist": "npm run build:worker && electron-builder",
-    "build:worker": "node build-worker.js"
+    "sql": "electron . --sql-mode",
+    "dist": "electron-builder"
   },
   "build": {
     "appId": "SAIDMIX.CopyFy",
@@ -36,18 +36,20 @@
       "db.js",
       "preload.js",
       "config.js",
+      "autolaunch.js",
+      "sync-daemon.js",
+      "backend/**/*",
       "viewer/**/*",
       "public/**/*",
       "helpers/**/*",
       "package.json",
-      "node_modules/sql.js/dist/sql-wasm.wasm",
-      "workers/dist/worker.js"
+      "node_modules/sql.js/dist/sql-wasm.wasm"
     ],
     "asarUnpack": [
       "helpers/paste.exe",
       "helpers/paste-image.exe",
       "node_modules/sql.js/dist/sql-wasm.wasm",
-      "workers/dist/worker.js"
+      "sync-daemon.js"
     ],
     "directories": {
       "buildResources": "build"
@@ -61,6 +63,9 @@
     "mac": {
       "icon": "build/icon.icns",
       "category": "public.app-category.utilities",
+      "hardenedRuntime": true,
+      "gatekeeperAssess": false,
+      "entitlements": "build/entitlements.mac.plist",
       "target": [
         "dmg",
         "zip"
@@ -70,6 +75,10 @@
       "target": [
         "AppImage",
         "deb"
+      ],
+      "depends": [
+        "xclip",
+        "libnotify-bin"
       ],
       "category": "Utility",
       "icon": "build/icon.png",
@@ -94,10 +103,12 @@
   "license": "ISC",
   "description": "Clipboard manager con sincronización y atajos, empaquetado para Electron",
   "devDependencies": {
+    "@types/node": "^25.0.10",
     "concurrently": "^9.2.0",
     "electron": "^28.3.3",
     "electron-builder": "^26.0.12",
     "node-gyp": "^11.2.0",
+    "typescript": "^5.9.3",
     "wait-on": "^8.0.3"
   },
   "dependencies": {
