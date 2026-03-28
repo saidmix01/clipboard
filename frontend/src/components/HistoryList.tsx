@@ -68,7 +68,7 @@ const HistoryList = forwardRef<HistoryListRef, Props>(({ items, search, selected
   }, [hasMore, onLoadMore, isLoadingMore])
 
   return (
-    <div ref={containerRef} tabIndex={-1} className="flex-1 overflow-auto px-2 py-2 text-[color:var(--color-text)] outline-none" style={{ scrollbarWidth: 'thin' }}>
+    <div ref={containerRef} tabIndex={-1} className="flex-1 overflow-auto px-3 py-2 text-[color:var(--color-text)] outline-none" style={{ scrollbarWidth: 'thin' }}>
       {items.length === 0 ? (
         <p className="text-center text-xs text-[color:var(--color-muted)]">Sin coincidencias</p>
       ) : (

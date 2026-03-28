@@ -422,7 +422,7 @@ ipcMain.on('notification-action', async (_: any, action: string) => {
                          }
                      }
                  }
-             } catch(e) {
+             } catch(e: any) {
                  log.error('Error saving file:', e)
                  if (notificationWindow && !notificationWindow.isDestroyed()) {
                      notificationWindow.webContents.send('notification-error', 'Error local: ' + e.message);

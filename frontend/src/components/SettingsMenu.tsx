@@ -162,11 +162,11 @@ export default function SettingsMenu({ open, darkMode, onClose, onForceUpdate, o
     const diffMs = now.getTime() - date.getTime()
     const diffMins = Math.floor(diffMs / 60000)
     
-    if (diffMins < 1) return t('settings.last_sync', { time: 'hace un momento' })
-    if (diffMins < 60) return t('settings.last_sync', { time: `hace ${diffMins} min` })
+    if (diffMins < 1) return t('settings.last_sync', { time: t('settings.last_sync_just_now') })
+    if (diffMins < 60) return t('settings.last_sync', { time: t('settings.last_sync_mins', { mins: diffMins }) })
     
     const diffHours = Math.floor(diffMins / 60)
-    if (diffHours < 24) return t('settings.last_sync', { time: `hace ${diffHours}h` })
+    if (diffHours < 24) return t('settings.last_sync', { time: t('settings.last_sync_hours', { hours: diffHours }) })
     
     return t('settings.last_sync', { time: date.toLocaleDateString() })
   }
@@ -300,15 +300,15 @@ export default function SettingsMenu({ open, darkMode, onClose, onForceUpdate, o
       <div className="p-1">
         {view === 'main' ? (
           <>
-            <h3 className="m-0 text-[color:var(--color-text)]">{t('settings.title')}</h3>
-            <div className="flex flex-col mt-2">
+            <div className="flex items-center gap-2 mb-4">
+              <h3 className="m-0 text-[color:var(--color-text)]">{t('settings.title')}</h3>
+            </div>
+            <div className="flex flex-col gap-1">
               {/* Sync Now Button */}
-              <button 
-                className={`${menuBtnClass} ${isSyncing ? 'opacity-50 cursor-not-allowed' : ''}`}
-                onMouseEnter={!isSyncing ? MouseOver : undefined} 
-                onMouseLeave={!isSyncing ? MouseOut : undefined} 
+              <button
                 onClick={handleSyncNow}
                 disabled={isSyncing}
+                className="w-full text-left px-3 py-2.5 rounded-[var(--radius-button)] hover:bg-black/5 dark:hover:bg-white/5 transition-colors duration-100 flex items-center justify-between group disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 <CloudArrowUpIcon className={`w-5 h-5 ${isSyncing ? 'animate-bounce' : ''}`} />
                 <div className="flex flex-col items-start flex-1">
@@ -329,37 +329,72 @@ export default function SettingsMenu({ open, darkMode, onClose, onForceUpdate, o
                 )}
               </button>
               
-              <button className={menuBtnClass} onMouseEnter={MouseOver} onMouseLeave={MouseOut} onClick={onChangeDevice}>
-                <ComputerDesktopIcon className="w-5 h-5" />
-                <span>{t('device.title')}</span>
+              <button
+                  onClick={onChangeDevice}
+                  className="w-full text-left px-3 py-2.5 rounded-[var(--radius-button)] hover:bg-black/5 dark:hover:bg-white/5 transition-colors duration-100 flex items-center justify-between group"
+                >
+                  <div className="flex items-center gap-3">
+                    <ComputerDesktopIcon className="w-5 h-5 text-[color:var(--color-muted)] group-hover:text-[color:var(--color-text)] transition-colors" />
+                    <span className="text-[color:var(--color-text)] text-sm font-medium">{t('device.title')}</span>
+                  </div>
+                </button>
+                {/* General Config */}
+              <button
+                onClick={() => setView('general')}
+                className="w-full text-left px-3 py-2.5 rounded-[var(--radius-button)] hover:bg-black/5 dark:hover:bg-white/5 transition-colors duration-100 flex items-center justify-between group"
+              >
+                <div className="flex items-center gap-3">
+                  <Cog6ToothIcon className="w-5 h-5 text-[color:var(--color-muted)] group-hover:text-[color:var(--color-text)] transition-colors" />
+                  <span className="text-[color:var(--color-text)] text-sm font-medium">{t('settings.general')}</span>
+                </div>
               </button>
-              <button className={menuBtnClass} onMouseEnter={MouseOver} onMouseLeave={MouseOut} onClick={() => setView('general')}>
-                <Cog6ToothIcon className="w-5 h-5" />
-                <span>{t('settings.general')}</span>
+              <button
+                onClick={onForceUpdate}
+                className="w-full text-left px-3 py-2.5 rounded-[var(--radius-button)] hover:bg-black/5 dark:hover:bg-white/5 transition-colors duration-100 flex items-center justify-between group"
+              >
+                <div className="flex items-center gap-3">
+                  <ArrowPathIcon className="w-5 h-5 text-[color:var(--color-muted)] group-hover:text-[color:var(--color-text)] transition-colors" />
+                  <span className="text-[color:var(--color-text)] text-sm font-medium">{t('settings.check_updates')}</span>
+                </div>
               </button>
-              <button className={menuBtnClass} onMouseEnter={MouseOver} onMouseLeave={MouseOut} onClick={onForceUpdate}>
-                <ArrowPathIcon className="w-5 h-5" />
-                <span>{t('settings.check_updates')}</span>
+              <button
+                onClick={onToggleDark}
+                className="w-full text-left px-3 py-2.5 rounded-[var(--radius-button)] hover:bg-black/5 dark:hover:bg-white/5 transition-colors duration-100 flex items-center justify-between group"
+              >
+                <div className="flex items-center gap-3">
+                  {darkMode ? <SunIcon className="w-5 h-5 text-[color:var(--color-muted)] group-hover:text-[color:var(--color-text)] transition-colors" /> : <MoonIcon className="w-5 h-5 text-[color:var(--color-muted)] group-hover:text-[color:var(--color-text)] transition-colors" />}
+                  <span className="text-[color:var(--color-text)] text-sm font-medium">{darkMode ? t('settings.light_mode') : t('settings.dark_mode')}</span>
+                </div>
               </button>
-              <button className={menuBtnClass} onMouseEnter={MouseOver} onMouseLeave={MouseOut} onClick={onClearHistory}>
-                <TrashIcon className="w-5 h-5" />
-                <span>{t('settings.clear_history')}</span>
+              <button
+                onClick={onClearHistory}
+                className="w-full text-left px-3 py-2.5 rounded-[var(--radius-button)] hover:bg-red-500/10 dark:hover:bg-red-500/20 transition-colors duration-100 flex items-center justify-between group"
+              >
+                <div className="flex items-center gap-3">
+                  <TrashIcon className="w-5 h-5 text-red-500" />
+                  <span className="text-red-500 text-sm font-medium">{t('settings.clear_history')}</span>
+                </div>
               </button>
-              <button className={menuBtnClass} onMouseEnter={MouseOver} onMouseLeave={MouseOut} onClick={onOpenAbout}>
-                <InformationCircleIcon className="w-5 h-5" />
-                <span>{t('settings.about')}</span>
+              <button
+                onClick={onOpenAbout}
+                className="w-full text-left px-3 py-2.5 rounded-[var(--radius-button)] hover:bg-black/5 dark:hover:bg-white/5 transition-colors duration-100 flex items-center justify-between group mt-2 border-t border-[color:var(--color-border)]"
+              >
+                <div className="flex items-center gap-3 mt-1">
+                  <InformationCircleIcon className="w-5 h-5 text-[color:var(--color-muted)] group-hover:text-[color:var(--color-text)] transition-colors" />
+                  <span className="text-[color:var(--color-text)] text-sm font-medium">{t('settings.about')}</span>
+                </div>
               </button>
             </div>
-          </>
-        ) : (
-          <>
-             <div className="flex items-center gap-2 mb-4">
-               <button onClick={() => setView('main')} className="p-1 rounded-full hover:text-white" onMouseEnter={MouseOver} onMouseLeave={MouseOut}>
-                 <ChevronLeftIcon className="w-5 h-5" />
-               </button>
-               <h3 className="m-0 text-[color:var(--color-text)]">{t('settings.general')}</h3>
-             </div>
-             <div className="flex flex-col gap-6 px-2">
+            </>
+          ) : (
+            <>
+               <div className="flex items-center gap-2 mb-4">
+                 <button onClick={() => setView('main')} className="p-1.5 rounded-[var(--radius-button)] hover:bg-black/5 dark:hover:bg-white/5 transition-colors duration-100" title="Atrás">
+                   <ChevronLeftIcon className="w-5 h-5 text-[color:var(--color-text)]" />
+                 </button>
+                 <h3 className="m-0 text-[color:var(--color-text)]">{t('settings.general')}</h3>
+               </div>
+               <div className="flex flex-col gap-6 px-2">
                {/* Inicio minimizado */}
                <div className="flex flex-col gap-2">
                  <div className="flex items-center justify-between">
@@ -382,7 +417,7 @@ export default function SettingsMenu({ open, darkMode, onClose, onForceUpdate, o
                  <span className="text-[color:var(--color-text)]">{t('settings.shortcut_toggle')}</span>
                  <div className="flex items-center gap-2">
                    <button 
-                     className={`px-3 py-1.5 rounded border ${recording === 'modifier' ? 'bg-[color:var(--color-primary)] text-white' : 'border-[color:var(--color-border)] bg-[color:var(--color-surface)] text-[color:var(--color-text)]'}`}
+                     className={`px-3 py-1.5 rounded-[var(--radius-button)] border transition-colors duration-100 ${recording === 'modifier' ? 'bg-[color:var(--color-primary)] text-white' : 'border-[color:var(--color-border)] bg-[color:var(--color-surface)] text-[color:var(--color-text)] hover:bg-black/5 dark:hover:bg-white/5'}`}
                      style={recording === 'modifier' ? { backgroundColor: 'var(--color-primary)', borderColor: 'var(--color-primary)', color: '#fff' } : {}}
                      onClick={() => setRecording('modifier')}
                    >
@@ -390,7 +425,7 @@ export default function SettingsMenu({ open, darkMode, onClose, onForceUpdate, o
                    </button>
                    <span className="text-[color:var(--color-muted)]">+</span>
                    <button 
-                     className={`px-3 py-1.5 rounded border ${recording === 'key' ? 'bg-[color:var(--color-primary)] text-white' : 'border-[color:var(--color-border)] bg-[color:var(--color-surface)] text-[color:var(--color-text)]'}`}
+                     className={`px-3 py-1.5 rounded-[var(--radius-button)] border transition-colors duration-100 ${recording === 'key' ? 'bg-[color:var(--color-primary)] text-white' : 'border-[color:var(--color-border)] bg-[color:var(--color-surface)] text-[color:var(--color-text)] hover:bg-black/5 dark:hover:bg-white/5'}`}
                      style={recording === 'key' ? { backgroundColor: 'var(--color-primary)', borderColor: 'var(--color-primary)', color: '#fff' } : {}}
                      onClick={() => setRecording('key')}
                    >
@@ -407,7 +442,7 @@ export default function SettingsMenu({ open, darkMode, onClose, onForceUpdate, o
                   <span className="text-[color:var(--color-text)]">{t('settings.language')}</span>
                   <div className="flex items-center gap-2">
                     <button 
-                      className={`flex items-center gap-2 px-3 py-1.5 rounded border ${i18n.language.startsWith('en') ? 'bg-[color:var(--color-primary)] text-white' : 'border-[color:var(--color-border)] bg-[color:var(--color-surface)] text-[color:var(--color-text)]'}`}
+                      className={`flex items-center gap-2 px-3 py-1.5 rounded-[var(--radius-button)] border transition-colors duration-100 ${i18n.language.startsWith('en') ? 'bg-[color:var(--color-primary)] text-white' : 'border-[color:var(--color-border)] bg-[color:var(--color-surface)] text-[color:var(--color-text)] hover:bg-black/5 dark:hover:bg-white/5'}`}
                       style={i18n.language.startsWith('en') ? { backgroundColor: 'var(--color-primary)', borderColor: 'var(--color-primary)', color: '#fff' } : {}}
                       onClick={() => changeLanguage('en')}
                     >
@@ -415,7 +450,7 @@ export default function SettingsMenu({ open, darkMode, onClose, onForceUpdate, o
                       {t('settings.lang_en')}
                     </button>
                     <button 
-                      className={`flex items-center gap-2 px-3 py-1.5 rounded border ${i18n.language.startsWith('es') ? 'bg-[color:var(--color-primary)] text-white' : 'border-[color:var(--color-border)] bg-[color:var(--color-surface)] text-[color:var(--color-text)]'}`}
+                      className={`flex items-center gap-2 px-3 py-1.5 rounded-[var(--radius-button)] border transition-colors duration-100 ${i18n.language.startsWith('es') ? 'bg-[color:var(--color-primary)] text-white' : 'border-[color:var(--color-border)] bg-[color:var(--color-surface)] text-[color:var(--color-text)] hover:bg-black/5 dark:hover:bg-white/5'}`}
                       style={i18n.language.startsWith('es') ? { backgroundColor: 'var(--color-primary)', borderColor: 'var(--color-primary)', color: '#fff' } : {}}
                       onClick={() => changeLanguage('es')}
                     >
@@ -432,14 +467,14 @@ export default function SettingsMenu({ open, darkMode, onClose, onForceUpdate, o
                    <div className="flex items-center gap-2">
                     <button 
                         onClick={onToggleDark}
-                        className="p-1 rounded hover:bg-[color:var(--color-bg)] text-[color:var(--color-text)]"
+                        className="p-1.5 rounded-[var(--radius-button)] hover:bg-black/5 dark:hover:bg-white/5 transition-colors duration-100 text-[color:var(--color-text)]"
                         title={darkMode ? t('settings.light_mode') : t('settings.dark_mode')}
                       >
                         {darkMode ? <SunIcon className="w-5 h-5" /> : <MoonIcon className="w-5 h-5" />}
                       </button>
                      <button 
                        onClick={resetColors} 
-                       className="px-2 py-1 text-xs rounded border border-[color:var(--color-border)] hover:bg-[color:var(--color-surface)] transition-colors text-[color:var(--color-text)]"
+                       className="px-2 py-1.5 text-xs rounded-[var(--radius-button)] border border-[color:var(--color-border)] hover:bg-black/5 dark:hover:bg-white/5 transition-colors duration-100 text-[color:var(--color-text)]"
                        title={t('settings.reset_colors')}
                      >
                        {t('settings.reset_colors')}
@@ -513,14 +548,14 @@ export default function SettingsMenu({ open, darkMode, onClose, onForceUpdate, o
                      <div className="flex items-center gap-2 h-8">
                        <button 
                          onClick={() => handleFontSizeChange(-1)} 
-                         className="w-6 h-6 flex items-center justify-center rounded border border-[color:var(--color-border)] bg-[color:var(--color-surface)] text-[color:var(--color-text)] hover:bg-[color:var(--color-bg)]"
+                         className="w-6 h-6 flex items-center justify-center rounded-[var(--radius-button)] border border-[color:var(--color-border)] bg-[color:var(--color-surface)] text-[color:var(--color-text)] hover:bg-black/5 dark:hover:bg-white/5 transition-colors duration-100"
                        >
                          -
                        </button>
                        <span className="text-xs font-mono w-8 text-center text-[color:var(--color-text)]">{fontSize}px</span>
                        <button 
                          onClick={() => handleFontSizeChange(1)} 
-                         className="w-6 h-6 flex items-center justify-center rounded border border-[color:var(--color-border)] bg-[color:var(--color-surface)] text-[color:var(--color-text)] hover:bg-[color:var(--color-bg)]"
+                         className="w-6 h-6 flex items-center justify-center rounded-[var(--radius-button)] border border-[color:var(--color-border)] bg-[color:var(--color-surface)] text-[color:var(--color-text)] hover:bg-black/5 dark:hover:bg-white/5 transition-colors duration-100"
                        >
                          +
                        </button>

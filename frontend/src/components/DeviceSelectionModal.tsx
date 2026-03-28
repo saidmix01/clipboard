@@ -100,7 +100,7 @@ export default function DeviceSelectionModal({ open, onClose, onSuccess }: Props
             <div className="space-y-3">
                 <div className="flex justify-between items-center">
                     <p className="text-sm text-[color:var(--color-muted)]">{t('device.select_label')}</p>
-                    <button onClick={() => setView('create')} className="p-1 rounded hover:bg-[color:var(--color-bg)] text-[color:var(--color-primary)]" title="Nuevo dispositivo">
+                    <button onClick={() => setView('create')} className="p-1 rounded-[var(--radius-button)] hover:bg-black/5 dark:hover:bg-white/5 text-[color:var(--color-primary)] transition-colors duration-100" title="Nuevo dispositivo">
                         <PlusIcon className="w-5 h-5" />
                     </button>
                 </div>
@@ -115,7 +115,7 @@ export default function DeviceSelectionModal({ open, onClose, onSuccess }: Props
                             <div 
                                 key={dev.Id} 
                                 onClick={() => handleSelect(dev)}
-                                className={`flex items-center justify-between p-3 rounded-md border cursor-pointer transition ${dev.Id === currentDeviceId ? 'border-[color:var(--color-primary)] bg-[color:var(--color-surface)]' : 'border-[color:var(--color-border)] hover:bg-[color:var(--color-bg)]'}`}
+                                className={`flex items-center justify-between p-2 rounded-[var(--radius-card)] border cursor-pointer transition-colors duration-100 ${dev.Id === currentDeviceId ? 'border-[color:var(--color-primary)] bg-[color:var(--color-primary)]/5' : 'border-[color:var(--color-border)] hover:bg-black/5 dark:hover:bg-white/5'}`}
                             >
                                 <div className="flex flex-col">
                                     <span className="font-medium text-[color:var(--color-text)]">{dev.Name}</span>
@@ -137,21 +137,21 @@ export default function DeviceSelectionModal({ open, onClose, onSuccess }: Props
                   value={newDeviceName}
                   onChange={e => setNewDeviceName(e.target.value)}
                   placeholder="Ej: Laptop Casa"
-                  className="w-full px-3 py-2 rounded-lg border border-[color:var(--color-border)] bg-[color:var(--color-bg)] text-[color:var(--color-text)] focus:outline-none focus:ring-2 focus:ring-[color:var(--color-primary)]"
+                  className="w-full px-3 h-[32px] rounded-[var(--radius-input)] border border-[color:var(--color-border)] bg-[color:var(--color-bg)] text-[color:var(--color-text)] focus:outline-none focus:ring-1 focus:ring-[color:var(--color-primary)] text-sm"
                   autoFocus
                 />
-                <div className="flex gap-2">
+                <div className="flex gap-2 pt-2">
                     <button
                       type="button"
                       onClick={() => setView('list')}
-                      className="flex-1 py-2 border border-[color:var(--color-border)] rounded-lg text-[color:var(--color-text)]"
+                      className="flex-1 h-[32px] border border-[color:var(--color-border)] rounded-[var(--radius-button)] text-[color:var(--color-text)] hover:bg-black/5 dark:hover:bg-white/5 transition-colors duration-100 text-sm font-medium"
                     >
                         {t('device.cancel')}
                     </button>
                     <button
                       type="submit"
                       disabled={loading || !newDeviceName.trim()}
-                      className="flex-1 py-2 bg-[color:var(--color-primary)] text-white rounded-lg"
+                      className="flex-1 h-[32px] bg-[color:var(--color-primary)] hover:bg-blue-600 text-white rounded-[var(--radius-button)] disabled:opacity-50 transition-colors duration-100 text-sm font-medium"
                     >
                         {loading ? '...' : t('device.apply')}
                     </button>

@@ -5,8 +5,10 @@ import Tesseract from 'tesseract.js'
 import { ClipboardDocumentIcon, ArrowPathIcon } from '@heroicons/react/24/outline'
 import { Toaster, toast } from 'react-hot-toast'
 import WindowShell from './WindowShell'
+import { useTranslation } from 'react-i18next'
 
 export default function OCRWindow() {
+  const { t } = useTranslation()
   const [imgSrc, setImgSrc] = useState<string>('')
   const [crop, setCrop] = useState<Crop>()
   const [completedCrop, setCompletedCrop] = useState<PixelCrop>()
@@ -109,26 +111,26 @@ export default function OCRWindow() {
         setText(result.data.text)
         if (result.data.text) {
              navigator.clipboard.writeText(result.data.text)
-             toast.success('Texto copiado')
+             toast.success(t('ocr.copied'))
         } else {
-             toast('No se detectó texto')
+             toast(t('ocr.no_text_detected'))
         }
       } catch (e) {
           console.error(e)
-          toast.error('Error en OCR')
+          toast.error(t('ocr.ocr_error'))
       } finally {
           setLoading(false)
       }
   }
 
   return (
-    <WindowShell title="OCR - Extracción de Texto">
+    <WindowShell title={t('ocr.title')}>
       <Toaster />
       <div className="flex h-full">
           {/* Image Area */}
           <div className="flex-1 bg-[color:var(--color-bg)] overflow-auto flex items-center justify-center p-8 border-r border-[color:var(--color-border)] relative">
               <div className="absolute top-4 left-4 z-10 px-3 py-1 rounded-full bg-[color:var(--color-surface)] border border-[color:var(--color-border)] shadow-sm text-xs text-[color:var(--color-text)] opacity-80">
-                  Selecciona el área a escanear
+                  {t('ocr.select_area')}
               </div>
               
               {imgSrc ? (
@@ -136,7 +138,7 @@ export default function OCRWindow() {
                     crop={crop} 
                     onChange={c => setCrop(c)} 
                     onComplete={c => setCompletedCrop(c)}
-                    className="shadow-2xl border border-[color:var(--color-border)] rounded-lg overflow-hidden"
+                    className="shadow-md border border-[color:var(--color-border)] rounded-[var(--radius-modal)] overflow-hidden"
                   >
                       <img 
                         ref={imgRef} 
@@ -149,7 +151,7 @@ export default function OCRWindow() {
               ) : (
                   <div className="text-[color:var(--color-muted)] flex flex-col items-center gap-2">
                       <div className="w-8 h-8 rounded-full border-2 border-[color:var(--color-border)] border-t-[color:var(--color-primary)] animate-spin"></div>
-                      <span>Cargando imagen...</span>
+                      <span>{t('ocr.loading_image')}</span>
                   </div>
               )}
           </div>
@@ -160,7 +162,7 @@ export default function OCRWindow() {
                   <button
                     onClick={runOCR}
                     disabled={loading || !imgSrc}
-                    className="w-full py-2.5 bg-[color:var(--color-primary)] hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed rounded-lg font-medium text-white transition shadow-sm flex justify-center items-center gap-2"
+                    className="w-full h-[36px] bg-[color:var(--color-primary)] hover:bg-blue-600 disabled:opacity-50 disabled:cursor-not-allowed rounded-[var(--radius-button)] font-medium text-white transition-colors duration-100 shadow-sm flex justify-center items-center gap-2 text-sm"
                   >
                       {loading ? (
                           <>
@@ -168,18 +170,18 @@ export default function OCRWindow() {
                             <span>{Math.round(progress * 100)}%</span>
                           </>
                       ) : (
-                          'Extraer Texto'
+                          t('ocr.extract_text')
                       )}
                   </button>
               </div>
 
               <div className="flex-1 flex flex-col p-4 gap-2 min-h-0">
-                  <label className="text-xs font-semibold uppercase tracking-wider text-[color:var(--color-muted)]">Resultado</label>
+                  <label className="text-xs font-semibold uppercase tracking-wider text-[color:var(--color-muted)]">{t('ocr.result')}</label>
                   <textarea 
                     value={text}
                     onChange={e => setText(e.target.value)}
-                    className="flex-1 bg-[color:var(--color-bg)] border border-[color:var(--color-border)] rounded-lg p-3 text-sm resize-none focus:outline-none focus:ring-2 focus:ring-[color:var(--color-primary)] font-mono text-[color:var(--color-text)]"
-                    placeholder="El texto extraído aparecerá aquí..."
+                    className="flex-1 bg-[color:var(--color-bg)] border border-[color:var(--color-border)] rounded-[var(--radius-input)] p-3 text-sm resize-none outline-none focus:ring-1 focus:ring-[color:var(--color-primary)] font-mono text-[color:var(--color-text)]"
+                    placeholder={t('ocr.placeholder')}
                   />
               </div>
               
@@ -187,13 +189,13 @@ export default function OCRWindow() {
                    <button
                     onClick={() => {
                         navigator.clipboard.writeText(text)
-                        toast.success('Copiado')
+                        toast.success(t('ocr.copied'))
                     }}
                     disabled={!text}
-                    className="w-full py-2 px-4 bg-[color:var(--color-surface)] border border-[color:var(--color-border)] hover:bg-[color:var(--color-bg)] rounded-lg text-sm font-medium text-[color:var(--color-text)] transition flex items-center justify-center gap-2"
+                    className="w-full h-[36px] bg-[color:var(--color-surface)] border border-[color:var(--color-border)] hover:bg-black/5 dark:hover:bg-white/5 rounded-[var(--radius-button)] text-sm font-medium text-[color:var(--color-text)] transition-colors duration-100 flex items-center justify-center gap-2 disabled:opacity-50"
                   >
                       <ClipboardDocumentIcon className="w-4 h-4" />
-                      Copiar al portapapeles
+                      {t('ocr.copy_clipboard')}
                   </button>
               </div>
           </div>

@@ -80,14 +80,14 @@ export default function DeviceRegistrationModal({ onSuccess }: Props) {
                   value={deviceName}
                   onChange={e => setDeviceName(e.target.value)}
                   placeholder="Ej: Laptop Trabajo"
-                  className="w-full px-3 py-2 rounded-lg border border-[color:var(--color-border)] bg-[color:var(--color-bg)] text-[color:var(--color-text)] focus:outline-none focus:ring-2 focus:ring-[color:var(--color-primary)]"
+                  className="w-full px-3 h-[32px] rounded-[var(--radius-input)] border border-[color:var(--color-border)] bg-[color:var(--color-bg)] text-[color:var(--color-text)] focus:outline-none focus:ring-1 focus:ring-[color:var(--color-primary)] text-sm"
                   autoFocus
                 />
                 
                 <button
                   type="submit"
                   disabled={loading || !deviceName.trim()}
-                  className="w-full py-2 bg-[color:var(--color-primary)] text-white rounded-lg font-medium hover:opacity-90 disabled:opacity-50 transition"
+                  className="w-full h-[32px] bg-[color:var(--color-primary)] text-white rounded-[var(--radius-button)] font-medium hover:bg-blue-600 disabled:opacity-50 transition-colors duration-100 text-sm"
                 >
                     {loading ? 'Registrando...' : 'Continuar'}
                 </button>

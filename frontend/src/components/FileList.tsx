@@ -153,9 +153,9 @@ export default function FileList({
          ) : (
             <>
               {items.map(item => (
-                <div key={item.id} className="glass p-2 rounded-xl flex items-center justify-between group hover:bg-[color:var(--color-surface)] transition border border-transparent hover:border-[color:var(--color-border)]">
+                <div key={item.id} className="glass p-2 rounded-[var(--radius-card)] flex items-center justify-between group hover:bg-[color:var(--color-surface)] transition border border-[color:var(--color-border)] hover:border-[color:var(--color-border)]">
                     <div className="flex items-center gap-3 overflow-hidden">
-                      <div className="p-2 bg-[color:var(--color-bg)] rounded-lg flex-shrink-0">
+                      <div className="p-2 bg-[color:var(--color-bg)] rounded-[var(--radius-sm)] flex-shrink-0">
                         <FileIcon filename={item.originalName} />
                       </div>
                       <div className="flex flex-col overflow-hidden min-w-0">
@@ -164,10 +164,10 @@ export default function FileList({
                       </div>
                     </div>
                     <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition flex-shrink-0 pl-2">
-                      <button onClick={(e) => { e.stopPropagation(); onDownload(item) }} className="p-2 hover:bg-[color:var(--color-bg)] rounded-lg text-[color:var(--color-text)] transition" title="Descargar">
+                      <button onClick={(e) => { e.stopPropagation(); onDownload(item) }} className="p-2 hover:bg-black/5 dark:hover:bg-white/5 rounded-[var(--radius-button)] text-[color:var(--color-text)] transition" title="Descargar">
                           <ArrowDownTrayIcon className="w-4 h-4" />
                       </button>
-                      <button onClick={(e) => { e.stopPropagation(); onDelete(item) }} className="p-2 hover:bg-red-500/10 text-red-400 rounded-lg transition" title="Eliminar">
+                      <button onClick={(e) => { e.stopPropagation(); onDelete(item) }} className="p-2 hover:bg-red-500 hover:text-white text-red-500 rounded-[var(--radius-button)] transition" title="Eliminar">
                           <TrashIcon className="w-4 h-4" />
                       </button>
                     </div>

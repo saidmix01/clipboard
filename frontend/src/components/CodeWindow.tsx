@@ -74,7 +74,7 @@ export default function CodeWindow() {
                   <select 
                     value={language} 
                     onChange={e => setLanguage(e.target.value)}
-                    className="bg-[color:var(--color-bg)] text-[color:var(--color-text)] text-xs px-3 py-1.5 rounded border border-[color:var(--color-border)] focus:outline-none focus:ring-1 focus:ring-[color:var(--color-primary)]"
+                    className="bg-[color:var(--color-bg)] text-[color:var(--color-text)] text-xs px-3 py-1.5 rounded-[var(--radius-input)] border border-[color:var(--color-border)] outline-none focus:ring-1 focus:ring-[color:var(--color-primary)]"
                   >
                       <option value="plaintext">Plain Text</option>
                       <option value="javascript">JavaScript</option>
@@ -94,7 +94,7 @@ export default function CodeWindow() {
               <div className="flex items-center gap-2">
                   <button 
                     onClick={handleCopy}
-                    className="flex items-center gap-1.5 px-3 py-1.5 bg-[color:var(--color-primary)] hover:opacity-90 rounded text-xs font-medium text-white transition"
+                    className="flex items-center gap-1.5 px-3 py-1.5 bg-[color:var(--color-primary)] hover:bg-blue-600 rounded-[var(--radius-button)] text-xs font-medium text-white transition-colors duration-100"
                   >
                       <ClipboardDocumentIcon className="w-4 h-4" />
                       Copiar

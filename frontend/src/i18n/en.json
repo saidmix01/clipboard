@@ -6,6 +6,9 @@
     "sync_now_desc": "Sync your data with the cloud immediately",
     "syncing": "Syncing...",
     "last_sync": "Last sync: {{time}}",
+    "last_sync_just_now": "just now",
+    "last_sync_mins": "{{mins}} mins ago",
+    "last_sync_hours": "{{hours}}h ago",
     "never_synced": "Never synced",
     "sync_stats": "{{synced}} synced, {{pending}} pending",
     "change_device": "Change Device",
@@ -130,6 +133,32 @@
     "profile": "Profile",
     "logout": "Log Out",
     "login": "Log In",
-    "register": "Register"
+    "register": "Register",
+    "filters": "Filters",
+    "filter_text": "Text",
+    "filter_image": "Image",
+    "filter_favorites": "Favorites",
+    "filter_docs": "Docs"
+  },
+  "notification_window": {
+    "uploading": "Uploading...",
+    "document": "Document:",
+    "new_image": "New image detected",
+    "close": "Close",
+    "cancel": "Cancel",
+    "upload": "Upload",
+    "save": "Save"
+  },
+  "ocr": {
+    "title": "OCR - Text Extraction",
+    "select_area": "Select area to scan",
+    "loading_image": "Loading image...",
+    "extract_text": "Extract Text",
+    "result": "Result",
+    "placeholder": "Extracted text will appear here...",
+    "copy_clipboard": "Copy to clipboard",
+    "copied": "Copied",
+    "no_text_detected": "No text detected",
+    "ocr_error": "OCR Error"
   }
 }

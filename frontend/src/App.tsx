@@ -304,7 +304,7 @@ function App () {
     const regex = new RegExp(`(${query})`, 'gi')
     return text.split(regex).map((part, idx) =>
       part.toLowerCase() === query.toLowerCase() ? (
-        <mark key={idx} className='bg-yellow-200 font-semibold rounded'>{part}</mark>
+        <mark key={idx} className='bg-[color:var(--color-primary)] text-white font-semibold rounded px-0.5'>{part}</mark>
       ) : (
         <span key={idx}>{part}</span>
       )
@@ -451,7 +451,7 @@ function App () {
             }}
           />
 
-          <div className={`px-3 pt-1 transition-all duration-300 ${isSearchFocused ? 'relative z-50 scale-[1.02]' : ''}`}>
+          <div className="px-3 pt-3 pb-2 relative z-50">
             <input
               type='text'
               placeholder={t('search_placeholder')}
@@ -469,13 +469,12 @@ function App () {
               }}
               ref={searchInputRef}
               autoFocus
-              className={`w-full px-3 py-2 rounded-md border outline-none transition-all duration-300
+              className={`w-full px-3 h-[36px] rounded-[var(--radius-input)] outline-none transition-colors duration-100 text-[13px] font-medium placeholder:font-normal
                 ${isSearchFocused 
-                  ? 'border-[color:var(--color-primary)] bg-[color:var(--color-surface)] text-[color:var(--color-text)]' 
-                  : 'border-[color:var(--color-border)] bg-[color:var(--color-surface)] text-[color:var(--color-text)] focus:bg-[color:var(--color-surface)]'
+                  ? 'bg-[color:var(--color-surface)] text-[color:var(--color-text)] ring-1 ring-[color:var(--color-primary)] border border-[color:var(--color-primary)]' 
+                  : 'bg-[color:var(--color-surface)] text-[color:var(--color-text)] border border-[color:var(--color-border)] hover:border-[color:var(--color-muted)]'
                 }
               `}
-              style={isSearchFocused ? { boxShadow: '0 0 20px color-mix(in srgb, var(--color-primary), transparent 60%)' } : {}}
             />
           </div>
 
