@@ -79,7 +79,7 @@ function Card({ item, selected, onCopy, onToggleFavorite, onDelete, highlightMat
     legacyImageSrc = `local-image://${item.value.replace('[LOCAL_IMAGE]:', '')}`
   }
 
-  const handleCopy = (e: React.MouseEvent) => {
+  const handleCopy = (_e: React.MouseEvent) => {
     setCopied(true)
     setTimeout(() => setCopied(false), 400)
     onCopy()

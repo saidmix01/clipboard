@@ -1,5 +1,4 @@
-import { useState } from 'react'
-import { DocumentTextIcon, DocumentIcon, PhotoIcon, StarIcon, Cog6ToothIcon, UserCircleIcon, ArrowRightStartOnRectangleIcon, ArrowLeftEndOnRectangleIcon, UserPlusIcon } from '@heroicons/react/24/outline'
+import { DocumentTextIcon, DocumentIcon, PhotoIcon, StarIcon } from '@heroicons/react/24/outline'
 import type { FilterType } from '../types'
 import { useTranslation } from 'react-i18next'
 
@@ -10,7 +9,7 @@ type DockItem = {
 }
 
 type Props = {
-  items: DockItem[]
+  items?: DockItem[]
   userAvatar?: string | null
   filter: FilterType
   onChangeFilter: (f: FilterType) => void
@@ -18,9 +17,8 @@ type Props = {
   hasAuth?: boolean
 }
 
-export default function Dock({ items, userAvatar, filter, onChangeFilter, disabledFavorites, hasAuth = false }: Props) {
+export default function Dock({ filter, onChangeFilter, disabledFavorites, hasAuth = false }: Props) {
   const { t } = useTranslation()
-  const [avatarError, setAvatarError] = useState(false)
   
   const filterBtn = (active: boolean) => `flex-1 flex flex-col items-center justify-center gap-1 py-2 px-1 rounded-[var(--radius-button)] transition-colors duration-100 ${
     active

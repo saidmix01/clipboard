@@ -1,4 +1,3 @@
-import { motion } from 'framer-motion'
 import Portal from './Portal'
 
 type Props = {
