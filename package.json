@@ -76,10 +76,6 @@
         "AppImage",
         "deb"
       ],
-      "depends": [
-        "xclip",
-        "libnotify-bin"
-      ],
       "category": "Utility",
       "icon": "build/icon.png",
       "executableName": "copyfy",
@@ -93,6 +89,12 @@
           "StartupWMClass": "copyfy"
         }
       }
+    },
+    "deb": {
+      "depends": [
+        "xclip",
+        "libnotify-bin"
+      ]
     }
   },
   "keywords": [],
