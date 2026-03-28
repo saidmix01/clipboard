@@ -57,6 +57,7 @@ function App () {
   const [showUserModal, setShowUserModal] = useState<boolean>(false)
   const [token, setToken] = useState<string | null>(null)
   const [globalLoading, setGlobalLoading] = useState<boolean>(false)
+  const [globalLoadingMsg, setGlobalLoadingMsg] = useState<string>('')
   const [appVersion, setAppVersion] = useState<string>('')
   const [showTour, setShowTour] = useState<boolean>(false)
   const [contextMenu, setContextMenu] = useState<{x: number, y: number, item: HistoryItem} | null>(null)
@@ -354,8 +355,31 @@ function App () {
             console.log('Device changed to:', dev?.Name)
             // Refresh history immediately
             setDisplayed([])
-            setGlobalLoading(true)
-            fetchData(false).finally(() => setGlobalLoading(false))
+            
+            const isFirstSync = !dev?.LastSync;
+            if (isFirstSync) {
+                setGlobalLoadingMsg(t('device.syncing_initial') || 'Sincronizando dispositivo...')
+                setGlobalLoading(true)
+                // If it's a new device with no previous sync, wait for sync to complete
+                fetchData(false)
+            } else {
+                setGlobalLoadingMsg('')
+                setGlobalLoading(true)
+                fetchData(false).finally(() => setGlobalLoading(false))
+            }
+        })
+        return () => { try { off?.() } catch {} }
+    }
+  }, [fetchData])
+
+  // Listen for device sync completed
+  useEffect(() => {
+    if ((window as any).electronAPI?.onDeviceSyncCompleted) {
+        const off = (window as any).electronAPI.onDeviceSyncCompleted((dev: any) => {
+            console.log('Device initial sync completed:', dev?.Name)
+            setGlobalLoading(false)
+            setGlobalLoadingMsg('')
+            fetchData(false)
         })
         return () => { try { off?.() } catch {} }
     }
@@ -495,14 +519,14 @@ function App () {
               onClose={() => setShowLogin(false)}
               onLoginSuccess={handleLoginSuccess}
               mode='login'
-              onGlobalLoading={setGlobalLoading}
+              onGlobalLoading={(v) => { setGlobalLoadingMsg(''); setGlobalLoading(v); }}
             />
             <LoginModal
               isOpen={showRegister}
               onClose={() => setShowRegister(false)}
               onLoginSuccess={handleLoginSuccess}
               mode='register'
-              onGlobalLoading={setGlobalLoading}
+              onGlobalLoading={(v) => { setGlobalLoadingMsg(''); setGlobalLoading(v); }}
             />
             <UserModal
               isOpen={showUserModal}
@@ -586,11 +610,7 @@ function App () {
             open={showDeviceSelection}
             onClose={() => setShowDeviceSelection(false)}
             onSuccess={() => {
-                setDisplayed([]) // Clear current list to verify update
-                setGlobalLoading(true)
-                setTimeout(() => {
-                    fetchData(false).finally(() => setGlobalLoading(false))
-                }, 500) // Small delay to ensure DB persistence if needed
+                // The onDeviceChanged listener will handle the loading state and data fetching
             }}
           />
 
@@ -607,7 +627,10 @@ function App () {
 
           {globalLoading && (
             <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-[20000]">
-              <div className="glass p-4">{t('ui.processing')}</div>
+              <div className="glass p-4 flex flex-col items-center gap-3">
+                <div className="w-6 h-6 border-2 border-[color:var(--color-primary)] border-t-transparent rounded-full animate-spin"></div>
+                <div className="text-sm font-medium">{globalLoadingMsg || t('ui.processing')}</div>
+              </div>
             </div>
           )}
 

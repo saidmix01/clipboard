@@ -38,6 +38,11 @@ electron_1.contextBridge.exposeInMainWorld('electronAPI', {
         electron_1.ipcRenderer.on('device:changed', listener);
         return () => electron_1.ipcRenderer.removeListener('device:changed', listener);
     },
+    onDeviceSyncCompleted: (callback) => {
+        const listener = (_, device) => callback(device);
+        electron_1.ipcRenderer.on('device:sync-completed', listener);
+        return () => electron_1.ipcRenderer.removeListener('device:sync-completed', listener);
+    },
     getClipboardItems: () => electron_1.ipcRenderer.invoke('clipboard:get-items'),
     // Sync
     notifyLoginSuccess: () => electron_1.ipcRenderer.send('auth:login-success'),

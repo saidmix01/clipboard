@@ -44,6 +44,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.on('device:changed', listener);
       return () => ipcRenderer.removeListener('device:changed', listener);
   },
+  onDeviceSyncCompleted: (callback: (device: any) => void) => {
+      const listener = (_: any, device: any) => callback(device);
+      ipcRenderer.on('device:sync-completed', listener);
+      return () => ipcRenderer.removeListener('device:sync-completed', listener);
+  },
   getClipboardItems: () => ipcRenderer.invoke('clipboard:get-items'),
 
   // Sync
