@@ -264,13 +264,13 @@ export class BackendDaemon {
   /**
    * Orchestrates the device synchronization flow
    */
-  public async syncDevicesOnLogin() {
+  public async syncDevicesOnLogin(silent: boolean = false) {
     const windows = BrowserWindow.getAllWindows();
     const sendToRenderer = (channel: string, data?: any) => {
         windows.forEach(w => w.webContents.send(channel, data));
     };
 
-    sendToRenderer('devices:sync-start');
+    if (!silent) sendToRenderer('devices:sync-start');
 
     try {
         // 1. Create local devices on backend
@@ -288,8 +288,9 @@ export class BackendDaemon {
 
         // 3. Notify
         const allDevices = db.getDevices();
-        sendToRenderer('devices:sync-complete', allDevices);
-
+        if (!silent) {
+            sendToRenderer('devices:sync-complete', allDevices);
+        }
     } catch (error: any) {
         console.error('[BackendDaemon] Sync failed:', error);
         // We do not block the UI, but we can notify if needed.

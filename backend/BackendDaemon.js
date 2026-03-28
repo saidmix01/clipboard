@@ -236,12 +236,13 @@ class BackendDaemon {
     /**
      * Orchestrates the device synchronization flow
      */
-    async syncDevicesOnLogin() {
+    async syncDevicesOnLogin(silent = false) {
         const windows = electron_1.BrowserWindow.getAllWindows();
         const sendToRenderer = (channel, data) => {
             windows.forEach(w => w.webContents.send(channel, data));
         };
-        sendToRenderer('devices:sync-start');
+        if (!silent)
+            sendToRenderer('devices:sync-start');
         try {
             // 1. Create local devices on backend
             const devices = db.getDevices();
@@ -255,7 +256,9 @@ class BackendDaemon {
             await this.fetchRemoteDevices();
             // 3. Notify
             const allDevices = db.getDevices();
-            sendToRenderer('devices:sync-complete', allDevices);
+            if (!silent) {
+                sendToRenderer('devices:sync-complete', allDevices);
+            }
         }
         catch (error) {
             console.error('[BackendDaemon] Sync failed:', error);

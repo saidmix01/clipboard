@@ -432,93 +432,11 @@ export class SyncEngine {
       updatedAt: item.updatedAt || new Date().toISOString()
     };
 
-    if (item.favorite) payload.favorite = true;
+    // Asegurarnos de enviar el booleano correcto para favorite, en lugar de omitirlo si es falso
+    payload.favorite = item.favorite === 1 || item.favorite === true;
+    
     if (item.isDeleted) payload.deleted = true; // Si soportamos soft delete push
 
-    // REGLA: Usar PUT si es una actualización (ya existe en backend)
-    // El backend espera PUT para updates y POST para create.
-    // Como el backend soporta upsert en POST, lo usábamos, pero para FAVORITOS es mejor ser explícitos.
-    // Si el item ya fue synced antes (Pending=1 pero viene de un update),
-    // podríamos intentar PUT.
-    // Pero la lógica de CopyFy siempre usa POST para todo.
-    // Si el usuario insiste en que "no se ve en el backend", tal vez el backend
-    // NO está haciendo upsert correctamente con el POST y requiere PUT explícito
-    // para actualizaciones parciales o de estado.
-    
-    // Vamos a probar enviar PUT si es solo cambio de estado (favorite) o si ya sabemos que existe.
-    // ¿Cómo sabemos si existe? Difícil saberlo con certeza sin un flag 'synced_at_least_once'.
-    // Pero si el usuario dice "está enviando un PUT {{base_url}}/clipboard/{{id}} Con el uuid y { favorite: true }",
-    // significa que QUIERE que hagamos eso.
-    
-    // MODIFICACIÓN: Detectar si es solo actualización de favorito o update.
-    // Si es un item que ya existía (no es creación nueva de ahora mismo), deberíamos usar PUT.
-    // En `db.js`, `setFavorite` pone Pending=1.
-    // Podemos inferir si es update si `createdAt` es muy diferente de `updatedAt`? No fiable.
-    
-    // Mejor enfoque: Intentar POST. Si falla con 409 (Conflict) o similar, intentar PUT? No.
-    // El usuario dice: "pero no se ve en el backend, esta envuando un PUT ... Con el uuid y { favorite: true }"
-    // Parece que el usuario está VIENDO que se envía un PUT (en su log imaginario o real?)
-    // O está PIDIENDO que se envíe un PUT.
-    // "no se ve en el backend, esta envuando un PUT ... " -> Texto confuso.
-    // Interpretación: "Lo que se está enviando AHORA (según logs anteriores) es un JSON completo vía POST.
-    // PERO el backend espera (o yo quiero) un PUT /clipboard/:id con { favorite: true }".
-    
-    // Voy a implementar la lógica para usar PUT cuando sea apropiado.
-    
-    let method = 'POST';
-    let url = '/clipboard';
-    
-    // Si solo cambió el favorito, o es una actualización de un item existente...
-    // Asumiremos que si pending=1, es un cambio.
-    // Vamos a intentar hacer PUT /clipboard/:id si es una actualización.
-    // Pero el backend debe soportarlo.
-    
-    // CAMBIO RADICAL: Seguir la instrucción del usuario de "esto debe hacerse en el sync".
-    // El usuario insinúa que el backend NO está tomando el cambio de favorito via POST.
-    
-    // Nueva lógica:
-    // Si es una actualización de favorito, enviar PUT específico.
-    // Pero SyncEngine no sabe QUÉ cambió, solo ve el estado actual del item.
-    // A MENOS que miremos el item.
-    
-    // Si el item ya existe en backend (podemos asumir que sí si no es nuevo),
-    // usamos PUT /clipboard/:id con los datos.
-    
-    // Para simplificar y cumplir con el requisito del usuario:
-    // Usaremos PUT /clipboard/:id siempre que podamos, o mantendremos POST si es nuevo.
-    // Como no distinguimos fácil, voy a enviar PUT si el usuario lo pide explícitamente para favoritos.
-    
-    // Miremos el log del usuario:
-    // "Found 1 pending items... Pushing item..."
-    // El payload que mostró el usuario en el log ERA UN JSON COMPLETO enviado por POST.
-    // Y dijo: "pero no se ve en el backend".
-    // Y luego: "esta envuando un PUT ... " (quizás quiso decir "debería estar enviando" o "está esperando").
-    // Asumiré que DEBE enviar un PUT para que funcione.
-    
-    // Modificaré el envío para usar PUT /clipboard/:id
-    
-    method = 'PUT';
-    url = `/clipboard/${item.id}`;
-    
-    // Pero espera, si el item es NUEVO, el PUT fallará (404 Not Found).
-    // Necesitamos saber si es CREATE o UPDATE.
-    // En db.js no guardamos esa distinción en 'Pending'.
-    // Solución híbrida: Usar POST (Upsert) que suele ser más seguro,
-    // PERO si el backend de este usuario NO soporta upsert en POST y requiere PUT para updates...
-    // Estamos en problemas sin un flag 'IsNew'.
-    
-    // Workaround: Intentar PUT primero (Update). Si da 404, intentar POST (Create).
-    // O al revés: POST. Si da "Already Exists", PUT.
-    
-    // PERO, si el usuario dice "no se esta ejecutando el put ... para volverlo favorito",
-    // implica que hay un endpoint específico o lógica para ello.
-    
-    // Voy a implementar un mecanismo de fallback robusto:
-    // Intentar PUT /clipboard/:id con todo el payload.
-    // Si falla 404 -> POST /clipboard
-    
-    console.log(`[SyncEngine] Preparing payload for item ${item.id} (Strategy: Try PUT then POST)`);
-    
     // Intentar PUT primero
     const putResponse = await this.backendDaemon.request({
       method: 'PUT',
@@ -547,6 +465,25 @@ export class SyncEngine {
             // Otro error, lanzar excepción para que el loop principal lo maneje
             throw new Error(putResponse.error || `PUT failed with status ${putResponse.status}`);
         }
+    }
+
+    // Sincronizar el estado de favorito explícitamente usando el nuevo endpoint
+    // POST /clipboard/favorites/sync
+    // Lo hacemos al final para garantizar que el item ya existe en el backend
+    try {
+        console.log(`[SyncEngine] Syncing favorite status for item ${item.id}...`);
+        await this.backendDaemon.request({
+            method: 'POST',
+            url: '/clipboard/favorites/sync',
+            data: {
+                deviceId: currentDeviceId,
+                itemId: item.id,
+                favorite: payload.favorite
+            }
+        });
+        console.log(`[SyncEngine] Successfully synced favorite status for item ${item.id}`);
+    } catch (favErr: any) {
+        console.warn(`[SyncEngine] Could not sync favorite status for item ${item.id}:`, favErr.message);
     }
   }
 

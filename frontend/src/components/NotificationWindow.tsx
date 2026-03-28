@@ -1,11 +1,11 @@
 import { useEffect, useState } from 'react'
 import { motion } from 'framer-motion'
-import { CheckIcon, XMarkIcon, DocumentIcon } from '@heroicons/react/24/outline'
+import { CheckIcon, XMarkIcon } from '@heroicons/react/24/outline'
 
 export default function NotificationWindow() {
   const [image, setImage] = useState<string | null>(null)
   const [file, setFile] = useState<{name: string, path: string} | null>(null)
-  const [timeLeft, setTimeLeft] = useState(30)
+  const [timeLeft, setTimeLeft] = useState(5)
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
 
@@ -20,7 +20,7 @@ export default function NotificationWindow() {
       setFile(null)
       setError(null)
       setLoading(false)
-      setTimeLeft(30)
+      setTimeLeft(5)
     })
 
     // Listen for file
@@ -30,7 +30,7 @@ export default function NotificationWindow() {
         setImage(null)
         setError(null)
         setLoading(false)
-        setTimeLeft(30)
+        setTimeLeft(5)
     })
 
     const offError = (window as any).electronAPI?.onNotificationError?.((err: string) => {
@@ -87,34 +87,17 @@ export default function NotificationWindow() {
             className="h-full bg-blue-500"
             initial={{ width: '100%' }}
             animate={{ width: '0%' }}
-            transition={{ duration: 30, ease: 'linear' }}
+            transition={{ duration: 5, ease: 'linear' }}
           />
        </div>
        )}
 
        <div className="flex-1 p-3 flex flex-col items-center justify-center gap-2 drag-handle">
-          <h2 className="text-sm font-semibold text-gray-300">
-              {error ? 'Error' : (loading ? 'Subiendo...' : (file ? 'Nuevo documento detectado' : 'Nueva imagen detectada'))}
+          <h2 className="text-sm font-semibold text-gray-300 text-center px-2 w-full truncate">
+              {error ? error : (loading ? 'Subiendo...' : (file ? `Documento: ${file.name}` : 'Nueva imagen detectada'))}
           </h2>
           
-          <div className="flex-1 w-full flex items-center justify-center overflow-hidden bg-black/40 rounded border border-gray-700 p-1">
-             {error ? (
-                 <div className="p-4 text-center text-red-400 text-sm">
-                     {error}
-                 </div>
-             ) : image ? (
-                 <img src={image} className="max-h-[200px] max-w-full object-contain" draggable={false} />
-             ) : (
-                 <div className="flex flex-col items-center gap-2 p-4 text-center">
-                     <DocumentIcon className={`w-16 h-16 ${loading ? 'text-blue-400 animate-pulse' : 'text-gray-400'}`} />
-                     <span className="text-sm text-gray-200 break-all line-clamp-2 px-2">
-                         {file?.name}
-                     </span>
-                 </div>
-             )}
-          </div>
-          
-          <div className="flex gap-2 w-full mt-1">
+          <div className="flex gap-2 w-full mt-auto">
             <button 
               onClick={handleCancel}
               className="flex-1 bg-gray-700 hover:bg-gray-600 text-white py-1.5 px-3 rounded text-sm flex items-center justify-center gap-1 transition-colors no-drag"

@@ -239,7 +239,7 @@ function createNotificationWindow() {
     }
     const display = screen.getPrimaryDisplay();
     const width = 350;
-    const height = 300;
+    const height = 100;
     const x = display.workArea.width - width - 20;
     const y = display.workArea.height - height - 20;
     notificationWindow = new BrowserWindow({
@@ -280,6 +280,14 @@ ipcMain.on('code-window-ready', (event) => {
 ipcMain.on('app-ready', () => {
     log.info('[Main] Received app-ready signal from renderer');
     broadcastUpdate();
+    // Sync devices on app startup if authenticated
+    const settings = db.getSettings();
+    if (settings && settings.accessToken) {
+        log.info('[Main] User authenticated, triggering device sync on startup');
+        BackendDaemon_1.BackendDaemon.getInstance().syncDevicesOnLogin(true).catch((e) => {
+            log.error('[Main] Failed to sync devices on startup:', e);
+        });
+    }
 });
 ipcMain.on('notification-window-ready', () => {
     if (notificationWindow && pendingNotificationImage) {
