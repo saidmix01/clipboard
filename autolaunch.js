@@ -51,7 +51,7 @@ Type=Application
 Version=1.0
 Name=CopyFy++
 Comment=Clipboard Manager
-Exec="${execPath}"
+Exec="${execPath}" --ozone-platform-hint=auto --enable-features=WaylandWindowDecorations
 Icon=copyfy
 StartupNotify=false
 Terminal=false

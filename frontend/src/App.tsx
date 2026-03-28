@@ -427,7 +427,19 @@ function App () {
       <Toaster position='top-center' />
       <motion.div initial={{ opacity: 0, y: 30 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.5, ease: 'easeOut' }}>
         <AppShell darkMode={darkMode}>
-          <TopBar />
+          <TopBar 
+            actions={[
+              { label: 'Ajustes', icon: <Cog6ToothIcon className="w-5 h-5" />, onClick: () => setSettingsOpen(true) },
+              ...(token ? [
+                { label: 'Perfil', icon: <UserCircleIcon className="w-5 h-5" />, onClick: () => setShowUserModal(true) },
+                { label: 'Cerrar sesión', icon: <ArrowRightStartOnRectangleIcon className="w-5 h-5" />, onClick: logout }
+              ] : [
+                { label: 'Iniciar sesión', icon: <ArrowLeftEndOnRectangleIcon className="w-5 h-5" />, onClick: () => setShowLogin(true) },
+                { label: 'Registrarse', icon: <UserPlusIcon className="w-5 h-5" />, onClick: () => setShowRegister(true) }
+              ])
+            ]}
+            userAvatar={userAvatar}
+          />
           <SettingsMenu
             open={settingsOpen}
             darkMode={darkMode}
@@ -557,16 +569,7 @@ function App () {
           )}
 
           <Dock
-            items={[
-              { label: 'Ajustes', icon: <Cog6ToothIcon className="w-5 h-5" />, onClick: () => setSettingsOpen(true) },
-              ...(token ? [
-                { label: 'Perfil', icon: <UserCircleIcon className="w-5 h-5" />, onClick: () => setShowUserModal(true) },
-                { label: 'Cerrar sesión', icon: <ArrowRightStartOnRectangleIcon className="w-5 h-5" />, onClick: logout }
-              ] : [
-                { label: 'Iniciar sesión', icon: <ArrowLeftEndOnRectangleIcon className="w-5 h-5" />, onClick: () => setShowLogin(true) },
-                { label: 'Registrarse', icon: <UserPlusIcon className="w-5 h-5" />, onClick: () => setShowRegister(true) }
-              ])
-            ]}
+            items={[]}
             userAvatar={userAvatar}
             filter={filter}
             onChangeFilter={(f) => setFilter(f)}

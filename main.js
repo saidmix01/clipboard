@@ -103,6 +103,7 @@ function createWindow() {
         y: 0,
         frame: false,
         transparent: true,
+        vibrancy: process.platform === 'darwin' ? 'hud' : undefined,
         backgroundColor: '#00FFFFFF',
         alwaysOnTop: true,
         resizable: false,
@@ -241,7 +242,10 @@ function createNotificationWindow() {
     const width = 350;
     const height = 100;
     const x = display.workArea.width - width - 20;
-    const y = display.workArea.height - height - 20;
+    let y = display.workArea.height - height - 20;
+    if (process.platform === 'darwin') {
+        y = 40; // macOS: Arriba a la derecha
+    }
     notificationWindow = new BrowserWindow({
         width, height, x, y,
         frame: false,
@@ -415,8 +419,8 @@ function startClipboardWatcher() {
             // 1. Detect Images
             const image = clipboard.readImage();
             if (!image.isEmpty()) {
-                const dataUrl = image.toDataURL();
-                const hash = crypto.createHash('md5').update(dataUrl).digest('hex');
+                const buffer = image.getBitmap();
+                const hash = crypto.createHash('md5').update(buffer).digest('hex');
                 if (hash !== lastImageHash) {
                     lastImageHash = hash;
                     pendingNotificationImage = { image, hash, type: 'image' };
@@ -824,6 +828,9 @@ ipcMain.handle('set-active-device', (_, id) => {
 app.whenReady().then(async () => {
     await db.init(app);
     configureAutoLaunch();
+    if (process.platform === 'darwin' && app.dock) {
+        app.dock.hide();
+    }
     // --- Integration Start ---
     // Initialize the BackendDaemon which sets up the request handling and IPC
     BackendDaemon_1.BackendDaemon.getInstance();
@@ -860,7 +867,15 @@ app.whenReady().then(async () => {
         }
     });
     createWindow();
-    const iconPath = path.join(__dirname, 'frontend', 'media', '64x64.png');
+    let iconName = '64x64.png';
+    if (process.platform === 'darwin')
+        iconName = 'iconTemplate.png';
+    else if (process.platform === 'linux')
+        iconName = '32x32.png';
+    let iconPath = path.join(__dirname, 'frontend', 'media', iconName);
+    if (!fs.existsSync(iconPath)) {
+        iconPath = path.join(__dirname, 'frontend', 'media', '64x64.png'); // fallback
+    }
     if (fs.existsSync(iconPath)) {
         tray = new Tray(nativeImage.createFromPath(iconPath));
         const contextMenu = Menu.buildFromTemplate([
@@ -903,6 +918,7 @@ app.on('window-all-closed', () => {
 });
 app.on('before-quit', () => {
     isQuitting = true;
+    globalShortcut.unregisterAll();
     // Cleanup: Detener clipboard watcher
     stopClipboardWatcher();
     // Cleanup: Detener SyncEngine
