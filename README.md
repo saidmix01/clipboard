@@ -190,17 +190,24 @@ electron-builder --win
 ```javascript
 // config.js
 module.exports = {
-  BACKEND_URL: 'https://tu-backend.com'  // URL de producción
-  // BACKEND_URL: 'http://localhost:3000' // Desarrollo local
+  BACKEND_URL: 'https://tu-dominio.com/api'  // Reemplaza con tu URL de producción
+  // BACKEND_URL: 'http://localhost:3000'    // Para desarrollo local
 }
 ```
 
-**Nota de seguridad**: Para entornos de producción, configura la URL del backend en el archivo `config.js`. No expongas URLs internas en documentación pública.
+**Nota de seguridad**: Configura la URL del backend según tu entorno:
+- **Desarrollo**: Usa `http://localhost:3000` o tu servidor local
+- **Producción**: Usa tu dominio real con HTTPS
+
+Guarda la configuración real en `config.js` (no en este README).
 
 ### **Variables de Entorno**
 ```bash
-# Para desarrollo local
-BACKEND_URL=http://localhost:3000
+# Ejemplo para desarrollo local
+export BACKEND_URL=http://localhost:3000
+
+# Ejemplo para producción (reemplaza con tu dominio)
+export BACKEND_URL=https://tu-dominio.com/api
 ```
 
 ### **Auto-inicio**
