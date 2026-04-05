@@ -4,7 +4,7 @@
 
 **Estado del Proyecto**: ✅ **Producción Estable** - Versión 1.2.5
 **Sitio Web**: [https://copyfy.lat](https://copyfy.lat)
-**Backend**: [https://copyfy.webcolsoluciones.com.co](https://copyfy.webcolsoluciones.com.co)
+**Backend**: Configurable (ver sección de configuración)
 
 ---
 
@@ -190,10 +190,12 @@ electron-builder --win
 ```javascript
 // config.js
 module.exports = {
-  BACKEND_URL: 'https://copyfy.webcolsoluciones.com.co'  // Producción
-  // BACKEND_URL: 'http://localhost:3000'               // Desarrollo
+  BACKEND_URL: 'https://tu-backend.com'  // URL de producción
+  // BACKEND_URL: 'http://localhost:3000' // Desarrollo local
 }
 ```
+
+**Nota de seguridad**: Para entornos de producción, configura la URL del backend en el archivo `config.js`. No expongas URLs internas en documentación pública.
 
 ### **Variables de Entorno**
 ```bash
