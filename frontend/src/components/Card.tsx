@@ -93,7 +93,7 @@ function Card({ item, selected, onCopy, onToggleFavorite, onDelete, highlightMat
           : 'bg-[color:var(--color-surface)] border-[color:var(--color-border)]'
         }
         ${selected ? 'ring-1 ring-[color:var(--color-primary)] border-[color:var(--color-primary)]' : ''}
-        ${copied ? 'bg-[color:var(--color-secondary)]/10 border-[color:var(--color-secondary)]' : 'hover:bg-black/5 dark:hover:bg-[#2a2a2a]'}
+        ${copied ? 'bg-[color:var(--color-secondary)]/10 border-[color:var(--color-secondary)]' : 'hover:bg-gray-100 dark:hover:bg-gray-800'}
       `}
       style={{ cursor: 'pointer', overflow: 'hidden', boxShadow: 'var(--shadow-soft)' }}
       onClick={handleCopy}
