@@ -1,8 +1,9 @@
 module.exports = {
-  BACKEND_URL: 'https://copyfy.webcolsoluciones.com.co'
+  BACKEND_URL: 'https://tu-dominio.com/api'  // Reemplaza con tu URL de producción
 }
 
-//module.exports = {
-//  BACKEND_URL: 'http://localhost:3000'
-//}
+// Para desarrollo local:
+// module.exports = {
+//   BACKEND_URL: 'http://localhost:3000'
+// }
 
