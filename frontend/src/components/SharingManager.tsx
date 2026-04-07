@@ -1,0 +1,247 @@
+import { useState, useEffect, ReactNode, forwardRef, useImperativeHandle } from 'react';
+import { useSharingSocket, useSharedItemsListener } from '../hooks/useSharingSocket';
+import SharingNotification from './SharingNotification';
+import ShareItemModal from './ShareItemModal';
+
+interface SharingManagerProps {
+  children: ReactNode;
+  currentUserId?: string;
+  currentUserToken?: string;
+  onItemAdded?: (item: any) => void;
+}
+
+export interface SharingManagerRef {
+  sendClipboardItem: (receiverId: string, item: any, metadata?: any) => Promise<string>;
+}
+
+interface SharedItem {
+  sharingId: string;
+  senderId: string;
+  receiverId: string;
+  item: {
+    type: 'text' | 'image' | 'html' | 'code' | 'file';
+    value: string;
+    meta?: any;
+  };
+  metadata?: any;
+  status: 'pending';
+}
+
+const SharingManager = forwardRef<SharingManagerRef, SharingManagerProps>(({
+  children,
+  currentUserId,
+  currentUserToken,
+  onItemAdded
+}: SharingManagerProps, ref) => {
+  // State for sharing
+  const [pendingShares, setPendingShares] = useState<SharedItem[]>([]);
+  const [currentNotification, setCurrentNotification] = useState<SharedItem | null>(null);
+  const [shareModalOpen, setShareModalOpen] = useState(false);
+  const [itemToShare, setItemToShare] = useState<any>(null);
+
+  // WebSocket connection
+  const {
+    isConnected,
+    isRegistered,
+    sendClipboardItem,
+    acceptClipboardItem,
+    rejectClipboardItem
+  } = useSharingSocket({
+    userId: currentUserId,
+    token: currentUserToken,
+    autoConnect: true,
+    onConnected: () => console.log('[SharingManager] WebSocket connected'),
+    onDisconnected: () => console.log('[SharingManager] WebSocket disconnected'),
+    onError: (error) => console.error('[SharingManager] WebSocket error:', error)
+  });
+
+  // Expose sendClipboardItem function via ref
+  useImperativeHandle(ref, () => ({
+    sendClipboardItem: async (receiverId: string, item: any, metadata?: any) => {
+      return await sendClipboardItem(receiverId, item, metadata);
+    }
+  }));
+
+  // Listen for incoming shared items
+  useSharedItemsListener(
+    (item: SharedItem) => {
+      console.log('[SharingManager] New item received:', item);
+      setPendingShares(prev => [...prev, item]);
+      
+      // Show notification if no other notification is active
+      if (!currentNotification) {
+        setCurrentNotification(item);
+      }
+    },
+    (sharingId: string) => {
+      console.log('[SharingManager] Item accepted by receiver:', sharingId);
+      // Handle acceptance notification if needed
+    },
+    (sharingId: string) => {
+      console.log('[SharingManager] Item rejected by receiver:', sharingId);
+      // Handle rejection notification if needed
+    }
+  );
+
+  // Handle accepting a shared item
+  const handleAcceptItem = async (sharingId: string) => {
+    try {
+      await acceptClipboardItem(sharingId);
+      
+      // Find the item in pending shares
+      const acceptedItem = pendingShares.find(item => item.sharingId === sharingId);
+      if (acceptedItem) {
+        // Notify parent component about new item
+        onItemAdded?.({
+          ...acceptedItem.item,
+          meta: {
+            ...acceptedItem.item.meta,
+            shared: true,
+            sharedFrom: acceptedItem.senderId,
+            sharingId: acceptedItem.sharingId
+          }
+        });
+      }
+      
+      // Remove from pending shares
+      setPendingShares(prev => prev.filter(item => item.sharingId !== sharingId));
+      
+      // Show next notification if available
+      const nextItem = pendingShares.find(item => item.sharingId !== sharingId);
+      setCurrentNotification(nextItem || null);
+      
+    } catch (error) {
+      console.error('[SharingManager] Error accepting item:', error);
+      throw error;
+    }
+  };
+
+  // Handle rejecting a shared item
+  const handleRejectItem = async (sharingId: string) => {
+    try {
+      await rejectClipboardItem(sharingId);
+      
+      // Remove from pending shares
+      setPendingShares(prev => prev.filter(item => item.sharingId !== sharingId));
+      
+      // Show next notification if available
+      const nextItem = pendingShares.find(item => item.sharingId !== sharingId);
+      setCurrentNotification(nextItem || null);
+      
+    } catch (error) {
+      console.error('[SharingManager] Error rejecting item:', error);
+      throw error;
+    }
+  };
+
+  // Handle sharing an item
+  const handleShareItem = async (receiverId: string, metadata?: any) => {
+    if (!itemToShare) {
+      throw new Error('No item to share');
+    }
+
+    try {
+      const sharingId = await sendClipboardItem(receiverId, {
+        type: itemToShare.type,
+        value: itemToShare.value,
+        meta: itemToShare.meta
+      }, metadata);
+
+      console.log('[SharingManager] Item shared successfully:', sharingId);
+      return sharingId;
+    } catch (error) {
+      console.error('[SharingManager] Error sharing item:', error);
+      throw error;
+    }
+  };
+
+  // Open share modal for a specific item
+  const openShareModal = (item: any) => {
+    setItemToShare(item);
+    setShareModalOpen(true);
+  };
+
+  // Close share modal
+  const closeShareModal = () => {
+    setShareModalOpen(false);
+    setItemToShare(null);
+  };
+
+  // Close notification
+  const closeNotification = () => {
+    setCurrentNotification(null);
+    
+    // Show next notification if available
+    const nextItem = pendingShares.find(item => item !== currentNotification);
+    setCurrentNotification(nextItem || null);
+  };
+
+  // Connection status indicator (optional, for debugging)
+  const connectionStatus = () => {
+    if (!isConnected) return '🔴 Disconnected';
+    if (!isRegistered) return '🟡 Connected (Not Registered)';
+    return '🟢 Connected & Registered';
+  };
+
+  return (
+    <>
+      {/* Render children with sharing context */}
+      {children}
+
+      {/* WebSocket connection status (debug) */}
+      {process.env.NODE_ENV === 'development' && (
+        <div className="fixed bottom-20 left-4 px-3 py-1 bg-black/80 text-white text-xs rounded-full z-40">
+          {connectionStatus()}
+        </div>
+      )}
+
+      {/* Sharing notification */}
+      {currentNotification && (
+        <SharingNotification
+          item={currentNotification}
+          onAccept={handleAcceptItem}
+          onReject={handleRejectItem}
+          onClose={closeNotification}
+          autoCloseDelay={30000}
+        />
+      )}
+
+      {/* Share item modal */}
+      {shareModalOpen && itemToShare && (
+        <ShareItemModal
+          isOpen={shareModalOpen}
+          onClose={closeShareModal}
+          item={itemToShare}
+          onShare={handleShareItem}
+          currentUserId={currentUserId}
+        />
+      )}
+
+      {/* Pending shares badge (optional) */}
+      {pendingShares.length > 0 && !currentNotification && (
+        <button
+          onClick={() => setCurrentNotification(pendingShares[0])}
+          className="fixed bottom-20 right-4 px-3 py-1 bg-[color:var(--color-primary)] text-white text-sm rounded-full shadow-lg z-40 hover:opacity-90 transition-opacity"
+        >
+          📋 {pendingShares.length} pending share{pendingShares.length !== 1 ? 's' : ''}
+        </button>
+      )}
+    </>
+  );
+}
+
+export default SharingManager;
+
+/**
+ * Hook to get sharing functions for use in other components
+ */
+export function useSharing() {
+  const [sharingManager] = useState(() => ({
+    openShareModal: (item: any) => {
+      // This would be implemented by the parent component
+      console.log('Share item:', item);
+    }
+  }));
+
+  return sharingManager;
+}

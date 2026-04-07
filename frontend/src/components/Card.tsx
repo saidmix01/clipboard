@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, memo } from 'react'
 import hljs from 'highlight.js'
 import 'highlight.js/styles/github.css'
-import { StarIcon as StarOutline, TrashIcon, EyeIcon } from '@heroicons/react/24/outline'
+import { StarIcon as StarOutline, TrashIcon, EyeIcon, PaperAirplaneIcon } from '@heroicons/react/24/outline'
 import { StarIcon as StarSolid } from '@heroicons/react/24/solid'
 import type { HistoryItem } from '../types'
 import { useTranslation } from 'react-i18next'
@@ -36,6 +36,7 @@ type Props = {
   onCopy: () => void
   onToggleFavorite: () => void
   onDelete?: () => void
+  onShare?: () => void
   highlightMatch: (text: string, query: string) => React.ReactNode[] | string
   search: string
   canFavorite?: boolean
@@ -43,7 +44,7 @@ type Props = {
   onContextMenu?: (e: React.MouseEvent) => void
 }
 
-function Card({ item, selected, onCopy, onToggleFavorite, onDelete, highlightMatch, search, canFavorite = true, canOpenModal = true, onContextMenu }: Props) {
+function Card({ item, selected, onCopy, onToggleFavorite, onDelete, onShare, highlightMatch, search, canFavorite = true, canOpenModal = true, onContextMenu }: Props) {
   const { t } = useTranslation()
   const [expanded, setExpanded] = useState(false)
   const [copied, setCopied] = useState(false)
@@ -180,6 +181,15 @@ function Card({ item, selected, onCopy, onToggleFavorite, onDelete, highlightMat
             `}
           >
             {item.favorite ? <StarSolid className="w-3.5 h-3.5" /> : <StarOutline className="w-3.5 h-3.5" />}
+          </button>
+        )}
+        {onShare && (
+          <button
+            onClick={(e) => { e.stopPropagation(); onShare() }}
+            title={t('sharing.share') || 'Share'}
+            className="p-1 rounded-[var(--radius-button)] bg-[color:var(--color-surface)] border border-[color:var(--color-border)] hover:bg-blue-500 hover:text-white hover:border-blue-500 text-[color:var(--color-muted)] transition-colors shadow-sm"
+          >
+            <PaperAirplaneIcon className="w-3.5 h-3.5" />
           </button>
         )}
         {onDelete && (

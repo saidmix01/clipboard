@@ -161,5 +161,32 @@
     "copied": "Copiado",
     "no_text_detected": "No se detectó texto",
     "ocr_error": "Error en OCR"
+  },
+  "sharing": {
+    "share": "Compartir",
+    "share_item": "Compartir Elemento",
+    "notification_title": "Portapapeles Compartido",
+    "from": "De",
+    "close": "Cerrar",
+    "accept": "Aceptar",
+    "reject": "Rechazar",
+    "processing": "Procesando...",
+    "auto_close": "Cierre automático en",
+    "image_item": "Imagen",
+    "html_item": "Contenido HTML",
+    "code_item": "Fragmento de código",
+    "file_item": "Archivo",
+    "unknown_item": "Elemento desconocido",
+    "receiver_id": "ID del Receptor",
+    "receiver_placeholder": "Ingresa ID de usuario...",
+    "receiver_hint": "Ingresa el ID de usuario de la persona con quien quieres compartir",
+    "message": "Mensaje (opcional)",
+    "message_placeholder": "Agrega un mensaje...",
+    "cancel": "Cancelar",
+    "sharing": "Compartiendo...",
+    "error_receiver_required": "Se requiere ID del receptor",
+    "error_self_share": "No puedes compartir contigo mismo",
+    "error_share_failed": "Error al compartir elemento",
+    "success_message": "¡Elemento compartido exitosamente!"
   }
 }

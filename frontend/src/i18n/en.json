@@ -160,5 +160,32 @@
     "copied": "Copied",
     "no_text_detected": "No text detected",
     "ocr_error": "OCR Error"
+  },
+  "sharing": {
+    "share": "Share",
+    "share_item": "Share Clipboard Item",
+    "notification_title": "Clipboard Shared",
+    "from": "From",
+    "close": "Close",
+    "accept": "Accept",
+    "reject": "Reject",
+    "processing": "Processing...",
+    "auto_close": "Auto-close in",
+    "image_item": "Image",
+    "html_item": "HTML content",
+    "code_item": "Code snippet",
+    "file_item": "File",
+    "unknown_item": "Unknown item",
+    "receiver_id": "Receiver's User ID",
+    "receiver_placeholder": "Enter user ID...",
+    "receiver_hint": "Enter the user ID of the person you want to share with",
+    "message": "Message (optional)",
+    "message_placeholder": "Add a message...",
+    "cancel": "Cancel",
+    "sharing": "Sharing...",
+    "error_receiver_required": "Receiver ID is required",
+    "error_self_share": "Cannot share with yourself",
+    "error_share_failed": "Failed to share item",
+    "success_message": "Item shared successfully!"
   }
 }

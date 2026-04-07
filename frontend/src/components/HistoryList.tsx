@@ -13,6 +13,7 @@ type Props = {
   onToggleFavorite: (item: HistoryItem) => void
   onCopy: (item: HistoryItem) => void
   onDelete?: (item: HistoryItem) => void
+  onShare?: (item: HistoryItem) => void
   highlightMatch: (text: string, query: string) => React.ReactNode[] | string
   canFavorite?: boolean
   canOpenModal?: boolean
@@ -22,7 +23,7 @@ type Props = {
   isLoadingMore?: boolean
 }
 
-const HistoryList = forwardRef<HistoryListRef, Props>(({ items, search, selectedIndex, onToggleFavorite, onCopy, onDelete, highlightMatch, canFavorite, canOpenModal, onContextMenu, hasMore = false, onLoadMore, isLoadingMore = false }, ref) => {
+const HistoryList = forwardRef<HistoryListRef, Props>(({ items, search, selectedIndex, onToggleFavorite, onCopy, onDelete, onShare, highlightMatch, canFavorite, canOpenModal, onContextMenu, hasMore = false, onLoadMore, isLoadingMore = false }, ref) => {
   const containerRef = useRef<HTMLDivElement>(null)
   const itemRefs = useRef<(HTMLDivElement | null)[]>([])
 
@@ -86,6 +87,7 @@ const HistoryList = forwardRef<HistoryListRef, Props>(({ items, search, selected
                   onToggleFavorite={() => onToggleFavorite(item)}
                   onCopy={() => onCopy(item)}
                   onDelete={onDelete ? () => onDelete(item) : undefined}
+                  onShare={onShare ? () => onShare(item) : undefined}
                   highlightMatch={highlightMatch}
                   canFavorite={!!canFavorite}
                   canOpenModal={!!canOpenModal}

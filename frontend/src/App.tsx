@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef, useCallback } from 'react'
+import { useEffect, useState, useRef, useCallback, useRef as useReactRef } from 'react'
 import type { ReactNode } from 'react'
 import { Toaster, toast } from 'react-hot-toast'
 import { useTranslation } from 'react-i18next'
@@ -19,6 +19,8 @@ import DeleteModal from './components/DeleteModal'
 import OCRModal from './components/OCRModal'
 import DeviceRegistrationModal from './components/DeviceRegistrationModal'
 import DeviceSelectionModal from './components/DeviceSelectionModal'
+import SharingManager, { type SharingManagerRef } from './components/SharingManager'
+import ShareItemModal from './components/ShareItemModal'
 import type { HistoryItem, FilterType } from './types'
 import { API_BASE } from './config'
 import { backendRequest } from './api/backend'
@@ -47,6 +49,7 @@ function App () {
   const [search, setSearch] = useState<string>('')
   const searchInputRef = useRef<HTMLInputElement>(null)
   const historyListRef = useRef<HistoryListRef>(null)
+  const sharingManagerRef = useRef<SharingManagerRef>(null)
   
   const { t } = useTranslation()
   const [darkMode, setDarkMode] = useState<boolean>(false)
@@ -56,6 +59,7 @@ function App () {
   const [showRegister, setShowRegister] = useState<boolean>(false)
   const [showUserModal, setShowUserModal] = useState<boolean>(false)
   const [token, setToken] = useState<string | null>(null)
+  const [userId, setUserId] = useState<string | undefined>(undefined)
   const [globalLoading, setGlobalLoading] = useState<boolean>(false)
   const [globalLoadingMsg, setGlobalLoadingMsg] = useState<string>('')
   const [appVersion, setAppVersion] = useState<string>('')
@@ -67,6 +71,9 @@ function App () {
   const [userAvatar, setUserAvatar] = useState<string | null>(null)
   const [showDeviceSelection, setShowDeviceSelection] = useState<boolean>(false)
   const [isSearchFocused, setIsSearchFocused] = useState<boolean>(false)
+  
+  // Sharing state
+  const [itemToShare, setItemToShare] = useState<HistoryItem | null>(null)
 
   // Files state
   const [files, setFiles] = useState<any[]>([])
@@ -95,8 +102,13 @@ function App () {
              const payload = (userData && typeof userData === 'object' ? (userData.data ?? userData) : {}) as any
              const u = payload?.user
              
-             if (u && u.avatarUrl) {
-                setUserAvatar(resolveAvatar(u.avatarUrl))
+             if (u) {
+                setUserId(u.id || u.userId)
+                if (u.avatarUrl) {
+                  setUserAvatar(resolveAvatar(u.avatarUrl))
+                } else {
+                  setUserAvatar(null)
+                }
              } else {
                 setUserAvatar(null)
              }
@@ -398,12 +410,14 @@ function App () {
 
   const logout = async () => {
     setToken(null)
+    setUserId(undefined)
     await (window as any).electronAPI?.removeConfig?.('session')
     toast.success(t('notifications.session_closed'))
   }
 
   const handleLoginSuccess = (newToken: string, user?: any) => {
     setToken(newToken)
+    setUserId(user?.id || user?.userId)
     ;(window as any).electronAPI?.setAuthToken?.(newToken)
     if (user?.avatarUrl) {
       setUserAvatar(resolveAvatar(user.avatarUrl))
@@ -411,6 +425,11 @@ function App () {
       loadSession()
     }
   }
+
+  // Handle sharing an item
+  const handleShareItem = (item: HistoryItem) => {
+    setItemToShare(item);
+  };
 
   const handleUpload = async () => {
     const path = await (window as any).electronAPI?.selectFile?.()
@@ -449,6 +468,18 @@ function App () {
   return (
     <>
       <Toaster position='top-center' />
+      <SharingManager
+        ref={sharingManagerRef}
+        currentUserId={userId}
+        currentUserToken={token}
+        onItemAdded={(item) => {
+          // When a shared item is accepted, add it to the local history
+          console.log('Shared item added:', item);
+          // TODO: Actually add to displayed items
+          // For now, just show a toast
+          toast.success('Item compartido agregado a tu historial');
+        }}
+      >
       <motion.div initial={{ opacity: 0, y: 30 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.5, ease: 'easeOut' }}>
         <AppShell darkMode={darkMode}>
           <TopBar 
@@ -586,6 +617,7 @@ function App () {
             onDelete={(item) => {
               setItemToDelete(item)
             }}
+            onShare={handleShareItem}
             highlightMatch={highlightMatch}
             canFavorite={true}
             canOpenModal={true}
@@ -681,6 +713,42 @@ function App () {
         imageUrl={ocrImage}
         onClose={() => setOcrImage(null)}
       />
+      
+      {/* Share Item Modal */}
+      {itemToShare && (
+        <ShareItemModal
+          isOpen={!!itemToShare}
+          onClose={() => setItemToShare(null)}
+          item={itemToShare}
+          onShare={async (receiverId: string, metadata?: any) => {
+            try {
+              if (sharingManagerRef.current) {
+                const sharingId = await sharingManagerRef.current.sendClipboardItem(
+                  receiverId,
+                  {
+                    type: itemToShare.type || 'text',
+                    value: itemToShare.value,
+                    meta: itemToShare.meta || {}
+                  },
+                  metadata
+                );
+                toast.success(t('sharing.success_message') || 'Item shared successfully!');
+                console.log('Item shared with ID:', sharingId);
+              } else {
+                toast.error('Sharing service not available');
+              }
+            } catch (error: any) {
+              console.error('Error sharing item:', error);
+              toast.error(error.message || t('sharing.error_share_failed') || 'Failed to share item');
+            } finally {
+              setItemToShare(null);
+            }
+          }}
+          currentUserId={userId}
+        />
+      )}
+      
+      </SharingManager>
     </>
   )
 }
