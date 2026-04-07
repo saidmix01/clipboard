@@ -1,4 +1,5 @@
-import { useState, useEffect, ReactNode, forwardRef, useImperativeHandle } from 'react';
+import { useState, forwardRef, useImperativeHandle } from 'react';
+import type { ReactNode } from 'react';
 import { useSharingSocket, useSharedItemsListener } from '../hooks/useSharingSocket';
 import SharingNotification from './SharingNotification';
 import ShareItemModal from './ShareItemModal';
@@ -6,30 +7,32 @@ import ShareItemModal from './ShareItemModal';
 interface SharingManagerProps {
   children: ReactNode;
   currentUserId?: string;
-  currentUserToken?: string;
+  currentUserEmail?: string;
+  currentUserToken?: string | null;
   onItemAdded?: (item: any) => void;
 }
 
 export interface SharingManagerRef {
-  sendClipboardItem: (receiverId: string, item: any, metadata?: any) => Promise<string>;
+  sendClipboardItem: (receiverEmail: string, item: any, metadata?: any) => Promise<string>;
 }
 
 interface SharedItem {
   sharingId: string;
   senderId: string;
-  receiverId: string;
+  receiverEmail: string;
   item: {
     type: 'text' | 'image' | 'html' | 'code' | 'file';
     value: string;
     meta?: any;
   };
   metadata?: any;
-  status: 'pending';
+  status: 'pending' | 'accepted' | 'rejected' | 'expired';
 }
 
 const SharingManager = forwardRef<SharingManagerRef, SharingManagerProps>(({
   children,
   currentUserId,
+  currentUserEmail,
   currentUserToken,
   onItemAdded
 }: SharingManagerProps, ref) => {
@@ -41,14 +44,15 @@ const SharingManager = forwardRef<SharingManagerRef, SharingManagerProps>(({
 
   // WebSocket connection
   const {
+    socket,
     isConnected,
     isRegistered,
     sendClipboardItem,
     acceptClipboardItem,
     rejectClipboardItem
   } = useSharingSocket({
-    userId: currentUserId,
-    token: currentUserToken,
+    userId: currentUserEmail ?? currentUserId,
+    token: currentUserToken ?? undefined,
     autoConnect: true,
     onConnected: () => console.log('[SharingManager] WebSocket connected'),
     onDisconnected: () => console.log('[SharingManager] WebSocket disconnected'),
@@ -57,13 +61,14 @@ const SharingManager = forwardRef<SharingManagerRef, SharingManagerProps>(({
 
   // Expose sendClipboardItem function via ref
   useImperativeHandle(ref, () => ({
-    sendClipboardItem: async (receiverId: string, item: any, metadata?: any) => {
-      return await sendClipboardItem(receiverId, item, metadata);
+    sendClipboardItem: async (receiverEmail: string, item: any, metadata?: any) => {
+      return await sendClipboardItem(receiverEmail, item, metadata);
     }
   }));
 
   // Listen for incoming shared items
   useSharedItemsListener(
+    socket,
     (item: SharedItem) => {
       console.log('[SharingManager] New item received:', item);
       setPendingShares(prev => [...prev, item]);
@@ -135,13 +140,13 @@ const SharingManager = forwardRef<SharingManagerRef, SharingManagerProps>(({
   };
 
   // Handle sharing an item
-  const handleShareItem = async (receiverId: string, metadata?: any) => {
+  const handleShareItem = async (receiverEmail: string, metadata?: any) => {
     if (!itemToShare) {
       throw new Error('No item to share');
     }
 
     try {
-      const sharingId = await sendClipboardItem(receiverId, {
+      const sharingId = await sendClipboardItem(receiverEmail, {
         type: itemToShare.type,
         value: itemToShare.value,
         meta: itemToShare.meta
@@ -153,12 +158,6 @@ const SharingManager = forwardRef<SharingManagerRef, SharingManagerProps>(({
       console.error('[SharingManager] Error sharing item:', error);
       throw error;
     }
-  };
-
-  // Open share modal for a specific item
-  const openShareModal = (item: any) => {
-    setItemToShare(item);
-    setShareModalOpen(true);
   };
 
   // Close share modal
@@ -176,12 +175,7 @@ const SharingManager = forwardRef<SharingManagerRef, SharingManagerProps>(({
     setCurrentNotification(nextItem || null);
   };
 
-  // Connection status indicator (optional, for debugging)
-  const connectionStatus = () => {
-    if (!isConnected) return '🔴 Disconnected';
-    if (!isRegistered) return '🟡 Connected (Not Registered)';
-    return '🟢 Connected & Registered';
-  };
+  const statusDotClass = isConnected && isRegistered ? 'bg-green-500' : 'bg-red-500';
 
   return (
     <>
@@ -190,8 +184,8 @@ const SharingManager = forwardRef<SharingManagerRef, SharingManagerProps>(({
 
       {/* WebSocket connection status (debug) */}
       {process.env.NODE_ENV === 'development' && (
-        <div className="fixed bottom-20 left-4 px-3 py-1 bg-black/80 text-white text-xs rounded-full z-40">
-          {connectionStatus()}
+        <div className="fixed bottom-3 left-3 z-40 pointer-events-none">
+          <span className={`block h-3 w-3 rounded-full ${statusDotClass} shadow-md ring-1 ring-black/20`} />
         </div>
       )}
 
@@ -213,7 +207,7 @@ const SharingManager = forwardRef<SharingManagerRef, SharingManagerProps>(({
           onClose={closeShareModal}
           item={itemToShare}
           onShare={handleShareItem}
-          currentUserId={currentUserId}
+          currentUserEmail={currentUserEmail}
         />
       )}
 
@@ -228,7 +222,7 @@ const SharingManager = forwardRef<SharingManagerRef, SharingManagerProps>(({
       )}
     </>
   );
-}
+});
 
 export default SharingManager;
 

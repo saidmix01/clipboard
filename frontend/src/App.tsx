@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef, useCallback, useRef as useReactRef } from 'react'
+import { useEffect, useState, useRef, useCallback } from 'react'
 import type { ReactNode } from 'react'
 import { Toaster, toast } from 'react-hot-toast'
 import { useTranslation } from 'react-i18next'
@@ -49,7 +49,7 @@ function App () {
   const [search, setSearch] = useState<string>('')
   const searchInputRef = useRef<HTMLInputElement>(null)
   const historyListRef = useRef<HistoryListRef>(null)
-  const sharingManagerRef = useRef<SharingManagerRef>(null)
+  const sharingManagerRef = useRef<SharingManagerRef | null>(null)
   
   const { t } = useTranslation()
   const [darkMode, setDarkMode] = useState<boolean>(false)
@@ -60,6 +60,7 @@ function App () {
   const [showUserModal, setShowUserModal] = useState<boolean>(false)
   const [token, setToken] = useState<string | null>(null)
   const [userId, setUserId] = useState<string | undefined>(undefined)
+  const [userEmail, setUserEmail] = useState<string | undefined>(undefined)
   const [globalLoading, setGlobalLoading] = useState<boolean>(false)
   const [globalLoadingMsg, setGlobalLoadingMsg] = useState<string>('')
   const [appVersion, setAppVersion] = useState<string>('')
@@ -104,6 +105,7 @@ function App () {
              
              if (u) {
                 setUserId(u.id || u.userId)
+                if (u.email) setUserEmail(u.email)
                 if (u.avatarUrl) {
                   setUserAvatar(resolveAvatar(u.avatarUrl))
                 } else {
@@ -411,6 +413,7 @@ function App () {
   const logout = async () => {
     setToken(null)
     setUserId(undefined)
+    setUserEmail(undefined)
     await (window as any).electronAPI?.removeConfig?.('session')
     toast.success(t('notifications.session_closed'))
   }
@@ -418,6 +421,7 @@ function App () {
   const handleLoginSuccess = (newToken: string, user?: any) => {
     setToken(newToken)
     setUserId(user?.id || user?.userId)
+    setUserEmail(user?.email)
     ;(window as any).electronAPI?.setAuthToken?.(newToken)
     if (user?.avatarUrl) {
       setUserAvatar(resolveAvatar(user.avatarUrl))
@@ -471,6 +475,7 @@ function App () {
       <SharingManager
         ref={sharingManagerRef}
         currentUserId={userId}
+        currentUserEmail={userEmail}
         currentUserToken={token}
         onItemAdded={(item) => {
           // When a shared item is accepted, add it to the local history
@@ -720,11 +725,11 @@ function App () {
           isOpen={!!itemToShare}
           onClose={() => setItemToShare(null)}
           item={itemToShare}
-          onShare={async (receiverId: string, metadata?: any) => {
+          onShare={async (receiverEmail: string, metadata?: any) => {
             try {
               if (sharingManagerRef.current) {
                 const sharingId = await sharingManagerRef.current.sendClipboardItem(
-                  receiverId,
+                  receiverEmail,
                   {
                     type: itemToShare.type || 'text',
                     value: itemToShare.value,
@@ -744,7 +749,7 @@ function App () {
               setItemToShare(null);
             }
           }}
-          currentUserId={userId}
+          currentUserEmail={userEmail}
         />
       )}
       

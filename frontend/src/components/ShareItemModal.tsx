@@ -4,8 +4,8 @@ import { PaperAirplaneIcon, XMarkIcon, UserIcon } from '@heroicons/react/24/outl
 import DetailsModal from './DetailsModal';
 
 interface ClipboardItem {
-  id: string;
-  type: 'text' | 'image' | 'html' | 'code' | 'file';
+  id?: string;
+  type?: 'text' | 'image' | 'html' | 'code' | 'file';
   value: string;
   meta?: any;
   createdAt?: string;
@@ -15,8 +15,8 @@ interface ShareItemModalProps {
   isOpen: boolean;
   onClose: () => void;
   item: ClipboardItem;
-  onShare: (receiverId: string, metadata?: any) => Promise<void>;
-  currentUserId?: string;
+  onShare: (receiverEmail: string, metadata?: any) => Promise<void | string>;
+  currentUserEmail?: string;
 }
 
 export default function ShareItemModal({
@@ -24,10 +24,10 @@ export default function ShareItemModal({
   onClose,
   item,
   onShare,
-  currentUserId
+  currentUserEmail
 }: ShareItemModalProps) {
   const { t } = useTranslation();
-  const [receiverId, setReceiverId] = useState('');
+  const [receiverEmail, setReceiverEmail] = useState('');
   const [message, setMessage] = useState('');
   const [isSharing, setIsSharing] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -35,16 +35,26 @@ export default function ShareItemModal({
 
   if (!isOpen) return null;
 
+  const itemType = item.type ?? 'text';
+  const normalizedReceiverEmail = receiverEmail.trim().toLowerCase();
+  const normalizedCurrentUserEmail = currentUserEmail?.trim().toLowerCase();
+  const isValidEmail = (v: string) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v);
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     
-    if (!receiverId.trim()) {
-      setError(t('sharing.error_receiver_required') || 'Receiver ID is required');
+    if (!normalizedReceiverEmail) {
+      setError(t('sharing.error_receiver_required') || 'Correo del destinatario requerido');
       return;
     }
 
-    if (receiverId === currentUserId) {
-      setError(t('sharing.error_self_share') || 'Cannot share with yourself');
+    if (!isValidEmail(normalizedReceiverEmail)) {
+      setError(t('sharing.error_receiver_required') || 'Correo inválido');
+      return;
+    }
+
+    if (normalizedCurrentUserEmail && normalizedReceiverEmail === normalizedCurrentUserEmail) {
+      setError(t('sharing.error_self_share') || 'No puedes enviarte a ti mismo');
       return;
     }
 
@@ -53,13 +63,13 @@ export default function ShareItemModal({
 
     try {
       const metadata = {
-        senderId: currentUserId,
+        senderId: currentUserEmail,
         senderName: 'User', // TODO: Get actual user name
         message: message.trim() || undefined,
         sharedAt: new Date().toISOString()
       };
 
-      await onShare(receiverId.trim(), metadata);
+      await onShare(normalizedReceiverEmail, metadata);
       
       setSuccess(true);
       setTimeout(() => {
@@ -74,7 +84,7 @@ export default function ShareItemModal({
   };
 
   const resetForm = () => {
-    setReceiverId('');
+    setReceiverEmail('');
     setMessage('');
     setError(null);
     setSuccess(false);
@@ -88,17 +98,17 @@ export default function ShareItemModal({
 
   // Format item preview
   const getItemPreview = () => {
-    if (item.type === 'text') {
+    if (itemType === 'text') {
       return item.value.length > 100 
         ? item.value.substring(0, 100) + '...' 
         : item.value;
-    } else if (item.type === 'image') {
+    } else if (itemType === 'image') {
       return t('sharing.image_item') || 'Image';
-    } else if (item.type === 'html') {
+    } else if (itemType === 'html') {
       return t('sharing.html_item') || 'HTML content';
-    } else if (item.type === 'code') {
+    } else if (itemType === 'code') {
       return t('sharing.code_item') || 'Code snippet';
-    } else if (item.type === 'file') {
+    } else if (itemType === 'file') {
       return item.meta?.filename || t('sharing.file_item') || 'File';
     }
     
@@ -107,7 +117,7 @@ export default function ShareItemModal({
 
   // Get item type icon/color
   const getItemTypeInfo = () => {
-    switch (item.type) {
+    switch (itemType) {
       case 'text':
         return { color: 'text-blue-500', icon: '📝' };
       case 'image':
@@ -127,35 +137,30 @@ export default function ShareItemModal({
   const itemPreview = getItemPreview();
 
   return (
-    <DetailsModal isOpen={isOpen} onClose={handleClose}>
-      <div className="p-6 max-w-md w-full">
-        {/* Header */}
-        <div className="flex items-center justify-between mb-6">
-          <div className="flex items-center space-x-2">
-            <PaperAirplaneIcon className="w-5 h-5 text-[color:var(--color-primary)]" />
-            <h3 className="text-lg font-medium text-[color:var(--color-text)]">
-              {t('sharing.share_item') || 'Share Clipboard Item'}
-            </h3>
-          </div>
+    <DetailsModal open={isOpen} onClose={handleClose}>
+      <div className="space-y-3">
+        <div className="flex items-center gap-2 mb-1">
+          <PaperAirplaneIcon className="w-5 h-5 text-[color:var(--color-primary)]" />
+          <h3 className="m-0 text-[color:var(--color-text)]">
+            {t('sharing.share_item') || 'Share Clipboard Item'}
+          </h3>
           <button
             onClick={handleClose}
-            className="p-1 rounded-full hover:bg-black/5 dark:hover:bg-white/5 transition-colors"
+            className="ml-auto p-1 rounded-full hover:bg-black/5 dark:hover:bg-white/5 transition-colors duration-100"
             title={t('sharing.close') || 'Close'}
+            aria-label={t('sharing.close') || 'Close'}
           >
             <XMarkIcon className="w-5 h-5 text-[color:var(--color-muted)]" />
           </button>
         </div>
 
-        {/* Item preview */}
-        <div className="mb-6 p-4 bg-black/5 dark:bg-white/5 rounded-lg border border-[color:var(--color-border)]">
-          <div className="flex items-start space-x-3">
-            <div className={`text-lg ${itemTypeInfo.color}`}>
-              {itemTypeInfo.icon}
-            </div>
+        <div className="p-3 bg-black/5 dark:bg-white/5 rounded-[var(--radius-button)] border border-[color:var(--color-border)]">
+          <div className="flex items-start gap-3">
+            <div className={`text-lg ${itemTypeInfo.color}`}>{itemTypeInfo.icon}</div>
             <div className="flex-1 min-w-0">
-              <div className="flex items-center space-x-2 mb-1">
-                <span className={`text-xs font-medium px-2 py-0.5 rounded ${itemTypeInfo.color} bg-opacity-20`}>
-                  {item.type.toUpperCase()}
+              <div className="flex items-center gap-2 mb-1">
+                <span className="px-2 py-0.5 text-xs rounded-full bg-[color:var(--color-primary)] text-white">
+                  {itemType.toUpperCase()}
                 </span>
                 {item.createdAt && (
                   <span className="text-xs text-[color:var(--color-muted)]">
@@ -163,90 +168,75 @@ export default function ShareItemModal({
                   </span>
                 )}
               </div>
-              <p className="text-sm text-[color:var(--color-text)] break-words">
-                {itemPreview}
-              </p>
+              <p className="m-0 text-sm text-[color:var(--color-text)] break-words">{itemPreview}</p>
             </div>
           </div>
         </div>
 
-        {/* Success message */}
         {success && (
-          <div className="mb-4 p-3 bg-green-500/10 border border-green-500/20 rounded-lg">
-            <p className="text-sm text-green-600 dark:text-green-400 text-center">
-              {t('sharing.success_message') || 'Item shared successfully!'}
-            </p>
-          </div>
+          <p className="text-sm text-center" style={{ color: 'var(--color-primary)' }}>
+            {t('sharing.success_message') || 'Item shared successfully!'}
+          </p>
         )}
 
-        {/* Error message */}
         {error && (
-          <div className="mb-4 p-3 bg-red-500/10 border border-red-500/20 rounded-lg">
-            <p className="text-sm text-red-600 dark:text-red-400">
-              {error}
-            </p>
-          </div>
+          <p className="text-sm" style={{ color: 'var(--color-accent)' }}>
+            {error}
+          </p>
         )}
 
-        {/* Share form */}
         {!success && (
-          <form onSubmit={handleSubmit}>
-            {/* Receiver ID */}
-            <div className="mb-4">
-              <label className="block text-sm font-medium text-[color:var(--color-text)] mb-2">
-                <div className="flex items-center space-x-2">
-                  <UserIcon className="w-4 h-4" />
-                  <span>{t('sharing.receiver_id') || "Receiver's User ID"}</span>
-                </div>
-              </label>
+          <form onSubmit={handleSubmit} className="space-y-3 pt-1">
+            <div>
+              <div className="text-sm opacity-80 mb-1 flex items-center gap-2">
+                <UserIcon className="w-4 h-4" />
+                <span>{t('sharing.receiver_id') || 'Correo del destinatario'}</span>
+              </div>
               <input
-                type="text"
-                value={receiverId}
-                onChange={(e) => setReceiverId(e.target.value)}
-                placeholder={t('sharing.receiver_placeholder') || 'Enter user ID...'}
-                className="w-full px-3 py-2 rounded-lg border border-[color:var(--color-border)] bg-transparent text-[color:var(--color-text)] outline-none focus:ring-1 focus:ring-[color:var(--color-primary)] text-sm"
+                type="email"
+                value={receiverEmail}
+                onChange={(e) => setReceiverEmail(e.target.value)}
+                placeholder={t('sharing.receiver_placeholder') || 'Ingresa el correo...'}
+                className="w-full px-3 h-[36px] rounded-[var(--radius-input)] border border-[color:var(--color-border)] bg-transparent text-[color:var(--color-text)] outline-none focus:ring-1 focus:ring-[color:var(--color-primary)] text-sm"
                 disabled={isSharing}
                 autoFocus
               />
-              <p className="mt-1 text-xs text-[color:var(--color-muted)]">
-                {t('sharing.receiver_hint') || 'Enter the user ID of the person you want to share with'}
+              <p className="m-0 mt-1 text-xs text-[color:var(--color-muted)]">
+                {t('sharing.receiver_hint') || 'Ingresa el correo de la persona con quien quieres compartir'}
               </p>
             </div>
 
-            {/* Optional message */}
-            <div className="mb-6">
-              <label className="block text-sm font-medium text-[color:var(--color-text)] mb-2">
-                {t('sharing.message') || 'Message (optional)'}
-              </label>
+            <div>
+              <div className="text-sm opacity-80 mb-1">{t('sharing.message') || 'Message (optional)'}</div>
               <textarea
                 value={message}
                 onChange={(e) => setMessage(e.target.value)}
                 placeholder={t('sharing.message_placeholder') || 'Add a message...'}
-                className="w-full px-3 py-2 rounded-lg border border-[color:var(--color-border)] bg-transparent text-[color:var(--color-text)] outline-none focus:ring-1 focus:ring-[color:var(--color-primary)] text-sm resize-none"
+                className="w-full px-3 py-2 rounded-[var(--radius-input)] border border-[color:var(--color-border)] bg-transparent text-[color:var(--color-text)] outline-none focus:ring-1 focus:ring-[color:var(--color-primary)] text-sm resize-none"
                 rows={3}
                 disabled={isSharing}
               />
             </div>
 
-            {/* Actions */}
-            <div className="flex space-x-3">
+            <div className="flex gap-2 justify-end pt-1">
               <button
                 type="button"
                 onClick={handleClose}
                 disabled={isSharing}
-                className="flex-1 px-4 py-2 border border-[color:var(--color-border)] text-[color:var(--color-text)] rounded-lg hover:bg-black/5 dark:hover:bg-white/5 transition-colors disabled:opacity-50"
+                className="px-4 h-[36px] rounded-[var(--radius-button)] border border-[color:var(--color-border)] text-[color:var(--color-text)] hover:bg-black/5 dark:hover:bg-white/5 transition-colors duration-100 text-sm font-medium disabled:opacity-50"
               >
                 {t('sharing.cancel') || 'Cancel'}
               </button>
-              
+
               <button
                 type="submit"
-                disabled={isSharing || !receiverId.trim()}
-                className="flex-1 px-4 py-2 bg-[color:var(--color-primary)] text-white rounded-lg hover:opacity-90 transition-opacity disabled:opacity-50 flex items-center justify-center space-x-2"
+                disabled={isSharing || !normalizedReceiverEmail || !isValidEmail(normalizedReceiverEmail)}
+                className="px-4 h-[36px] rounded-[var(--radius-button)] text-white transition-colors duration-100 text-sm font-medium disabled:opacity-50 inline-flex items-center gap-2"
+                style={{ backgroundColor: 'var(--color-primary)', opacity: isSharing || !normalizedReceiverEmail || !isValidEmail(normalizedReceiverEmail) ? 0.7 : 1 }}
               >
                 {isSharing ? (
                   <>
-                    <div className="h-4 w-4 animate-spin rounded-full border-2 border-solid border-white border-r-transparent"></div>
+                    <div className="h-4 w-4 animate-spin rounded-full border-2 border-solid border-white border-r-transparent" />
                     <span>{t('sharing.sharing') || 'Sharing...'}</span>
                   </>
                 ) : (

@@ -5,14 +5,14 @@ import { CheckIcon, XMarkIcon } from '@heroicons/react/24/outline';
 interface SharingItem {
   sharingId: string;
   senderId: string;
-  receiverId: string;
+  receiverEmail: string;
   item: {
     type: 'text' | 'image' | 'html' | 'code' | 'file';
     value: string;
     meta?: any;
   };
   metadata?: any;
-  status: 'pending';
+  status: 'pending' | 'accepted' | 'rejected' | 'expired';
 }
 
 interface SharingNotificationProps {

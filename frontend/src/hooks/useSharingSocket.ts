@@ -14,7 +14,7 @@ interface SharingSocketOptions {
 interface SharingItem {
   sharingId: string;
   senderId: string;
-  receiverId: string;
+  receiverEmail: string;
   item: {
     type: 'text' | 'image' | 'html' | 'code' | 'file';
     value: string;
@@ -29,7 +29,7 @@ interface UseSharingSocketReturn {
   isConnected: boolean;
   isRegistered: boolean;
   registerUser: (userId: string) => void;
-  sendClipboardItem: (receiverId: string, item: SharingItem['item'], metadata?: any) => Promise<string>;
+  sendClipboardItem: (receiverEmail: string, item: SharingItem['item'], metadata?: any) => Promise<string>;
   acceptClipboardItem: (sharingId: string) => Promise<void>;
   rejectClipboardItem: (sharingId: string) => Promise<void>;
   disconnect: () => void;
@@ -49,13 +49,23 @@ export function useSharingSocket({
   const socketRef = useRef<Socket | null>(null);
   const [isConnected, setIsConnected] = useState(false);
   const [isRegistered, setIsRegistered] = useState(false);
+  const onConnectedRef = useRef(onConnected);
+  const onDisconnectedRef = useRef(onDisconnected);
+  const onErrorRef = useRef(onError);
+
+  useEffect(() => {
+    onConnectedRef.current = onConnected;
+    onDisconnectedRef.current = onDisconnected;
+    onErrorRef.current = onError;
+  }, [onConnected, onDisconnected, onError]);
 
   // Initialize socket connection
   useEffect(() => {
     if (!autoConnect) return;
 
-    const socket = io(`${API_BASE}/sharing`, {
-      auth: { token },
+    const url = `${API_BASE}/sharing`;
+    const socket = io(url, {
+      auth: token ? { token } : undefined,
       transports: ['websocket', 'polling'],
       reconnection: true,
       reconnectionAttempts: 5,
@@ -68,24 +78,34 @@ export function useSharingSocket({
     socket.on('connect', () => {
       console.log('[SharingSocket] Connected to server');
       setIsConnected(true);
-      onConnected?.();
+      onConnectedRef.current?.();
     });
 
     socket.on('disconnect', (reason) => {
       console.log('[SharingSocket] Disconnected:', reason);
       setIsConnected(false);
       setIsRegistered(false);
-      onDisconnected?.();
+      onDisconnectedRef.current?.();
     });
 
     socket.on('connect_error', (error) => {
-      console.error('[SharingSocket] Connection error:', error);
-      onError?.(error);
+      console.error('[SharingSocket] connect_error:', error?.message || error);
+      onErrorRef.current?.(error);
     });
 
     socket.on('error', (error) => {
       console.error('[SharingSocket] Socket error:', error);
-      onError?.(error);
+      onErrorRef.current?.(error);
+    });
+
+    socket.io.on('reconnect_attempt', (attempt) => {
+      console.log('[SharingSocket] reconnect_attempt:', attempt);
+    });
+    socket.io.on('reconnect_error', (error) => {
+      console.error('[SharingSocket] reconnect_error:', error?.message || error);
+    });
+    socket.io.on('reconnect_failed', () => {
+      console.error('[SharingSocket] reconnect_failed');
     });
 
     // Registration events
@@ -101,7 +121,7 @@ export function useSharingSocket({
         socketRef.current = null;
       }
     };
-  }, [autoConnect, token, onConnected, onDisconnected, onError]);
+  }, [autoConnect, token]);
 
   // Register user with server
   const registerUser = useCallback((userId: string) => {
@@ -116,7 +136,7 @@ export function useSharingSocket({
 
   // Send clipboard item to another user
   const sendClipboardItem = useCallback(async (
-    receiverId: string,
+    receiverEmail: string,
     item: SharingItem['item'],
     metadata?: any
   ): Promise<string> => {
@@ -131,10 +151,10 @@ export function useSharingSocket({
         return;
       }
 
-      console.log(`[SharingSocket] Sending item to ${receiverId}`);
+      console.log(`[SharingSocket] Sending item to ${receiverEmail}`);
 
       socketRef.current.emit('send_clipboard_item', {
-        receiverId,
+        receiverEmail,
         item,
         metadata
       }, (response: any) => {
@@ -241,12 +261,11 @@ export function useSharingSocket({
  * Hook for receiving shared clipboard items
  */
 export function useSharedItemsListener(
+  socket: Socket | null,
   onItemReceived: (item: SharingItem) => void,
   onItemAccepted?: (sharingId: string) => void,
   onItemRejected?: (sharingId: string) => void
 ) {
-  const { socket } = useSharingSocket({ autoConnect: true });
-
   useEffect(() => {
     if (!socket) return;
 
