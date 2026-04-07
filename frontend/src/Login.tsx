@@ -57,16 +57,18 @@ export default function LoginModal({
         }
       }
 
-      // Real login
-      const response = await fetch(`${API_BASE}/auth/login`, {
+      // Determine endpoint based on mode
+      const endpoint = mode === 'register' ? '/auth/register' : '/auth/login';
+      const requestBody = mode === 'register' 
+        ? { email: emailTrim, password: passTrim, name: nameTrim }
+        : { email: emailTrim, password: passTrim };
+      
+      const response = await fetch(`${API_BASE}${endpoint}`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json'
         },
-        body: JSON.stringify({
-            email: emailTrim,
-            password: passTrim
-        })
+        body: JSON.stringify(requestBody)
       })
 
       if (!response.ok) {
