@@ -120,17 +120,12 @@ function App () {
   useEffect(() => {
     if ((window as any).electronAPI?.onUiReset) {
       const off = (window as any).electronAPI.onUiReset(() => {
-        console.log('UI Reset triggered by window show')
-        
-        // Reset search completely
         setSearch('')
         setIsSearchFocused(false)
         if (searchInputRef.current) {
           searchInputRef.current.blur()
-          searchInputRef.current.value = '' // Force clear
+          searchInputRef.current.value = ''
         }
-
-        // Close all modals
         setSettingsOpen(false)
         setAboutOpen(false)
         setShowLogin(false)
@@ -142,7 +137,7 @@ function App () {
         setShowDeviceSelection(false)
         setShowTour(false)
       })
-      return () => { try { off?.() } catch {} }
+      return () => off?.()
     }
   }, [])
 
@@ -244,7 +239,7 @@ function App () {
 
           // Get current selected device to filter history
           try {
-            const currentDevice = await (window as any).electronAPI?.getCurrentDevice?.()
+            const currentDevice = await (window as any).electronAPI?.getActiveDevice?.()
             if (currentDevice && currentDevice.Id) {
                 queryOpts.filter.deviceId = currentDevice.Id
             }
@@ -291,12 +286,13 @@ function App () {
   useEffect(() => {
     if ((window as any).electronAPI?.onClipboardUpdate) {
       const off = (window as any).electronAPI.onClipboardUpdate((_data: any) => {
-          // Always fetch data from source to respect current filters (deviceId, search, etc.)
-          // The data coming from backend broadcast might be unfiltered or stale regarding current view context.
-          console.log('Clipboard update signal received, refreshing list...')
+          // Siempre re-fetch desde la fuente para respetar filtros actuales
+          // (deviceId, search, tipo). El broadcast ya lleva datos normalizados
+          // pero fetchData aplica los filtros correctos del estado local.
           fetchData(false)
       })
-      return () => { try { off?.() } catch {} }
+      // off() es ahora una función real — preload.ts retorna el removeListener
+      return () => off?.()
     }
   }, [fetchData])
 
@@ -353,14 +349,12 @@ function App () {
     if ((window as any).electronAPI?.onDeviceChanged) {
         const off = (window as any).electronAPI.onDeviceChanged((dev: any) => {
             console.log('Device changed to:', dev?.Name)
-            // Refresh history immediately
             setDisplayed([])
             
             const isFirstSync = !dev?.LastSync;
             if (isFirstSync) {
                 setGlobalLoadingMsg(t('device.syncing_initial') || 'Sincronizando dispositivo...')
                 setGlobalLoading(true)
-                // If it's a new device with no previous sync, wait for sync to complete
                 fetchData(false)
             } else {
                 setGlobalLoadingMsg('')
@@ -368,7 +362,7 @@ function App () {
                 fetchData(false).finally(() => setGlobalLoading(false))
             }
         })
-        return () => { try { off?.() } catch {} }
+        return () => off?.()
     }
   }, [fetchData])
 
@@ -381,7 +375,7 @@ function App () {
             setGlobalLoadingMsg('')
             fetchData(false)
         })
-        return () => { try { off?.() } catch {} }
+        return () => off?.()
     }
   }, [fetchData])
 
@@ -392,7 +386,7 @@ function App () {
           setShowDeviceSelection(true)
           toast.success(t('device.sync_complete') || 'Sincronización de dispositivos completada')
       })
-      return () => { try { off?.() } catch {} }
+      return () => off?.()
     }
   }, [t])
 
@@ -416,33 +410,42 @@ function App () {
     const path = await (window as any).electronAPI?.selectFile?.()
     if (!path) return
     
-    const toastId = toast.loading('Subiendo archivo...')
+    const toastId = toast.loading(t('files.uploading'))
     try {
         const res = await (window as any).electronAPI?.uploadFile?.(path)
         if (res && res.success) {
-            toast.success('Archivo subido correctamente', { id: toastId })
+            toast.success(t('files.uploaded'), { id: toastId })
             fetchFiles()
         } else {
-            toast.error('Error al subir archivo: ' + (res?.error || 'Desconocido'), { id: toastId })
+            toast.error(t('files.upload_error', { msg: res?.error || 'Unknown' }), { id: toastId })
         }
     } catch (e) {
-        toast.error('Error al subir archivo', { id: toastId })
+        toast.error(t('files.upload_error', { msg: '' }), { id: toastId })
     }
   }
 
+  // File deletion state
+  const [fileToDelete, setFileToDelete] = useState<any | null>(null)
+
   const handleDeleteFile = async (file: any) => {
-      if (!confirm('¿Eliminar archivo?')) return
-      const toastId = toast.loading('Eliminando...')
+      setFileToDelete(file)
+  }
+
+  const confirmDeleteFile = async () => {
+      if (!fileToDelete) return
+      const toastId = toast.loading(t('files.deleting'))
       try {
-          const res = await (window as any).electronAPI?.deleteFile?.(file.id)
+          const res = await (window as any).electronAPI?.deleteFile?.(fileToDelete.id)
           if (res && res.success) {
-              toast.success('Archivo eliminado', { id: toastId })
-              setFiles(prev => prev.filter(f => f.id !== file.id))
+              toast.success(t('files.deleted'), { id: toastId })
+              setFiles(prev => prev.filter(f => f.id !== fileToDelete.id))
           } else {
-              toast.error('Error al eliminar', { id: toastId })
+              toast.error(t('files.delete_error'), { id: toastId })
           }
       } catch (e) {
-          toast.error('Error al eliminar', { id: toastId })
+          toast.error(t('files.delete_error'), { id: toastId })
+      } finally {
+          setFileToDelete(null)
       }
   }
 
@@ -536,13 +539,13 @@ function App () {
           {filter === 'documents' ? (
              <div className="flex-1 flex flex-col overflow-hidden">
                 <div className="px-3 py-2 flex justify-between items-center border-b border-[color:var(--color-border)]">
-                    <span className="text-sm font-medium text-[color:var(--color-text)]">Mis Documentos</span>
+                    <span className="text-sm font-medium text-[color:var(--color-text)]">{t('files.title')}</span>
                     <button 
                         onClick={handleUpload}
                         className="flex items-center gap-1 px-2 py-1 bg-[color:var(--color-primary)] text-white rounded-md text-xs hover:opacity-90 transition"
                     >
                         <DocumentPlusIcon className="w-4 h-4" />
-                        <span>Subir</span>
+                        <span>{t('files.upload')}</span>
                     </button>
                 </div>
                 <FileList 
@@ -680,6 +683,14 @@ function App () {
         isOpen={!!ocrImage}
         imageUrl={ocrImage}
         onClose={() => setOcrImage(null)}
+      />
+
+      {/* Delete file confirmation */}
+      <DeleteModal
+        open={!!fileToDelete}
+        loading={false}
+        onConfirm={confirmDeleteFile}
+        onClose={() => setFileToDelete(null)}
       />
     </>
   )

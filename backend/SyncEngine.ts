@@ -55,6 +55,7 @@ export class SyncEngine {
   public static getInstance(): SyncEngine {
     if (!SyncEngine.instance) {
       SyncEngine.instance = new SyncEngine();
+      // No hay init lazy aquí porque SyncEngine no llama getInstance() en su constructor
     }
     return SyncEngine.instance;
   }
@@ -402,20 +403,23 @@ export class SyncEngine {
 
     // Manejo especial para imágenes locales: Convertir a Base64
     if (item.type === 'image' && typeof item.value === 'string' && item.value.startsWith('[LOCAL_IMAGE]:')) {
+        const localPath = item.value.replace('[LOCAL_IMAGE]:', '');
+        if (!fs.existsSync(localPath)) {
+            // El archivo fue eliminado del disco — no enviar el path inválido al backend.
+            // Marcar el item como sincronizado para que no bloquee futuras sincronizaciones.
+            console.warn(`[SyncEngine] Local image file not found, skipping sync for item ${item.id}: ${localPath}`);
+            db.markItemAsSynced(item.id);
+            return; // Salir sin error — el item se limpia de la cola
+        }
         try {
-            const localPath = item.value.replace('[LOCAL_IMAGE]:', '');
-            if (fs.existsSync(localPath)) {
-                const imageBuffer = fs.readFileSync(localPath);
-                // Intentar detectar extensión, fallback a png
-                const ext = path.extname(localPath).slice(1) || 'png';
-                // Crear data URI
-                valueToSend = `data:image/${ext};base64,${imageBuffer.toString('base64')}`;
-                console.log(`[SyncEngine] Converted local image ${localPath} to Base64 for sync (${valueToSend.length} chars)`);
-            } else {
-                console.warn(`[SyncEngine] Local image file not found: ${localPath}`);
-            }
+            const imageBuffer = fs.readFileSync(localPath);
+            const ext = path.extname(localPath).slice(1) || 'png';
+            valueToSend = `data:image/${ext};base64,${imageBuffer.toString('base64')}`;
+            console.log(`[SyncEngine] Converted local image ${localPath} to Base64 for sync (${valueToSend.length} chars)`);
         } catch (err: any) {
             console.error('[SyncEngine] Error reading local image for sync:', err.message);
+            // No enviar — dejar pending=1 para reintentar en el próximo ciclo
+            throw new Error(`Failed to read local image: ${err.message}`);
         }
     }
 

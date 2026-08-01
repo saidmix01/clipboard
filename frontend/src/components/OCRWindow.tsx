@@ -110,7 +110,7 @@ export default function OCRWindow() {
         )
         setText(result.data.text)
         if (result.data.text) {
-             navigator.clipboard.writeText(result.data.text)
+             ;(window as any).electronAPI?.copyText?.(result.data.text)
              toast.success(t('ocr.copied'))
         } else {
              toast(t('ocr.no_text_detected'))
@@ -188,7 +188,7 @@ export default function OCRWindow() {
               <div className="p-4 border-t border-[color:var(--color-border)] bg-[color:var(--color-bg)]">
                    <button
                     onClick={() => {
-                        navigator.clipboard.writeText(text)
+                        ;(window as any).electronAPI?.copyText?.(text)
                         toast.success(t('ocr.copied'))
                     }}
                     disabled={!text}

@@ -74,7 +74,7 @@ export default function OCRModal({ isOpen, imageUrl, onClose }: Props) {
 
   const handleCopy = () => {
       if (text) {
-          navigator.clipboard.writeText(text)
+          ;(window as any).electronAPI?.copyText?.(text)
           toast.success('Texto copiado')
           onClose()
       }

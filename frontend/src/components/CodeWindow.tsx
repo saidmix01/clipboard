@@ -60,7 +60,7 @@ export default function CodeWindow() {
   }
 
   const handleCopy = () => {
-      navigator.clipboard.writeText(content)
+      ;(window as any).electronAPI?.copyText?.(content)
       toast.success('Copiado al portapapeles')
   }
 

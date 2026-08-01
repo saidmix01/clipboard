@@ -1,7 +1,11 @@
+export type ItemType = 'text' | 'image' | 'code' | 'file' | 'html'
+
 export type HistoryItem = {
   id?: string
+  type: ItemType
   value: string
   favorite: boolean
+  createdAt?: string
   imagePath?: string
   previewPath?: string
   originalPath?: string

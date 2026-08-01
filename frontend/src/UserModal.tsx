@@ -50,39 +50,19 @@ export default function UserModal({ isOpen, onClose, onBack }: UserModalProps) {
       }
 
       if (avatarFile) {
-        const fd = new FormData()
-        fd.append('avatar', avatarFile)
-        // FormData needs special handling in IPC?
-        // JSON.stringify removes FormData. 
-        // Axios in Main process can handle it, but passing FormData via IPC is tricky.
-        // Electron IPC doesn't serialize FormData well.
-        // We might need to read the file as ArrayBuffer/Base64 and pass it.
-        // For now, let's skip avatar upload via backendRequest if complex, or implement a special handler.
-        // User said: "La UI (renderer) no debe ejecutar fetch/axios".
-        // So we MUST handle it.
+        // Convertir el archivo a base64 para enviarlo via IPC (FormData no se serializa bien en IPC)
+        const reader = new FileReader()
+        const base64 = await new Promise<string>((resolve, reject) => {
+          reader.onload = () => resolve(reader.result as string)
+          reader.onerror = reject
+          reader.readAsDataURL(avatarFile)
+        })
         
-        // Let's assume for now we keep using fetch for Avatar ONLY if backendRequest doesn't support FormData.
-        // Or we convert to base64.
-        // Since I can't easily change the backend API to accept base64 if it expects multipart/form-data.
-        // I will defer avatar upload migration or try to pass simple object.
-        
-        // Actually, let's keep fetch for Avatar for now to avoid breaking it, 
-        // OR warn the user.
-        // But the user said "NO usar lógica de red".
-        // To support file upload via IPC, I'd need to read the file path (if electron) or buffer.
-        // Since it's a File object in browser, I can read it as ArrayBuffer.
-        
-        // For this task ("refresh token"), I will focus on the text updates.
-        // I'll leave the fetch for avatar but use the token from config.
-        const tokenStr = await (window as any).electronAPI?.getConfig?.('x-token')
-        const token = tokenStr || (session as any)?.token
-        if (token) {
-            await fetch(`${API_BASE}/users/me/avatar`, {
-                method: 'POST',
-                headers: { Authorization: `Bearer ${token}` },
-                body: fd
-            })
-        }
+        await backendRequest('/users/me/avatar', 'POST', {
+          avatar: base64,
+          mimeType: avatarFile.type,
+          fileName: avatarFile.name
+        })
       }
 
       // Refresh user data

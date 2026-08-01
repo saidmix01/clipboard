@@ -6,15 +6,14 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.BackendDaemon = void 0;
 const electron_1 = require("electron");
 const axios_1 = __importDefault(require("axios"));
+const ipc_utils_1 = require("./ipc-utils");
 // Import existing DB module (JS)
 const db = require('../db');
 class BackendDaemon {
     constructor() {
         this.isRefreshing = false;
         this.requestQueue = [];
-        // TODO: Move to config
-        this.baseUrl = 'https://copyfy.webcolsoluciones.com.co';
-        // Try to load from config.js if available, otherwise use default
+        this.baseUrl = 'https://backend-copyfy.onrender.com';
         try {
             const config = require('../config');
             if (config.BACKEND_URL)
@@ -27,11 +26,15 @@ class BackendDaemon {
         });
         this.setupInterceptors();
         this.setupIPC();
-        this.initActiveDevice();
+        // initActiveDevice se llama desde getInstance() DESPUÉS de asignar instance
+        // para evitar el ciclo: constructor → setActiveDevice → SyncEngine → getInstance() → constructor
     }
     static getInstance() {
         if (!BackendDaemon.instance) {
             BackendDaemon.instance = new BackendDaemon();
+            // Llamar initActiveDevice aquí, cuando instance ya está asignado,
+            // así cualquier llamada recursiva a getInstance() retorna la instancia existente
+            BackendDaemon.instance.initActiveDevice();
         }
         return BackendDaemon.instance;
     }
@@ -68,10 +71,11 @@ class BackendDaemon {
         if (success) {
             const device = this.getActiveDevice();
             this.broadcast('device:changed', device);
-            // Also refresh items for the new device
+            // Broadcast items normalizados para el nuevo dispositivo
             const items = this.getItemsByActiveDevice();
-            this.broadcast('clipboard:updated', items);
-            this.broadcast('clipboard-update', items);
+            const normalized = items.map(ipc_utils_1.normalizeItemForIPC);
+            this.broadcast('clipboard:updated', normalized);
+            this.broadcast('clipboard-update', normalized);
             // Trigger sync immediately
             try {
                 const { SyncEngine } = require('./SyncEngine');
@@ -99,21 +103,22 @@ class BackendDaemon {
         if (!activeDevice) {
             console.warn('[BackendDaemon] No active device selected. Cannot save item.');
             return null;
-            // Rule: "❌ No guardar items sin deviceId"
-            // If no active device, we might prompt user? 
-            // For now, we strictly follow: no save.
         }
         const result = db.insertItem(value, type, activeDevice.Id);
         if (result) {
-            this.broadcast('clipboard:updated');
-            this.broadcast('clipboard-update'); // Legacy support
+            // Broadcast con datos normalizados para que el renderer reciba el shape correcto
+            const items = this.getItemsByActiveDevice();
+            const normalized = items.map(ipc_utils_1.normalizeItemForIPC);
+            this.broadcast('clipboard:updated', normalized);
+            this.broadcast('clipboard-update', normalized);
         }
         return result;
     }
     notifyClipboardUpdate() {
         const items = this.getItemsByActiveDevice();
-        this.broadcast('clipboard:updated', items);
-        this.broadcast('clipboard-update', items);
+        const normalized = items.map(ipc_utils_1.normalizeItemForIPC);
+        this.broadcast('clipboard:updated', normalized);
+        this.broadcast('clipboard-update', normalized);
     }
     broadcast(channel, data) {
         const windows = electron_1.BrowserWindow.getAllWindows();
@@ -334,9 +339,15 @@ class BackendDaemon {
         }
     }
     /**
-     * Exposes capabilities to Renderer via IPC
+     * Exposes capabilities to Renderer via IPC.
+     * Guard estático previene registro doble si getInstance() se llama durante inicialización.
      */
     setupIPC() {
+        if (BackendDaemon.ipcRegistered) {
+            console.warn('[BackendDaemon] IPC handlers already registered, skipping');
+            return;
+        }
+        BackendDaemon.ipcRegistered = true;
         // Trigger sync on login success
         electron_1.ipcMain.on('auth:login-success', () => {
             this.syncDevicesOnLogin();
@@ -376,19 +387,8 @@ class BackendDaemon {
             return this.setActiveDevice(deviceId);
         });
         electron_1.ipcMain.handle('clipboard:get-items', (_, { limit = 20, offset = 0, filter = {} } = {}) => {
-            // Normalize for IPC (removing potentially large data if needed, but db.getItems returns simple objects)
-            // We reuse the normalization logic from main.js if possible, or duplicate it here.
-            // main.js has normalizeForIPC. 
-            // Let's implement a simple one here or import.
             const items = this.getItemsByActiveDevice(limit, offset, filter);
-            return items.map((i) => ({
-                id: i.id,
-                value: i.value,
-                type: i.type,
-                favorite: i.favorite,
-                createdAt: i.createdAt,
-                imagePath: i.type === 'image' && i.value.startsWith('[LOCAL_IMAGE]:') ? i.value.replace('[LOCAL_IMAGE]:', '') : null
-            }));
+            return items.map(ipc_utils_1.normalizeItemForIPC);
         });
         // --- Sync Engine APIs ---
         const { SyncEngine } = require('./SyncEngine');
@@ -403,3 +403,4 @@ class BackendDaemon {
     }
 }
 exports.BackendDaemon = BackendDaemon;
+BackendDaemon.ipcRegistered = false; // Guard contra doble registro

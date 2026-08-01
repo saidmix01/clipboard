@@ -11,6 +11,7 @@ const FormData = require('form-data');
 // If using plain JS, this would be: const { BackendDaemon } = require('./backend/BackendDaemon')
 const BackendDaemon_1 = require("./backend/BackendDaemon");
 const SyncEngine_1 = require("./backend/SyncEngine");
+const ipc_utils_1 = require("./backend/ipc-utils");
 // --- Integration End ---
 const db = require('./db');
 const { configureAutoLaunch } = require('./autolaunch');
@@ -58,17 +59,7 @@ else {
         }
     });
 }
-// Helper: Normalize item for IPC
-function normalizeForIPC(items) {
-    return items.map(i => ({
-        id: i.id,
-        value: i.value,
-        type: i.type,
-        favorite: i.favorite,
-        createdAt: i.createdAt,
-        imagePath: i.type === 'image' && i.value.startsWith('[LOCAL_IMAGE]:') ? i.value.replace('[LOCAL_IMAGE]:', '') : null
-    }));
-}
+// normalizeItemForIPC y normalizeForIPC importados desde ./backend/ipc-utils
 // Helper: Broadcast update to main window with correct filtering
 function broadcastUpdate() {
     if (mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents) {
@@ -81,7 +72,7 @@ function broadcastUpdate() {
         const items = db.getItems(20, 0, filter);
         log.info(`[Main] broadcastUpdate sending ${items.length} items (Device: ${filter.deviceId || 'ALL'})`);
         try {
-            mainWindow.webContents.send('clipboard-update', normalizeForIPC(items));
+            mainWindow.webContents.send('clipboard-update', (0, ipc_utils_1.normalizeForIPC)(items));
         }
         catch (e) {
             log.error('[Main] Failed to send clipboard-update:', e);
@@ -635,7 +626,7 @@ ipcMain.handle('get-clipboard-history', (_, { limit = 20, offset = 0, filter = {
     }
     const items = db.getItems(limit, offset, filter);
     // log.info(`[IPC] get-clipboard-history returning ${items.length} items`)
-    return normalizeForIPC(items);
+    return (0, ipc_utils_1.normalizeForIPC)(items);
 });
 ipcMain.handle('delete-history-item', (_, id) => {
     db.deleteItem(id);
@@ -653,7 +644,7 @@ ipcMain.handle('search-history', (_, payload) => {
     if (settings.selectedDeviceId) {
         filter.deviceId = settings.selectedDeviceId;
     }
-    return normalizeForIPC(db.getItems(100, 0, filter));
+    return (0, ipc_utils_1.normalizeForIPC)(db.getItems(100, 0, filter));
 });
 ipcMain.handle('clear-history', () => {
     db.clearAll();
@@ -782,21 +773,9 @@ ipcMain.handle('set-preferences', (_, prefs) => {
     }
     return newSettings;
 });
-ipcMain.handle('get-current-device', () => {
-    // Return explicitly selected device, or fallback to the local one logic?
-    // User wants: "que cuando se cierre la app y se inicie este sea el seleccionado"
-    // So we check AppSettings.SelectedDeviceId first.
-    const settings = db.getSettings();
-    if (settings.selectedDeviceId) {
-        // Find this device info
-        const devices = db.getDevices();
-        const found = devices.find((d) => d.Id === settings.selectedDeviceId);
-        if (found)
-            return found;
-    }
-    // Fallback to default behavior (e.g. current machine or last updated)
-    return db.getDevice();
-});
+// NOTA: 'devices:get-active' y 'devices:set-active' están registrados en
+// BackendDaemon.setupIPC() — son los únicos que usa el preload. Los handlers
+// 'get-current-device' y 'set-active-device' han sido eliminados (código muerto).
 ipcMain.handle('get-all-devices', () => {
     return db.getDevices();
 });
@@ -818,30 +797,8 @@ ipcMain.handle('register-new-device', (_, name) => {
     }
     return null;
 });
-ipcMain.handle('set-active-device', (_, id) => {
-    log.info('IPC set-active-device called with:', id);
-    const result = db.setActiveDevice(id);
-    // Verify persistence
-    const settings = db.getSettings();
-    // log.info(`[IPC] db.getSettings() result:`, JSON.stringify(settings))
-    // log.info(`[IPC] Device set to: ${settings.selectedDeviceId} (Requested: ${id})`)
-    // Update cache
-    cachedSelectedDeviceId = id;
-    // Force a fresh filter application on broadcast
-    if (mainWindow && !mainWindow.isDestroyed()) {
-        const filter = {};
-        // Use the ID we just set, because DB might be slow to return it in getSettings() immediately
-        // or there is a race condition.
-        // We TRUST the ID passed to this function.
-        filter.deviceId = id;
-        // log.info(`[IPC] Forcing update with device filter: ${filter.deviceId}`)
-        const items = db.getItems(20, 0, filter);
-        // log.info(`[IPC] Found ${items.length} items for device`)
-        mainWindow.webContents.send('clipboard-update', normalizeForIPC(items));
-    }
-    // broadcastUpdate() // Replaced by explicit block above for debugging
-    return result;
-});
+// Handler eliminado: 'set-active-device' era código muerto.
+// El preload llama 'devices:set-active' → manejado en BackendDaemon.setupIPC().
 // App Lifecycle
 app.whenReady().then(async () => {
     await db.init(app);
