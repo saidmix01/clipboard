@@ -1,17 +1,13 @@
 import { useEffect, useState, useRef, useCallback } from 'react'
 import type { ReactNode } from 'react'
-import { Toaster, toast } from 'react-hot-toast'
+import { notify, notifySuccess, notifyError } from './utils/notify'
 import { useTranslation } from 'react-i18next'
-import { motion } from 'framer-motion'
-import { Cog6ToothIcon, UserCircleIcon, ArrowRightStartOnRectangleIcon, ArrowLeftEndOnRectangleIcon, UserPlusIcon, DocumentPlusIcon } from '@heroicons/react/24/outline'
-import LoginModal from './Login'
-import UserModal from './UserModal'
+import { DocumentPlusIcon } from '@heroicons/react/24/outline'
 import AppShell from './components/AppShell'
 import TopBar from './components/TopBar'
 import Dock from './components/Dock'
 import HistoryList, { type HistoryListRef } from './components/HistoryList'
 import FileList from './components/FileList'
-import SettingsMenu from './components/SettingsMenu'
 import AboutModal from './components/AboutModal'
 import OnboardingTour from './components/OnboardingTour'
 import ContextMenu from './components/ContextMenu'
@@ -20,23 +16,10 @@ import OCRModal from './components/OCRModal'
 import DeviceRegistrationModal from './components/DeviceRegistrationModal'
 import DeviceSelectionModal from './components/DeviceSelectionModal'
 import type { HistoryItem, FilterType } from './types'
-import { API_BASE } from './config'
 import { backendRequest } from './api/backend'
 
-const resolveAvatar = (s?: string | null): string | null => {
-  if (!s) return null
-  let v = String(s)
-  v = v.replace(/\\/g, '/')
-  if (v.startsWith('http://') || v.startsWith('https://') || v.startsWith('data:')) return v
-  if (v.startsWith('localhost:') || v.startsWith('127.0.0.1:')) return `http://${v}`
-  if (v.startsWith('/')) return `${API_BASE}${v}`
-  if (v.startsWith('uploads/')) return `${API_BASE}/${v}`
-  if (v.includes('/uploads/')) return `${API_BASE}${v.substring(v.indexOf('/uploads/'))}`
-  return `${API_BASE}/uploads/${v}`
-}
-
 function App () {
-  const [filter, setFilter] = useState<FilterType>('text')
+  const [filter, setFilter] = useState<FilterType>('all')
   const [displayed, setDisplayed] = useState<HistoryItem[]>([])
   const [, setListLoading] = useState<boolean>(false)
   const [hasMore, setHasMore] = useState<boolean>(true)
@@ -45,16 +28,11 @@ function App () {
   const PAGE_SIZE = 20
 
   const [search, setSearch] = useState<string>('')
-  const searchInputRef = useRef<HTMLInputElement>(null)
   const historyListRef = useRef<HistoryListRef>(null)
   
   const { t } = useTranslation()
   const [darkMode, setDarkMode] = useState<boolean>(false)
-  const [settingsOpen, setSettingsOpen] = useState<boolean>(false)
   const [aboutOpen, setAboutOpen] = useState<boolean>(false)
-  const [showLogin, setShowLogin] = useState<boolean>(false)
-  const [showRegister, setShowRegister] = useState<boolean>(false)
-  const [showUserModal, setShowUserModal] = useState<boolean>(false)
   const [token, setToken] = useState<string | null>(null)
   const [globalLoading, setGlobalLoading] = useState<boolean>(false)
   const [globalLoadingMsg, setGlobalLoadingMsg] = useState<string>('')
@@ -64,9 +42,7 @@ function App () {
   const [itemToDelete, setItemToDelete] = useState<HistoryItem | null>(null)
   const [deletingLoading, setDeletingLoading] = useState<boolean>(false)
   const [ocrImage, setOcrImage] = useState<string | null>(null)
-  const [userAvatar, setUserAvatar] = useState<string | null>(null)
   const [showDeviceSelection, setShowDeviceSelection] = useState<boolean>(false)
-  const [isSearchFocused, setIsSearchFocused] = useState<boolean>(false)
 
   // Files state
   const [files, setFiles] = useState<any[]>([])
@@ -96,9 +72,7 @@ function App () {
              const u = payload?.user
              
              if (u && u.avatarUrl) {
-                setUserAvatar(resolveAvatar(u.avatarUrl))
-             } else {
-                setUserAvatar(null)
+                // Avatar available for future use
              }
           } catch (err) {
              console.error('Failed to load user profile', err)
@@ -121,16 +95,7 @@ function App () {
     if ((window as any).electronAPI?.onUiReset) {
       const off = (window as any).electronAPI.onUiReset(() => {
         setSearch('')
-        setIsSearchFocused(false)
-        if (searchInputRef.current) {
-          searchInputRef.current.blur()
-          searchInputRef.current.value = ''
-        }
-        setSettingsOpen(false)
         setAboutOpen(false)
-        setShowLogin(false)
-        setShowRegister(false)
-        setShowUserModal(false)
         setContextMenu(null)
         setItemToDelete(null)
         setOcrImage(null)
@@ -146,10 +111,10 @@ function App () {
     const handleKeyDown = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'f') {
         e.preventDefault()
-        if (searchInputRef.current) {
-          searchInputRef.current.focus()
-          searchInputRef.current.select()
-        }
+        // Focus the search input inside TopBar
+        const searchInput = document.querySelector<HTMLInputElement>('input[type="text"]')
+        searchInput?.focus()
+        searchInput?.select()
       }
     }
     window.addEventListener('keydown', handleKeyDown)
@@ -296,26 +261,91 @@ function App () {
     }
   }, [fetchData])
 
-  const highlightMatch = (text: string, query: string): ReactNode[] | string => {
-    if (!query) return text
-    const regex = new RegExp(`(${query})`, 'gi')
+  const highlightMatch = useCallback((text: string, query: string): ReactNode[] | string => {
+    const q = query?.trim()
+    if (!q) return text
+    // Escapamos los caracteres especiales de regex. Sin esto, buscar algo como
+    // "(", "[" o "\" lanzaba una excepción al construir el RegExp y podía tumbar
+    // el render de la lista completa.
+    const escaped = q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    const regex = new RegExp(`(${escaped})`, 'gi')
     return text.split(regex).map((part, idx) =>
-      part.toLowerCase() === query.toLowerCase() ? (
+      part.toLowerCase() === q.toLowerCase() ? (
         <mark key={idx} className='bg-[color:var(--color-primary)] text-white font-semibold rounded px-0.5'>{part}</mark>
       ) : (
         <span key={idx}>{part}</span>
       )
     )
-  }
+  }, [])
 
-  // Dark Mode
+  // Dark Mode + Preferences
   useEffect(() => {
     async function loadDarkMode() {
         const stored = await (window as any).electronAPI?.getConfig?.('darkMode')
         if (stored === 'true') setDarkMode(true)
     }
+    async function loadPreferences() {
+      try {
+        const prefs = await (window as any).electronAPI?.getPreferences?.()
+        if (prefs) {
+          const root = document.documentElement
+          // Theme is stored as JSON string in the 'theme' field
+          let theme: any = {}
+          if (prefs.theme) {
+            try { theme = typeof prefs.theme === 'string' ? JSON.parse(prefs.theme) : prefs.theme } catch {}
+          }
+          if (theme.primary) root.style.setProperty('--color-primary', theme.primary)
+          if (theme.secondary) root.style.setProperty('--color-secondary', theme.secondary)
+          if (theme.bg) root.style.setProperty('--color-bg', theme.bg)
+          if (theme.surface) root.style.setProperty('--color-surface', theme.surface)
+          if (theme.text) root.style.setProperty('--color-text', theme.text)
+          if (theme.fontSize) root.style.setProperty('--font-size-card', `${theme.fontSize}px`)
+        }
+      } catch {}
+    }
     loadDarkMode()
+    loadPreferences()
   }, [])
+
+  // Listen for theme changes from tray
+  useEffect(() => {
+    if ((window as any).electronAPI?.onThemeChanged) {
+      const off = (window as any).electronAPI.onThemeChanged((isDark: boolean) => {
+        setDarkMode(isDark)
+      })
+      return () => off?.()
+    }
+  }, [])
+
+  // Listen for preference changes from settings window
+  useEffect(() => {
+    if ((window as any).electronAPI?.onPreferencesChanged) {
+      const off = (window as any).electronAPI.onPreferencesChanged((prefs: any) => {
+        const root = document.documentElement
+        if (prefs.colorPrimary) root.style.setProperty('--color-primary', prefs.colorPrimary)
+        if (prefs.colorSecondary) root.style.setProperty('--color-secondary', prefs.colorSecondary)
+        if (prefs.colorBg) root.style.setProperty('--color-bg', prefs.colorBg)
+        if (prefs.colorSurface) root.style.setProperty('--color-surface', prefs.colorSurface)
+        if (prefs.colorText) root.style.setProperty('--color-text', prefs.colorText)
+        if (prefs.fontSize) root.style.setProperty('--font-size-card', `${prefs.fontSize}px`)
+      })
+      return () => off?.()
+    }
+  }, [])
+
+  // Listen for session changes from tray (logout)
+  useEffect(() => {
+    if ((window as any).electronAPI?.onSessionChanged) {
+      const off = (window as any).electronAPI.onSessionChanged((session: any) => {
+        if (!session) {
+          setToken(null)
+        } else {
+          loadSession()
+        }
+      })
+      return () => off?.()
+    }
+  }, [loadSession])
 
   useEffect(() => {
     const root = document.documentElement
@@ -384,43 +414,36 @@ function App () {
     if ((window as any).electronAPI?.onDevicesSyncComplete) {
       const off = (window as any).electronAPI.onDevicesSyncComplete((_devices: any[]) => {
           setShowDeviceSelection(true)
-          toast.success(t('device.sync_complete') || 'Sincronización de dispositivos completada')
+          notifySuccess(t('device.sync_complete') || 'Sincronización de dispositivos completada')
       })
       return () => off?.()
     }
   }, [t])
 
-  const logout = async () => {
+  const logout = useCallback(async () => {
     setToken(null)
     await (window as any).electronAPI?.removeConfig?.('session')
-    toast.success(t('notifications.session_closed'))
-  }
+    notifySuccess(t('notifications.session_closed'))
+  }, [t])
 
-  const handleLoginSuccess = (newToken: string, user?: any) => {
-    setToken(newToken)
-    ;(window as any).electronAPI?.setAuthToken?.(newToken)
-    if (user?.avatarUrl) {
-      setUserAvatar(resolveAvatar(user.avatarUrl))
-    } else {
-      loadSession()
-    }
-  }
+  // Expose logout for tray/admin panel usage
+  useEffect(() => { (window as any).__copyfy_logout = logout }, [logout])
 
   const handleUpload = async () => {
     const path = await (window as any).electronAPI?.selectFile?.()
     if (!path) return
     
-    const toastId = toast.loading(t('files.uploading'))
+    notify(t('files.uploading'))
     try {
         const res = await (window as any).electronAPI?.uploadFile?.(path)
         if (res && res.success) {
-            toast.success(t('files.uploaded'), { id: toastId })
+            notifySuccess(t('files.uploaded'))
             fetchFiles()
         } else {
-            toast.error(t('files.upload_error', { msg: res?.error || 'Unknown' }), { id: toastId })
+            notifyError(t('files.upload_error', { msg: res?.error || 'Unknown' }))
         }
     } catch (e) {
-        toast.error(t('files.upload_error', { msg: '' }), { id: toastId })
+        notifyError(t('files.upload_error', { msg: '' }))
     }
   }
 
@@ -451,90 +474,19 @@ function App () {
 
   return (
     <>
-      <Toaster position='top-center' />
-      <motion.div initial={{ opacity: 0, y: 30 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.5, ease: 'easeOut' }}>
+      <div>
         <AppShell darkMode={darkMode}>
-          <TopBar 
-            actions={[
-              { label: 'Ajustes', icon: <Cog6ToothIcon className="w-5 h-5" />, onClick: () => setSettingsOpen(true) },
-              ...(token ? [
-                { label: 'Perfil', icon: <UserCircleIcon className="w-5 h-5" />, onClick: () => setShowUserModal(true) },
-                { label: 'Cerrar sesión', icon: <ArrowRightStartOnRectangleIcon className="w-5 h-5" />, onClick: logout }
-              ] : [
-                { label: 'Iniciar sesión', icon: <ArrowLeftEndOnRectangleIcon className="w-5 h-5" />, onClick: () => setShowLogin(true) },
-                { label: 'Registrarse', icon: <UserPlusIcon className="w-5 h-5" />, onClick: () => setShowRegister(true) }
-              ])
-            ]}
-            userAvatar={userAvatar}
+          <TopBar
+            search={search}
+            onSearchChange={setSearch}
+            onClose={() => (window as any).electronAPI?.hideWindow?.()}
           />
-          <SettingsMenu
-            open={settingsOpen}
-            darkMode={darkMode}
-            onClose={() => setSettingsOpen(false)}
-            onChangeDevice={() => { setSettingsOpen(false); setShowDeviceSelection(true) }}
-            onForceUpdate={() => { /* Removed */ }}
-            onToggleDark={() => { setSettingsOpen(false); setDarkMode(prev => !prev) }}
-            onClearHistory={() => { setSettingsOpen(false); (window as any).electronAPI?.clearHistory?.(); toast.success(t('notifications.history_cleared')) }}
-            onSyncNow={() => { /* Removed */ }}
-            onOpenAbout={() => { setSettingsOpen(false); setAboutOpen(true) }}
+          <Dock
+            filter={filter}
+            onChangeFilter={(f) => setFilter(f)}
+            disabledFavorites={false}
+            hasAuth={!!token}
           />
-          
-          {/* Overlay for search focus */}
-          <div 
-            className={`fixed inset-0 bg-black/60 z-40 transition-opacity duration-300 backdrop-blur-[1px]
-              ${isSearchFocused ? 'opacity-100 pointer-events-auto' : 'opacity-0 pointer-events-none'}
-            `}
-            onClick={() => {
-              setIsSearchFocused(false)
-              searchInputRef.current?.blur()
-            }}
-          />
-
-          <div className="px-3 pt-3 pb-2 relative z-50">
-            <input
-              type='text'
-              placeholder={t('search_placeholder')}
-              value={search}
-              onChange={e => setSearch(e.target.value)}
-              onFocus={() => setIsSearchFocused(true)}
-              onBlur={() => setTimeout(() => setIsSearchFocused(false), 150)}
-              onKeyDown={(e) => {
-                if (e.key === 'Escape' || e.key === 'Enter') {
-                  e.preventDefault()
-                  setIsSearchFocused(false)
-                  searchInputRef.current?.blur()
-                  historyListRef.current?.focus()
-                }
-              }}
-              ref={searchInputRef}
-              autoFocus
-              className={`w-full px-3 h-[36px] rounded-[var(--radius-input)] outline-none transition-colors duration-100 text-[13px] font-medium placeholder:font-normal
-                ${isSearchFocused 
-                  ? 'bg-[color:var(--color-surface)] text-[color:var(--color-text)] ring-1 ring-[color:var(--color-primary)] border border-[color:var(--color-primary)]' 
-                  : 'bg-[color:var(--color-surface)] text-[color:var(--color-text)] border border-[color:var(--color-border)] hover:border-[color:var(--color-muted)]'
-                }
-              `}
-            />
-          </div>
-
-          <LoginModal
-              isOpen={showLogin}
-              onClose={() => setShowLogin(false)}
-              onLoginSuccess={handleLoginSuccess}
-              mode='login'
-              onGlobalLoading={(v) => { setGlobalLoadingMsg(''); setGlobalLoading(v); }}
-            />
-            <LoginModal
-              isOpen={showRegister}
-              onClose={() => setShowRegister(false)}
-              onLoginSuccess={handleLoginSuccess}
-              mode='register'
-              onGlobalLoading={(v) => { setGlobalLoadingMsg(''); setGlobalLoading(v); }}
-            />
-            <UserModal
-              isOpen={showUserModal}
-              onClose={() => setShowUserModal(false)}
-            />
 
           {filter === 'documents' ? (
              <div className="flex-1 flex flex-col overflow-hidden">
@@ -563,9 +515,9 @@ function App () {
             items={displayed}
             search={search}
             selectedIndex={-1}
-            hasMore={false}
+            hasMore={hasMore}
             onLoadMore={loadMoreResults}
-            isLoadingMore={false}
+            isLoadingMore={isLoadingMore}
             onToggleFavorite={(item) => {
               (window as any).electronAPI?.toggleFavorite?.({ id: item.id, isFavorite: !item.favorite })
             }}
@@ -595,16 +547,6 @@ function App () {
           />
           )}
 
-          <Dock
-            items={[]}
-            userAvatar={userAvatar}
-            filter={filter}
-            onChangeFilter={(f) => setFilter(f)}
-            disabledFavorites={false}
-            hasAuth={!!token}
-          />
-          <div className="px-3 pb-1 text-right text-[11px] text-[color:var(--color-muted)]" title='Versión de la app'>v{appVersion}</div>
-
           <DeviceRegistrationModal onSuccess={() => {
               // Refresh or just close
           }} />
@@ -630,15 +572,18 @@ function App () {
 
           {globalLoading && (
             <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-[20000]">
-              <div className="glass p-4 flex flex-col items-center gap-3">
-                <div className="w-6 h-6 border-2 border-[color:var(--color-primary)] border-t-transparent rounded-full animate-spin"></div>
-                <div className="text-sm font-medium">{globalLoadingMsg || t('ui.processing')}</div>
+              <div className="bg-[color:var(--color-surface)] border border-[color:var(--color-border)] rounded-lg p-4 flex flex-col items-center gap-3 shadow-lg">
+                <div className="w-5 h-5 border-2 border-[color:var(--color-primary)] border-t-transparent rounded-full animate-spin"></div>
+                <div className="text-sm font-medium text-[color:var(--color-text)]">{globalLoadingMsg || t('ui.processing')}</div>
               </div>
             </div>
           )}
 
+          {/* Version */}
+          <div className="px-4 py-1 text-[10px] text-[color:var(--color-muted)] text-right select-none">v{appVersion}</div>
+
         </AppShell>
-      </motion.div>
+      </div>
 
       {contextMenu && (
         <ContextMenu
@@ -676,7 +621,7 @@ function App () {
       <AboutModal
         open={aboutOpen}
         onClose={() => setAboutOpen(false)}
-        onBack={() => { setAboutOpen(false); setSettingsOpen(true) }}
+        onBack={() => { setAboutOpen(false) }}
       />
       
       <OCRModal

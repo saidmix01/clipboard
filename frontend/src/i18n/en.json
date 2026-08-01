@@ -31,7 +31,9 @@
     "font_size": "Font size",
     "language": "Language",
     "lang_en": "English",
-    "lang_es": "Spanish"
+    "lang_es": "Spanish",
+    "danger_zone": "Danger zone",
+    "appearance": "Appearance"
   },
   "search_placeholder": "Search in history...",
   "quick_search_placeholder": "Search...",
@@ -66,7 +68,8 @@
     "loading_docs": "Loading documents...",
     "loading": "Loading...",
     "login_required_docs": "You must log in to access documents",
-    "login_button": "Log In"
+    "login_button": "Log In",
+    "close": "Close"
   },
   "auth": {
     "login_title": "Log In",
@@ -89,7 +92,14 @@
     "error_connection": "Connection error",
     "error_login": "Login error",
     "error_register": "Registration error",
-    "confirm_password_placeholder": "Confirm password"
+    "confirm_password_placeholder": "Confirm password",
+    "register_subtitle": "Create your account to sync",
+    "login_subtitle": "Sign in to sync",
+    "have_account": "Already have an account? Sign in",
+    "no_account": "Don't have an account? Register",
+    "register_success": "Account created",
+    "login_success": "Signed in",
+    "error_credentials": "Invalid credentials"
   },
   "user": {
     "title": "User Data",
@@ -133,6 +143,7 @@
   "about": {
     "title": "About Copyfy++",
     "version": "Version",
+    "description": "Clipboard manager with cloud sync",
     "whats_new": "What's New",
     "github": "GitHub",
     "back": "Back"
@@ -151,6 +162,7 @@
     "login": "Log In",
     "register": "Register",
     "filters": "Filters",
+    "filter_all": "All",
     "filter_text": "Text",
     "filter_image": "Image",
     "filter_favorites": "Favorites",
@@ -227,5 +239,13 @@
     "next": "Next",
     "done": "Got it",
     "no_show_again": "You won't see this guide again once completed."
+  },
+  "time": {
+    "now": "Now",
+    "mins_ago": "{{mins}} min ago",
+    "hours_ago": "{{hours}}h ago"
+  },
+  "card": {
+    "image_copied": "Copied image"
   }
 }

@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import DetailsModal from './DetailsModal'
 import { ComputerDesktopIcon, PlusIcon, CheckCircleIcon } from '@heroicons/react/24/outline'
-import { toast } from 'react-hot-toast'
+import { notifySuccess, notifyError } from '../utils/notify'
 import { useTranslation } from 'react-i18next'
 
 type Props = {
@@ -34,7 +34,7 @@ export default function DeviceSelectionModal({ open, onClose, onSuccess }: Props
       if (current) setCurrentDeviceId(current.Id)
     } catch (e) {
       console.error(e)
-      toast.error(t('device.error_load_devices'))
+      notifyError(t('device.error_load_devices'))
     } finally {
       setLoading(false)
     }
@@ -52,7 +52,7 @@ export default function DeviceSelectionModal({ open, onClose, onSuccess }: Props
       // Update local state immediately to reflect change in UI
       setCurrentDeviceId(device.Id)
       
-      toast.success(t('device.apply'))
+      notifySuccess(t('device.apply'))
       
       // Force reload via parent
       if (onSuccess) onSuccess()
@@ -60,7 +60,7 @@ export default function DeviceSelectionModal({ open, onClose, onSuccess }: Props
       onClose()
     } catch (e) {
       console.error(e)
-      toast.error('Error changing device')
+      notifyError('Error changing device')
     } finally {
       setLoading(false)
     }
@@ -73,12 +73,12 @@ export default function DeviceSelectionModal({ open, onClose, onSuccess }: Props
     try {
       setLoading(true)
       await (window as any).electronAPI?.registerNewDevice?.(newDeviceName)
-      toast.success(t('device.created'))
+      notifySuccess(t('device.created'))
       setView('list')
       setNewDeviceName('')
       loadDevices()
     } catch (e) {
-      toast.error(t('device.create_error'))
+      notifyError(t('device.create_error'))
     } finally {
       setLoading(false)
     }

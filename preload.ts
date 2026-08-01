@@ -125,18 +125,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   onDownloadProgress: (cb: (progress: any) => void) =>
     onChannel('download-progress', cb),
 
-  // --- Notification Window ---
-  onNotificationLoadImage: (cb: (img: string) => void) =>
-    onChannel('notification-load-image', cb),
-
-  onNotificationLoadFile: (cb: (fileInfo: any) => void) =>
-    onChannel('notification-load-file', cb),
-
-  onNotificationError: (cb: (err: string) => void) =>
-    onChannel('notification-error', cb),
-
-  signalNotificationReady: () => ipcRenderer.send('notification-window-ready'),
-  sendNotificationAction: (action: string) => ipcRenderer.send('notification-action', action),
+  // --- Native System Notifications ---
+  showNotification: (opts: { title: string; body: string }) =>
+    ipcRenderer.invoke('show-notification', opts),
 
   // --- App Lifecycle ---
   signalAppReady: () => ipcRenderer.send('app-ready'),
@@ -147,6 +138,16 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.on('ui:reset', listener);
     return () => ipcRenderer.removeListener('ui:reset', listener);
   },
+
+  // --- Theme & Session (from tray) ---
+  onThemeChanged: (callback: (isDark: boolean) => void) =>
+    onChannel('theme-changed', callback),
+
+  onSessionChanged: (callback: (session: any) => void) =>
+    onChannel('session-changed', callback),
+
+  onPreferencesChanged: (callback: (prefs: any) => void) =>
+    onChannel('preferences-changed', callback),
 });
 
 contextBridge.exposeInMainWorld('copyfy', {

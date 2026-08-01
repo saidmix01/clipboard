@@ -43,11 +43,11 @@ const log = {
 let mainWindow: any
 let ocrWindow: any = null
 let codeWindow: any = null
-let notificationWindow: any = null
-let pendingNotificationImage: any = null
+let settingsWindow: any = null
 let pendingCodeContent: any = null
 let tray: any
 let isQuitting = false
+let rebuildTrayMenu: (() => void) | null = null
 
 // Set app name and ensure userData exists to avoid Lock file error (Error code: 3)
 app.setName('CopyFy');
@@ -69,6 +69,7 @@ if (!gotTheLock) {
   app.on('second-instance', (event: any, commandLine: any, workingDirectory: any) => {
     if (mainWindow) {
       if (mainWindow.isMinimized()) mainWindow.restore()
+      positionWindowAtCursor()
       if (!mainWindow.isVisible()) mainWindow.show()
       mainWindow.focus()
     }
@@ -101,29 +102,52 @@ function broadcastUpdate() {
 
 let cachedSelectedDeviceId: string | null = null
 
+// Position window near mouse cursor, clamped within the display bounds
+function positionWindowAtCursor() {
+  if (!mainWindow) return
+  const cursorPoint = screen.getCursorScreenPoint()
+  const display = screen.getDisplayNearestPoint(cursorPoint)
+  const { x: wX, y: wY, width: wW, height: wH } = display.workArea
+  const [winWidth, winHeight] = mainWindow.getSize()
+
+  // Center the window on the cursor, then clamp to stay within the display
+  let x = cursorPoint.x - Math.round(winWidth / 2)
+  let y = cursorPoint.y - Math.round(winHeight / 2)
+
+  // Clamp to work area bounds
+  if (x < wX) x = wX
+  if (y < wY) y = wY
+  if (x + winWidth > wX + wW) x = wX + wW - winWidth
+  if (y + winHeight > wY + wH) y = wY + wH - winHeight
+
+  mainWindow.setPosition(x, y)
+}
+
 // Window Creation
 function createWindow() {
   const display = screen.getPrimaryDisplay()
   const screenWidth = display.workArea.width
   const screenHeight = display.workArea.height
-  const windowWidth = 400
-  const finalX = screenWidth - windowWidth
+  const windowWidth = 360
+  const windowHeight = 600
+  const finalX = Math.round((screenWidth - windowWidth) / 2)
+  const finalY = Math.round((screenHeight - windowHeight) / 2)
 
   mainWindow = new BrowserWindow({
     width: windowWidth,
-    height: screenHeight,
+    height: windowHeight,
     x: finalX,
-    y: 0,
+    y: finalY,
     frame: false,
     transparent: true,
-    vibrancy: process.platform === 'darwin' ? 'hud' : undefined,
     backgroundColor: '#00FFFFFF',
     alwaysOnTop: true,
     resizable: false,
     show: false,
     skipTaskbar: true,
+    roundedCorners: true,
     webPreferences: {
-      preload: path.join(__dirname, 'preload.js'), // Point to compiled JS
+      preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
       devTools: !app.isPackaged
@@ -148,6 +172,98 @@ function createWindow() {
 
   mainWindow.on('blur', () => {
     // Optional: hide on blur
+  })
+}
+
+let authWindow: any = null
+
+function createAuthWindow() {
+  if (authWindow) {
+    authWindow.focus()
+    return
+  }
+  if (mainWindow && mainWindow.isVisible()) mainWindow.hide()
+
+  const display = screen.getPrimaryDisplay()
+  const width = 320
+  const height = 380
+  const x = Math.round((display.workArea.width - width) / 2)
+  const y = Math.round((display.workArea.height - height) / 2)
+
+  authWindow = new BrowserWindow({
+    width,
+    height,
+    x,
+    y,
+    frame: false,
+    transparent: true,
+    backgroundColor: '#00FFFFFF',
+    resizable: false,
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      devTools: !app.isPackaged
+    }
+  })
+
+  const indexPath = app.isPackaged
+    ? path.join(app.getAppPath(), 'frontend', 'dist', 'index.html')
+    : 'http://127.0.0.1:5173'
+
+  if (app.isPackaged) {
+    authWindow.loadFile(indexPath, { search: 'mode=auth' })
+  } else {
+    authWindow.loadURL(`${indexPath}?mode=auth`)
+  }
+
+  authWindow.on('closed', () => { authWindow = null })
+}
+
+function createSettingsWindow() {
+  if (settingsWindow) {
+    settingsWindow.focus()
+    return
+  }
+  if (mainWindow && mainWindow.isVisible()) mainWindow.hide()
+
+  const display = screen.getPrimaryDisplay()
+  const width = 520
+  const height = 640
+  const x = Math.round((display.workArea.width - width) / 2)
+  const y = Math.round((display.workArea.height - height) / 2)
+
+  settingsWindow = new BrowserWindow({
+    width,
+    height,
+    x,
+    y,
+    title: 'CopyFy++ - Settings',
+    frame: false,
+    transparent: true,
+    backgroundColor: '#00FFFFFF',
+    resizable: false,
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      devTools: !app.isPackaged
+    },
+    autoHideMenuBar: true
+  })
+
+  const indexPath = app.isPackaged
+    ? path.join(app.getAppPath(), 'frontend', 'dist', 'index.html')
+    : 'http://127.0.0.1:5173'
+
+  if (app.isPackaged) {
+    settingsWindow.loadFile(indexPath, { search: 'mode=settings' })
+  } else {
+    settingsWindow.loadURL(`${indexPath}?mode=settings`)
+  }
+
+  settingsWindow.on('closed', () => {
+    settingsWindow = null
   })
 }
 
@@ -266,55 +382,6 @@ function createCodeWindow(codeContent: string) {
     })
 }
 
-function createNotificationWindow() {
-    if (notificationWindow) {
-        notificationWindow.focus()
-        return
-    }
-
-    const display = screen.getPrimaryDisplay()
-    const width = 350
-    const height = 100
-    const x = display.workArea.width - width - 20
-    let y = display.workArea.height - height - 20
-
-    if (process.platform === 'darwin') {
-        y = 40 // macOS: Arriba a la derecha
-    }
-
-    notificationWindow = new BrowserWindow({
-        width, height, x, y,
-        frame: false,
-        transparent: true,
-        alwaysOnTop: true,
-        resizable: false,
-        skipTaskbar: true,
-        webPreferences: {
-            preload: path.join(__dirname, 'preload.js'),
-            contextIsolation: true,
-            nodeIntegration: false,
-            devTools: !app.isPackaged
-        }
-    })
-
-    const indexPath = app.isPackaged
-      ? path.join(app.getAppPath(), 'frontend', 'dist', 'index.html')
-      : 'http://127.0.0.1:5173'
-    
-    const url = `${indexPath}?mode=notification`
-
-    if (app.isPackaged) {
-       notificationWindow.loadFile(indexPath, { search: 'mode=notification' }).then(() => {
-       })
-    } else {
-       notificationWindow.loadURL(url)
-    }
-
-    notificationWindow.on('closed', () => {
-        notificationWindow = null
-    })
-}
-
 // Handshake listener
 ipcMain.on('code-window-ready', (event: any) => {
     if (codeWindow && pendingCodeContent) {
@@ -336,109 +403,44 @@ ipcMain.on('app-ready', () => {
     }
 })
 
-ipcMain.on('notification-window-ready', () => {
-    if (notificationWindow && pendingNotificationImage) {
-        if (pendingNotificationImage.type === 'image') {
-            const dataUrl = pendingNotificationImage.image.toDataURL()
-            notificationWindow.webContents.send('notification-load-image', dataUrl)
-        } else if (pendingNotificationImage.type === 'file') {
-            // Send file info instead of image
-            notificationWindow.webContents.send('notification-load-file', {
-                name: pendingNotificationImage.fileName,
-                path: pendingNotificationImage.filePath
-            })
-        }
-    }
-})
-
-ipcMain.on('notification-action', async (_: any, action: string) => {
-    if (action === 'save' && pendingNotificationImage) {
-        if (pendingNotificationImage.type === 'image') {
-             try {
-                const { image, hash } = pendingNotificationImage
-                const imagesDir = path.join(app.getPath('userData'), 'images')
-                if (!fs.existsSync(imagesDir)) fs.mkdirSync(imagesDir, { recursive: true })
-                const filename = `${Date.now()}-${hash.substring(0,8)}.png`
-                const filePath = path.join(imagesDir, filename)
-                fs.writeFileSync(filePath, image.toPNG())
-                
-                // Usar BackendDaemon para guardar con deviceId
-                const backendDaemon = BackendDaemon.getInstance()
-                const result = backendDaemon.saveClipboardItem(`[LOCAL_IMAGE]:${filePath}`, 'image')
-                
-                if (result) {
-                    broadcastUpdate()
-                    
-                    // Encolar para sincronización
-                    const syncEngine = SyncEngine.getInstance()
-                    syncEngine.enqueueItem(result.id, 'CREATE').catch(err => {
-                        log.error('Failed to enqueue image for sync:', err)
-                    })
-                }
-            } catch(e) {
-                log.error('Error saving image:', e)
-            }
-        } else if (pendingNotificationImage.type === 'file') {
-             try {
-                 const { filePath } = pendingNotificationImage
-                 if (fs.existsSync(filePath)) {
-                     const backend = BackendDaemon.getInstance();
-                     const form = new FormData();
-                     form.append('file', fs.createReadStream(filePath));
-                     
-                     // Get selected device ID
-                     const deviceId = db.getSettings().selectedDeviceId;
-
-                     // Upload immediately using the correct endpoint
-                     const res = await backend.request({
-                         url: '/api/files/upload',
-                         method: 'POST',
-                         data: form,
-                         headers: { 
-                             ...form.getHeaders(),
-                             'x-device-id': deviceId
-                         }
-                     });
-                     
-                     if (res.success) {
-                         if (notificationWindow && !notificationWindow.isDestroyed()) {
-                             notificationWindow.close();
-                         }
-                         // Broadcast update so the list refreshes
-                         broadcastUpdate();
-                         if (mainWindow && !mainWindow.isDestroyed()) {
-                             mainWindow.webContents.send('file-uploaded', res.data);
-                         }
-                     } else {
-                         // Upload failed (e.g. offline)
-                         log.error('Upload failed:', res.error);
-                         if (notificationWindow && !notificationWindow.isDestroyed()) {
-                             // Send error to notification window to display
-                             notificationWindow.webContents.send('notification-error', 'Error al subir: ' + (res.error || 'Sin conexión'));
-                         }
-                     }
-                 }
-             } catch(e: any) {
-                 log.error('Error saving file:', e)
-                 if (notificationWindow && !notificationWindow.isDestroyed()) {
-                     notificationWindow.webContents.send('notification-error', 'Error local: ' + e.message);
-                 }
-             }
-             return; // Don't close window here, handled inside
-        }
-    }
-    
-    // Close for cancel or non-file saves (images close immediately as they save locally)
-    if (notificationWindow && !notificationWindow.isDestroyed()) {
-        notificationWindow.close()
-    }
-    pendingNotificationImage = null;
-})
-
 // Clipboard Watcher
 let lastText = ''
 let lastImageHash = ''
 let clipboardWatcherInterval: NodeJS.Timeout | null = null
+
+// --- Helper: Guardar imagen directamente y mostrar notificación nativa ---
+function saveImageDirectly(image: any, hash: string) {
+  try {
+    const imagesDir = path.join(app.getPath('userData'), 'images')
+    if (!fs.existsSync(imagesDir)) fs.mkdirSync(imagesDir, { recursive: true })
+    const filename = `${Date.now()}-${hash.substring(0,8)}.png`
+    const filePath = path.join(imagesDir, filename)
+    fs.writeFileSync(filePath, image.toPNG())
+
+    const backendDaemon = BackendDaemon.getInstance()
+    const result = backendDaemon.saveClipboardItem(`[LOCAL_IMAGE]:${filePath}`, 'image')
+
+    if (result) {
+      broadcastUpdate()
+      const syncEngine = SyncEngine.getInstance()
+      syncEngine.enqueueItem(result.id, 'CREATE').catch(err => {
+        log.error('Failed to enqueue image for sync:', err)
+      })
+    }
+
+    // Notificación nativa del sistema
+    if (Notification.isSupported()) {
+      const notif = new Notification({
+        title: 'CopyFy++',
+        body: 'Imagen guardada en el portapapeles',
+        icon: path.join(__dirname, 'frontend', 'media', '64x64.png')
+      })
+      notif.show()
+    }
+  } catch (e) {
+    log.error('Error saving image:', e)
+  }
+}
 
 function startClipboardWatcher() {
   // Prevenir múltiples watchers
@@ -475,8 +477,7 @@ function startClipboardWatcher() {
         const hash = crypto.createHash('md5').update(buffer).digest('hex')
         if (hash !== lastImageHash) {
             lastImageHash = hash
-            pendingNotificationImage = { image, hash, type: 'image' }
-            createNotificationWindow()
+            saveImageDirectly(image, hash)
         }
       }
 
@@ -546,21 +547,9 @@ function startClipboardWatcher() {
                        if (isImage) {
                             // If it's an image file, treat it as an IMAGE type so it shows preview and saves to Image tab
                             const image = nativeImage.createFromPath(detectedFilePath);
-                            pendingNotificationImage = { 
-                                image, 
-                                hash: fileHash, 
-                                type: 'image' 
-                            };
-                       } else {
-                            // Otherwise treat as generic document/file
-                            pendingNotificationImage = { 
-                                filePath: detectedFilePath, 
-                                fileName: path.basename(detectedFilePath),
-                                hash: fileHash,
-                                type: 'file'
-                            };
+                            saveImageDirectly(image, fileHash)
                        }
-                       createNotificationWindow();
+                       // Non-image files are ignored by the watcher — user uploads manually
                    }
                }
            } catch(e) {
@@ -795,23 +784,45 @@ ipcMain.handle('set-config', (_: any, key: string, value: string) => {
         try {
             const v = JSON.parse(value)
             db.updateSettings({ AccessToken: v.token, RefreshToken: v.refreshToken })
+            if (rebuildTrayMenu) rebuildTrayMenu()
         } catch(e) {}
     }
     if (key === 'darkMode') {
         db.updateSettings({ IsDarkMode: value === 'true' })
+        if (rebuildTrayMenu) rebuildTrayMenu()
+        // Notify all windows
+        BrowserWindow.getAllWindows().forEach((win: any) => {
+            if (!win.isDestroyed()) {
+                win.webContents.send('theme-changed', value === 'true')
+            }
+        })
     }
 })
 
 ipcMain.handle('remove-config', (_: any, key: string) => {
     if (key === 'session') {
         db.updateSettings({ AccessToken: null, RefreshToken: null })
+        if (rebuildTrayMenu) rebuildTrayMenu()
     }
 })
 
 ipcMain.handle('get-app-version', () => app.getVersion())
 ipcMain.handle('get-system-locale', () => app.getLocale())
 ipcMain.handle('get-hostname', () => os.hostname())
+
+// --- Native System Notifications ---
+ipcMain.handle('show-notification', (_: any, opts: { title: string; body: string }) => {
+  if (Notification.isSupported()) {
+    const notif = new Notification({
+      title: opts.title || 'CopyFy++',
+      body: opts.body || '',
+      icon: path.join(__dirname, 'frontend', 'media', '64x64.png')
+    })
+    notif.show()
+  }
+})
 ipcMain.handle('hide-window', () => mainWindow && mainWindow.hide())
+ipcMain.handle('open-settings', () => createSettingsWindow())
 ipcMain.handle('close-window', () => {
     const win = BrowserWindow.getFocusedWindow()
     if (win && win !== mainWindow) win.close()
@@ -843,6 +854,26 @@ ipcMain.handle('set-preferences', (_: any, prefs: any) => {
     
     if (dbUpdate.GlobalShortcut) {
         ipcMain.emit('update-global-shortcut', null, dbUpdate.GlobalShortcut)
+    }
+
+    if (rebuildTrayMenu) rebuildTrayMenu()
+
+    // Broadcast preference changes to all windows
+    const broadcastData: any = {}
+    if (prefs.colorPrimary) broadcastData.colorPrimary = prefs.colorPrimary
+    if (prefs.colorSecondary) broadcastData.colorSecondary = prefs.colorSecondary
+    if (prefs.colorBg) broadcastData.colorBg = prefs.colorBg
+    if (prefs.colorSurface) broadcastData.colorSurface = prefs.colorSurface
+    if (prefs.colorText) broadcastData.colorText = prefs.colorText
+    if (prefs.fontSize) broadcastData.fontSize = prefs.fontSize
+    if (prefs.language) broadcastData.language = prefs.language
+
+    if (Object.keys(broadcastData).length > 0) {
+      BrowserWindow.getAllWindows().forEach((win: any) => {
+        if (!win.isDestroyed()) {
+          win.webContents.send('preferences-changed', broadcastData)
+        }
+      })
     }
     
     return newSettings
@@ -944,13 +975,97 @@ app.whenReady().then(async () => {
 
   if (fs.existsSync(iconPath)) {
       tray = new Tray(nativeImage.createFromPath(iconPath))
-      const contextMenu = Menu.buildFromTemplate([
-        { label: 'Show', click: () => mainWindow.show() },
-        { label: 'Quit', click: () => { isQuitting = true; app.quit() } }
-      ])
-      tray.setToolTip('Copyfy Local')
-      tray.setContextMenu(contextMenu)
-      tray.on('click', () => mainWindow.isVisible() ? mainWindow.hide() : mainWindow.show())
+
+      const buildTrayMenu = () => {
+        const settings = db.getSettings()
+        const isDark = settings.isDarkMode
+        const hasSession = !!settings.accessToken
+        const lang = settings.language || 'en'
+        const isEn = lang.startsWith('en')
+
+        const template: any[] = [
+          {
+            label: isEn ? 'Show CopyFy++' : 'Mostrar CopyFy++',
+            click: () => {
+              positionWindowAtCursor()
+              mainWindow.show()
+              mainWindow.focus()
+            }
+          },
+          { type: 'separator' },
+          {
+            label: isDark ? (isEn ? 'Light mode' : 'Modo claro') : (isEn ? 'Dark mode' : 'Modo oscuro'),
+            click: () => {
+              const newDark = !isDark
+              db.updateSettings({ IsDarkMode: newDark })
+              if (mainWindow && !mainWindow.isDestroyed()) {
+                mainWindow.webContents.send('theme-changed', newDark)
+              }
+              buildTrayMenu()
+            }
+          },
+          ...(hasSession ? [
+            {
+              label: isEn ? 'Log out' : 'Cerrar sesión',
+              click: async () => {
+                db.updateSettings({ AccessToken: null, RefreshToken: null })
+                if (mainWindow && !mainWindow.isDestroyed()) {
+                  mainWindow.webContents.send('session-changed', null)
+                }
+                buildTrayMenu()
+              }
+            }
+          ] : [
+            {
+              label: isEn ? 'Log in' : 'Iniciar sesión',
+              click: () => { mainWindow.hide(); createAuthWindow() }
+            }
+          ]),
+          { type: 'separator' },
+          {
+            label: isEn ? 'Settings' : 'Configuración',
+            click: () => { mainWindow.hide(); createSettingsWindow() }
+          },
+          {
+            label: isEn ? 'Sync' : 'Sincronizar',
+            click: () => {
+              const se = SyncEngine.getInstance()
+              se.syncNow().catch(() => {})
+            }
+          },
+          { type: 'separator' },
+          {
+            label: isEn ? 'Quit' : 'Salir',
+            click: () => { isQuitting = true; app.quit() }
+          }
+        ]
+
+        const contextMenu = Menu.buildFromTemplate(template)
+        tray.setContextMenu(contextMenu)
+      }
+
+      buildTrayMenu()
+      rebuildTrayMenu = buildTrayMenu
+      tray.setToolTip('CopyFy++')
+
+      // Rebuild tray menu when auth state changes
+      ipcMain.on('auth:login-success', () => {
+        buildTrayMenu()
+        // Notify main window to reload session
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.webContents.send('session-changed', 'logged-in')
+        }
+      })
+
+      tray.on('click', () => {
+          if (mainWindow.isVisible()) {
+              mainWindow.hide()
+          } else {
+              positionWindowAtCursor()
+              mainWindow.show()
+              mainWindow.focus()
+          }
+      })
   }
 
   startClipboardWatcher()
@@ -964,6 +1079,7 @@ app.whenReady().then(async () => {
           const ret = globalShortcut.register(accelerator, () => {
               if (mainWindow.isVisible()) mainWindow.hide()
               else {
+                  positionWindowAtCursor()
                   mainWindow.show()
                   mainWindow.focus()
               }

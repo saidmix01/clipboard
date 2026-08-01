@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { ComputerDesktopIcon } from '@heroicons/react/24/outline'
-import { toast } from 'react-hot-toast'
+import { notifySuccess, notifyError } from '../utils/notify'
 import { useTranslation } from 'react-i18next'
 
 type Props = {
@@ -50,11 +50,11 @@ export default function DeviceRegistrationModal({ onSuccess }: Props) {
       setLoading(true)
       try {
           await (window as any).electronAPI?.registerNewDevice?.(deviceName)
-          toast.success(t('device.registered'))
+          notifySuccess(t('device.registered'))
           setOpen(false)
           onSuccess()
       } catch (err) {
-          toast.error(t('device.register_error'))
+          notifyError(t('device.register_error'))
       } finally {
           setLoading(false)
       }

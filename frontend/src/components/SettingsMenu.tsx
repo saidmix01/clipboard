@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react'
 import DetailsModal from './DetailsModal'
 import { ArrowPathIcon, MoonIcon, SunIcon, TrashIcon, InformationCircleIcon, Cog6ToothIcon, ChevronLeftIcon, GlobeAltIcon, ComputerDesktopIcon, CloudArrowUpIcon } from '@heroicons/react/24/outline'
 import { useTranslation } from 'react-i18next'
-import toast from 'react-hot-toast'
+import { notify, notifySuccess, notifyError } from '../utils/notify'
 
 type Props = {
   open: boolean
@@ -119,7 +119,7 @@ export default function SettingsMenu({ open, darkMode, onClose, onForceUpdate, o
   const handleSyncNow = async () => {
     try {
       setIsSyncing(true)
-      toast.loading(t('settings.syncing'), { id: 'sync-toast' })
+      notify(t('settings.syncing'))
       
       // Verificar que la API existe
       if (!(window as any).electronAPI?.syncNow) {
@@ -137,9 +137,9 @@ export default function SettingsMenu({ open, darkMode, onClose, onForceUpdate, o
       
       if (result) {
         setSyncStats(result)
-        toast.success(t('notifications.sync_completed'), { id: 'sync-toast' })
+        notifySuccess(t('notifications.sync_completed'))
       } else {
-        toast.error(t('notifications.sync_failed'), { id: 'sync-toast' })
+        notifyError(t('notifications.sync_failed'))
       }
     } catch (e: any) {
       console.error('Error syncing:', e)
@@ -148,7 +148,7 @@ export default function SettingsMenu({ open, darkMode, onClose, onForceUpdate, o
         : e.message === 'Sync API not available'
         ? 'API de sincronización no disponible. Recompila el proyecto.'
         : t('notifications.sync_failed')
-      toast.error(errorMsg, { id: 'sync-toast' })
+      notifyError(errorMsg)
     } finally {
       setIsSyncing(false)
     }

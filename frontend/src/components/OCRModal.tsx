@@ -2,7 +2,7 @@ import { motion, AnimatePresence } from 'framer-motion'
 import { useEffect, useState } from 'react'
 import Tesseract from 'tesseract.js'
 import { DocumentTextIcon, XMarkIcon, ClipboardDocumentIcon } from '@heroicons/react/24/outline'
-import { toast } from 'react-hot-toast'
+import { notifySuccess, notifyError } from '../utils/notify'
 
 type Props = {
   isOpen: boolean
@@ -66,7 +66,7 @@ export default function OCRModal({ isOpen, imageUrl, onClose }: Props) {
         setText(result.data.text)
     } catch (err) {
         console.error(err)
-        toast.error('Error al extraer texto')
+        notifyError('Error al extraer texto')
     } finally {
         setProcessing(false)
     }
@@ -75,7 +75,7 @@ export default function OCRModal({ isOpen, imageUrl, onClose }: Props) {
   const handleCopy = () => {
       if (text) {
           ;(window as any).electronAPI?.copyText?.(text)
-          toast.success('Texto copiado')
+          notifySuccess('Texto copiado')
           onClose()
       }
   }

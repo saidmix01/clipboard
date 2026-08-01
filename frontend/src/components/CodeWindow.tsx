@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import Editor from '@monaco-editor/react'
 import { ClipboardDocumentIcon } from '@heroicons/react/24/outline'
-import { Toaster, toast } from 'react-hot-toast'
+import { notifySuccess } from '../utils/notify'
 import WindowShell from './WindowShell'
 
 export default function CodeWindow() {
@@ -61,12 +61,11 @@ export default function CodeWindow() {
 
   const handleCopy = () => {
       ;(window as any).electronAPI?.copyText?.(content)
-      toast.success('Copiado al portapapeles')
+      notifySuccess('Copiado al portapapeles')
   }
 
   return (
     <WindowShell title="Editor de Código">
-      <Toaster position="bottom-right" />
       <div className="flex flex-col h-full">
           {/* Toolbar */}
           <div className="h-12 bg-[color:var(--color-surface)] border-b border-[color:var(--color-border)] flex items-center justify-between px-4 shrink-0">

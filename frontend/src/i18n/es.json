@@ -31,7 +31,9 @@
     "font_size": "Tamaño fuente",
     "language": "Idioma",
     "lang_en": "Inglés",
-    "lang_es": "Español"
+    "lang_es": "Español",
+    "danger_zone": "Zona de peligro",
+    "appearance": "Apariencia"
   },
   "search_placeholder": "Buscar en el historial…",
   "quick_search_placeholder": "Buscar…",
@@ -66,7 +68,8 @@
     "loading_docs": "Cargando documentos...",
     "loading": "Cargando…",
     "login_required_docs": "Debes iniciar sesión para acceder a los documentos",
-    "login_button": "Iniciar sesión"
+    "login_button": "Iniciar sesión",
+    "close": "Cerrar"
   },
   "auth": {
     "login_title": "Iniciar sesión",
@@ -90,7 +93,13 @@
     "error_login": "Error en login",
     "error_register": "Error en registro",
     "error_credentials": "Credenciales inválidas",
-    "confirm_password_placeholder": "Confirmar contraseña"
+    "confirm_password_placeholder": "Confirmar contraseña",
+    "register_subtitle": "Crea tu cuenta para sincronizar",
+    "login_subtitle": "Inicia sesión para sincronizar",
+    "have_account": "¿Ya tienes cuenta? Inicia sesión",
+    "no_account": "¿No tienes cuenta? Regístrate",
+    "register_success": "Cuenta creada",
+    "login_success": "Sesión iniciada"
   },
   "user": {
     "title": "Datos del usuario",
@@ -134,6 +143,7 @@
   "about": {
     "title": "Acerca de Copyfy++",
     "version": "Versión",
+    "description": "Gestor de portapapeles con sincronización en la nube",
     "whats_new": "Novedades",
     "github": "GitHub",
     "back": "Atrás"
@@ -152,6 +162,7 @@
     "login": "Iniciar sesión",
     "register": "Registrarse",
     "filters": "Filtros",
+    "filter_all": "Todo",
     "filter_text": "Texto",
     "filter_image": "Imagen",
     "filter_favorites": "Favoritos",
@@ -228,5 +239,13 @@
     "next": "Siguiente",
     "done": "Entendido",
     "no_show_again": "No volverás a ver esta guía al completar."
+  },
+  "time": {
+    "now": "Ahora",
+    "mins_ago": "Hace {{mins}} min",
+    "hours_ago": "Hace {{hours}}h"
+  },
+  "card": {
+    "image_copied": "Imagen copiada"
   }
 }

@@ -26,11 +26,13 @@ const log = {
 let mainWindow;
 let ocrWindow = null;
 let codeWindow = null;
+let settingsWindow = null;
 let notificationWindow = null;
 let pendingNotificationImage = null;
 let pendingCodeContent = null;
 let tray;
 let isQuitting = false;
+let rebuildTrayMenu = null;
 // Set app name and ensure userData exists to avoid Lock file error (Error code: 3)
 app.setName('CopyFy');
 // app.setAppUserModelId('SAIDMIX.CopyFy'); // Optional if needed for notifications
@@ -53,6 +55,7 @@ else {
         if (mainWindow) {
             if (mainWindow.isMinimized())
                 mainWindow.restore();
+            positionWindowAtCursor();
             if (!mainWindow.isVisible())
                 mainWindow.show();
             mainWindow.focus();
@@ -80,28 +83,52 @@ function broadcastUpdate() {
     }
 }
 let cachedSelectedDeviceId = null;
+// Position window near mouse cursor, clamped within the display bounds
+function positionWindowAtCursor() {
+    if (!mainWindow)
+        return;
+    const cursorPoint = screen.getCursorScreenPoint();
+    const display = screen.getDisplayNearestPoint(cursorPoint);
+    const { x: wX, y: wY, width: wW, height: wH } = display.workArea;
+    const [winWidth, winHeight] = mainWindow.getSize();
+    // Center the window on the cursor, then clamp to stay within the display
+    let x = cursorPoint.x - Math.round(winWidth / 2);
+    let y = cursorPoint.y - Math.round(winHeight / 2);
+    // Clamp to work area bounds
+    if (x < wX)
+        x = wX;
+    if (y < wY)
+        y = wY;
+    if (x + winWidth > wX + wW)
+        x = wX + wW - winWidth;
+    if (y + winHeight > wY + wH)
+        y = wY + wH - winHeight;
+    mainWindow.setPosition(x, y);
+}
 // Window Creation
 function createWindow() {
     const display = screen.getPrimaryDisplay();
     const screenWidth = display.workArea.width;
     const screenHeight = display.workArea.height;
-    const windowWidth = 400;
-    const finalX = screenWidth - windowWidth;
+    const windowWidth = 360;
+    const windowHeight = 600;
+    const finalX = Math.round((screenWidth - windowWidth) / 2);
+    const finalY = Math.round((screenHeight - windowHeight) / 2);
     mainWindow = new BrowserWindow({
         width: windowWidth,
-        height: screenHeight,
+        height: windowHeight,
         x: finalX,
-        y: 0,
+        y: finalY,
         frame: false,
         transparent: true,
-        vibrancy: process.platform === 'darwin' ? 'hud' : undefined,
         backgroundColor: '#00FFFFFF',
         alwaysOnTop: true,
         resizable: false,
         show: false,
         skipTaskbar: true,
+        roundedCorners: true,
         webPreferences: {
-            preload: path.join(__dirname, 'preload.js'), // Point to compiled JS
+            preload: path.join(__dirname, 'preload.js'),
             contextIsolation: true,
             nodeIntegration: false,
             devTools: !app.isPackaged
@@ -123,6 +150,89 @@ function createWindow() {
     });
     mainWindow.on('blur', () => {
         // Optional: hide on blur
+    });
+}
+let authWindow = null;
+function createAuthWindow() {
+    if (authWindow) {
+        authWindow.focus();
+        return;
+    }
+    if (mainWindow && mainWindow.isVisible())
+        mainWindow.hide();
+    const display = screen.getPrimaryDisplay();
+    const width = 320;
+    const height = 380;
+    const x = Math.round((display.workArea.width - width) / 2);
+    const y = Math.round((display.workArea.height - height) / 2);
+    authWindow = new BrowserWindow({
+        width,
+        height,
+        x,
+        y,
+        frame: false,
+        transparent: true,
+        backgroundColor: '#00FFFFFF',
+        resizable: false,
+        webPreferences: {
+            preload: path.join(__dirname, 'preload.js'),
+            contextIsolation: true,
+            nodeIntegration: false,
+            devTools: !app.isPackaged
+        }
+    });
+    const indexPath = app.isPackaged
+        ? path.join(app.getAppPath(), 'frontend', 'dist', 'index.html')
+        : 'http://127.0.0.1:5173';
+    if (app.isPackaged) {
+        authWindow.loadFile(indexPath, { search: 'mode=auth' });
+    }
+    else {
+        authWindow.loadURL(`${indexPath}?mode=auth`);
+    }
+    authWindow.on('closed', () => { authWindow = null; });
+}
+function createSettingsWindow() {
+    if (settingsWindow) {
+        settingsWindow.focus();
+        return;
+    }
+    if (mainWindow && mainWindow.isVisible())
+        mainWindow.hide();
+    const display = screen.getPrimaryDisplay();
+    const width = 520;
+    const height = 640;
+    const x = Math.round((display.workArea.width - width) / 2);
+    const y = Math.round((display.workArea.height - height) / 2);
+    settingsWindow = new BrowserWindow({
+        width,
+        height,
+        x,
+        y,
+        title: 'CopyFy++ - Settings',
+        frame: false,
+        transparent: true,
+        backgroundColor: '#00FFFFFF',
+        resizable: false,
+        webPreferences: {
+            preload: path.join(__dirname, 'preload.js'),
+            contextIsolation: true,
+            nodeIntegration: false,
+            devTools: !app.isPackaged
+        },
+        autoHideMenuBar: true
+    });
+    const indexPath = app.isPackaged
+        ? path.join(app.getAppPath(), 'frontend', 'dist', 'index.html')
+        : 'http://127.0.0.1:5173';
+    if (app.isPackaged) {
+        settingsWindow.loadFile(indexPath, { search: 'mode=settings' });
+    }
+    else {
+        settingsWindow.loadURL(`${indexPath}?mode=settings`);
+    }
+    settingsWindow.on('closed', () => {
+        settingsWindow = null;
     });
 }
 function createOCRWindow(imagePath) {
@@ -414,8 +524,7 @@ function startClipboardWatcher() {
                 const hash = crypto.createHash('md5').update(buffer).digest('hex');
                 if (hash !== lastImageHash) {
                     lastImageHash = hash;
-                    pendingNotificationImage = { image, hash, type: 'image' };
-                    createNotificationWindow();
+                    saveImageDirectly(image, hash);
                 }
             }
             // 2. Detect Files
@@ -481,22 +590,12 @@ function startClipboardWatcher() {
                             if (isImage) {
                                 // If it's an image file, treat it as an IMAGE type so it shows preview and saves to Image tab
                                 const image = nativeImage.createFromPath(detectedFilePath);
-                                pendingNotificationImage = {
-                                    image,
-                                    hash: fileHash,
-                                    type: 'image'
-                                };
+                                saveImageDirectly(image, fileHash);
                             }
                             else {
                                 // Otherwise treat as generic document/file
-                                pendingNotificationImage = {
-                                    filePath: detectedFilePath,
-                                    fileName: path.basename(detectedFilePath),
-                                    hash: fileHash,
-                                    type: 'file'
-                                };
+                                saveFileDirectly(detectedFilePath, path.basename(detectedFilePath));
                             }
-                            createNotificationWindow();
                         }
                     }
                 }
@@ -717,22 +816,46 @@ ipcMain.handle('set-config', (_, key, value) => {
         try {
             const v = JSON.parse(value);
             db.updateSettings({ AccessToken: v.token, RefreshToken: v.refreshToken });
+            if (rebuildTrayMenu)
+                rebuildTrayMenu();
         }
         catch (e) { }
     }
     if (key === 'darkMode') {
         db.updateSettings({ IsDarkMode: value === 'true' });
+        if (rebuildTrayMenu)
+            rebuildTrayMenu();
+        // Notify all windows
+        BrowserWindow.getAllWindows().forEach((win) => {
+            if (!win.isDestroyed()) {
+                win.webContents.send('theme-changed', value === 'true');
+            }
+        });
     }
 });
 ipcMain.handle('remove-config', (_, key) => {
     if (key === 'session') {
         db.updateSettings({ AccessToken: null, RefreshToken: null });
+        if (rebuildTrayMenu)
+            rebuildTrayMenu();
     }
 });
 ipcMain.handle('get-app-version', () => app.getVersion());
 ipcMain.handle('get-system-locale', () => app.getLocale());
 ipcMain.handle('get-hostname', () => os.hostname());
+// --- Native System Notifications ---
+ipcMain.handle('show-notification', (_, opts) => {
+    if (Notification.isSupported()) {
+        const notif = new Notification({
+            title: opts.title || 'CopyFy++',
+            body: opts.body || '',
+            icon: path.join(__dirname, 'frontend', 'media', '64x64.png')
+        });
+        notif.show();
+    }
+});
 ipcMain.handle('hide-window', () => mainWindow && mainWindow.hide());
+ipcMain.handle('open-settings', () => createSettingsWindow());
 ipcMain.handle('close-window', () => {
     const win = BrowserWindow.getFocusedWindow();
     if (win && win !== mainWindow)
@@ -770,6 +893,31 @@ ipcMain.handle('set-preferences', (_, prefs) => {
     const newSettings = db.updateSettings(dbUpdate);
     if (dbUpdate.GlobalShortcut) {
         ipcMain.emit('update-global-shortcut', null, dbUpdate.GlobalShortcut);
+    }
+    if (rebuildTrayMenu)
+        rebuildTrayMenu();
+    // Broadcast preference changes to all windows
+    const broadcastData = {};
+    if (prefs.colorPrimary)
+        broadcastData.colorPrimary = prefs.colorPrimary;
+    if (prefs.colorSecondary)
+        broadcastData.colorSecondary = prefs.colorSecondary;
+    if (prefs.colorBg)
+        broadcastData.colorBg = prefs.colorBg;
+    if (prefs.colorSurface)
+        broadcastData.colorSurface = prefs.colorSurface;
+    if (prefs.colorText)
+        broadcastData.colorText = prefs.colorText;
+    if (prefs.fontSize)
+        broadcastData.fontSize = prefs.fontSize;
+    if (prefs.language)
+        broadcastData.language = prefs.language;
+    if (Object.keys(broadcastData).length > 0) {
+        BrowserWindow.getAllWindows().forEach((win) => {
+            if (!win.isDestroyed()) {
+                win.webContents.send('preferences-changed', broadcastData);
+            }
+        });
     }
     return newSettings;
 });
@@ -853,13 +1001,92 @@ app.whenReady().then(async () => {
     }
     if (fs.existsSync(iconPath)) {
         tray = new Tray(nativeImage.createFromPath(iconPath));
-        const contextMenu = Menu.buildFromTemplate([
-            { label: 'Show', click: () => mainWindow.show() },
-            { label: 'Quit', click: () => { isQuitting = true; app.quit(); } }
-        ]);
-        tray.setToolTip('Copyfy Local');
-        tray.setContextMenu(contextMenu);
-        tray.on('click', () => mainWindow.isVisible() ? mainWindow.hide() : mainWindow.show());
+        const buildTrayMenu = () => {
+            const settings = db.getSettings();
+            const isDark = settings.isDarkMode;
+            const hasSession = !!settings.accessToken;
+            const lang = settings.language || 'en';
+            const isEn = lang.startsWith('en');
+            const template = [
+                {
+                    label: isEn ? 'Show CopyFy++' : 'Mostrar CopyFy++',
+                    click: () => {
+                        positionWindowAtCursor();
+                        mainWindow.show();
+                        mainWindow.focus();
+                    }
+                },
+                { type: 'separator' },
+                {
+                    label: isDark ? (isEn ? 'Light mode' : 'Modo claro') : (isEn ? 'Dark mode' : 'Modo oscuro'),
+                    click: () => {
+                        const newDark = !isDark;
+                        db.updateSettings({ IsDarkMode: newDark });
+                        if (mainWindow && !mainWindow.isDestroyed()) {
+                            mainWindow.webContents.send('theme-changed', newDark);
+                        }
+                        buildTrayMenu();
+                    }
+                },
+                ...(hasSession ? [
+                    {
+                        label: isEn ? 'Log out' : 'Cerrar sesión',
+                        click: async () => {
+                            db.updateSettings({ AccessToken: null, RefreshToken: null });
+                            if (mainWindow && !mainWindow.isDestroyed()) {
+                                mainWindow.webContents.send('session-changed', null);
+                            }
+                            buildTrayMenu();
+                        }
+                    }
+                ] : [
+                    {
+                        label: isEn ? 'Log in' : 'Iniciar sesión',
+                        click: () => { mainWindow.hide(); createAuthWindow(); }
+                    }
+                ]),
+                { type: 'separator' },
+                {
+                    label: isEn ? 'Settings' : 'Configuración',
+                    click: () => { mainWindow.hide(); createSettingsWindow(); }
+                },
+                {
+                    label: isEn ? 'Sync' : 'Sincronizar',
+                    click: () => {
+                        const se = SyncEngine_1.SyncEngine.getInstance();
+                        se.syncNow().catch(() => { });
+                    }
+                },
+                { type: 'separator' },
+                {
+                    label: isEn ? 'Quit' : 'Salir',
+                    click: () => { isQuitting = true; app.quit(); }
+                }
+            ];
+            const contextMenu = Menu.buildFromTemplate(template);
+            tray.setContextMenu(contextMenu);
+        };
+        buildTrayMenu();
+        rebuildTrayMenu = buildTrayMenu;
+        tray.setToolTip('CopyFy++');
+        // Rebuild tray menu when auth state changes
+        ipcMain.on('auth:login-success', () => {
+            buildTrayMenu();
+            // Notify main window to reload session
+            if (mainWindow && !mainWindow.isDestroyed()) {
+                mainWindow.webContents.send('session-changed', 'logged-in');
+            }
+        });
+        tray.on('click', () => {
+            if (mainWindow.isVisible()) {
+                mainWindow.hide();
+            }
+            else {
+                positionWindowAtCursor();
+                mainWindow.show();
+                mainWindow.focus();
+            }
+        });
     }
     startClipboardWatcher();
     const settings = db.getSettings();
@@ -871,6 +1098,7 @@ app.whenReady().then(async () => {
                 if (mainWindow.isVisible())
                     mainWindow.hide();
                 else {
+                    positionWindowAtCursor();
                     mainWindow.show();
                     mainWindow.focus();
                 }

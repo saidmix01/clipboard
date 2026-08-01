@@ -95,6 +95,8 @@ electron_1.contextBridge.exposeInMainWorld('electronAPI', {
     onNotificationError: (cb) => onChannel('notification-error', cb),
     signalNotificationReady: () => electron_1.ipcRenderer.send('notification-window-ready'),
     sendNotificationAction: (action) => electron_1.ipcRenderer.send('notification-action', action),
+    // --- Native System Notifications ---
+    showNotification: (opts) => electron_1.ipcRenderer.invoke('show-notification', opts),
     // --- App Lifecycle ---
     signalAppReady: () => electron_1.ipcRenderer.send('app-ready'),
     // --- UI Reset (show/hide window) ---
@@ -103,6 +105,10 @@ electron_1.contextBridge.exposeInMainWorld('electronAPI', {
         electron_1.ipcRenderer.on('ui:reset', listener);
         return () => electron_1.ipcRenderer.removeListener('ui:reset', listener);
     },
+    // --- Theme & Session (from tray) ---
+    onThemeChanged: (callback) => onChannel('theme-changed', callback),
+    onSessionChanged: (callback) => onChannel('session-changed', callback),
+    onPreferencesChanged: (callback) => onChannel('preferences-changed', callback),
 });
 electron_1.contextBridge.exposeInMainWorld('copyfy', {
     getSystemLocale: () => electron_1.ipcRenderer.invoke('get-system-locale'),
