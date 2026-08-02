@@ -22,6 +22,7 @@ const FormData = require('form-data')
 import { BackendDaemon } from './backend/BackendDaemon';
 import { SyncEngine } from './backend/SyncEngine';
 import { normalizeForIPC } from './backend/ipc-utils';
+const { autoUpdater } = require('electron-updater');
 
 const db = require('./db')
 const { configureAutoLaunch } = require('./autolaunch')
@@ -1111,6 +1112,44 @@ app.whenReady().then(async () => {
       db.updateSettings({ GlobalShortcut: newShortcut })
       registerShortcut(newShortcut)
   })
+
+  // --- Auto-actualización (independiente del login) ---
+  if (app.isPackaged) {
+    autoUpdater.autoDownload = true
+    autoUpdater.autoInstallOnAppQuit = true
+
+    autoUpdater.on('update-available', (info: any) => {
+      log.info('[Updater] Update available:', info.version)
+    })
+
+    autoUpdater.on('download-progress', (progress: any) => {
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('download-progress', progress)
+      }
+    })
+
+    autoUpdater.on('update-downloaded', (info: any) => {
+      log.info('[Updater] Update downloaded:', info.version)
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('update-downloaded', info.version)
+      }
+    })
+
+    autoUpdater.on('error', (err: any) => {
+      log.error('[Updater] Error:', err?.message || err)
+    })
+
+    // Verificar actualizaciones al iniciar y luego cada 4 horas
+    autoUpdater.checkForUpdatesAndNotify().catch((err: any) => {
+      log.error('[Updater] Check failed:', err?.message || err)
+    })
+
+    setInterval(() => {
+      autoUpdater.checkForUpdatesAndNotify().catch((err: any) => {
+        log.error('[Updater] Periodic check failed:', err?.message || err)
+      })
+    }, 4 * 60 * 60 * 1000)
+  }
 })
 
 app.on('window-all-closed', () => {

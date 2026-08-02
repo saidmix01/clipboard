@@ -122,6 +122,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   onDownloadProgress: (cb: (progress: any) => void) =>
     onChannel('download-progress', cb),
 
+  onUpdateDownloaded: (cb: (version: string) => void) =>
+    onChannel('update-downloaded', cb),
+
   // --- Native System Notifications ---
   showNotification: (opts: { title: string; body: string }) =>
     ipcRenderer.invoke('show-notification', opts),
