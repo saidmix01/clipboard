@@ -87,6 +87,7 @@ electron_1.contextBridge.exposeInMainWorld('electronAPI', {
     onFileUploadError: (cb) => onChannel('file-upload-error', cb),
     onFileUploadStatus: (cb) => onChannel('file-upload-status', cb),
     onDownloadProgress: (cb) => onChannel('download-progress', cb),
+    onUpdateDownloaded: (cb) => onChannel('update-downloaded', cb),
     // --- Native System Notifications ---
     showNotification: (opts) => electron_1.ipcRenderer.invoke('show-notification', opts),
     // --- App Lifecycle ---
