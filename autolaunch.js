@@ -20,7 +20,7 @@ function configureAutoLaunch() {
       app.setLoginItemSettings({
         openAtLogin: true,
         path: process.execPath,
-        args: [] // Asegurar sin argumentos extraños
+        args: ['--hidden'] // Iniciar minimizado en la bandeja
       })
       
       const newSettings = app.getLoginItemSettings()

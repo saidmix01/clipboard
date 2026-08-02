@@ -56,6 +56,8 @@ else {
         }
     });
 }
+// Detect if launched at startup (minimized to tray)
+const startHidden = process.argv.includes('--hidden');
 // normalizeForIPC importado desde ./backend/ipc-utils
 // Helper: Broadcast update to main window with correct filtering
 function broadcastUpdate() {
@@ -137,7 +139,8 @@ function createWindow() {
         mainWindow.loadURL(indexPath);
     }
     mainWindow.once('ready-to-show', () => {
-        mainWindow.show();
+        // Clipboard manager: siempre inicia oculto en la bandeja.
+        // El usuario lo muestra con el shortcut global (Alt+X) o clic en tray.
         broadcastUpdate();
     });
 }

@@ -199,6 +199,18 @@ class SyncEngine {
         if (!item.deviceId && currentDeviceId) {
             item.deviceId = currentDeviceId;
         }
+        // Si el item fue eliminado localmente, eliminarlo en el backend
+        if (item.isDeleted) {
+            const delResponse = await this.backendDaemon.request({
+                method: 'DELETE',
+                url: `/clipboard/${item.id}`
+            });
+            // 404 = ya no existe en el backend, considerar éxito
+            if (delResponse.success || delResponse.status === 404) {
+                return 'synced';
+            }
+            throw this.createSyncError(delResponse);
+        }
         let valueToSend = item.value;
         // Convertir imágenes locales a Base64 (lectura async)
         if (item.type === 'image' && typeof item.value === 'string' && item.value.startsWith('[LOCAL_IMAGE]:')) {
@@ -221,8 +233,6 @@ class SyncEngine {
             updatedAt: item.updatedAt || new Date().toISOString(),
             favorite: item.favorite === 1 || item.favorite === true
         };
-        if (item.isDeleted)
-            payload.deleted = true;
         // PUT primero, fallback a POST si 404
         const putResponse = await this.backendDaemon.request({
             method: 'PUT',

@@ -1,6 +1,7 @@
 import { ipcMain, BrowserWindow } from 'electron';
 import axios, { AxiosInstance, AxiosRequestConfig } from 'axios';
 import { normalizeItemForIPC } from './ipc-utils';
+import { RealtimeClient } from './RealtimeClient';
 
 // Import existing DB module (JS)
 const db = require('../db');
@@ -38,6 +39,7 @@ export class BackendDaemon {
     if (!BackendDaemon.instance) {
       BackendDaemon.instance = new BackendDaemon();
       BackendDaemon.instance.initActiveDevice();
+      BackendDaemon.instance.connectRealtimeIfAuthenticated();
     }
     return BackendDaemon.instance;
   }
@@ -53,6 +55,38 @@ export class BackendDaemon {
             const localId = db.ensureLocalDevice();
             if (localId) this.setActiveDevice(localId);
         }
+    }
+  }
+
+  /**
+   * Connect to Supabase Realtime if we have an access token.
+   * Extracts userId from the JWT payload to subscribe to the user's channel.
+   */
+  private connectRealtimeIfAuthenticated(): void {
+    try {
+      const settings = db.getSettings();
+      if (!settings.accessToken) return;
+
+      const userId = this.extractUserIdFromToken(settings.accessToken);
+      if (userId) {
+        RealtimeClient.getInstance().connect(userId);
+      }
+    } catch (err: any) {
+      console.warn('[BackendDaemon] Failed to connect realtime on startup:', err.message);
+    }
+  }
+
+  /**
+   * Extract userId from a JWT access token (decode payload without verification).
+   */
+  private extractUserIdFromToken(token: string): string | null {
+    try {
+      const parts = token.split('.');
+      if (parts.length !== 3) return null;
+      const payload = JSON.parse(Buffer.from(parts[1], 'base64').toString());
+      return payload.id || payload.userId || payload.sub || null;
+    } catch {
+      return null;
     }
   }
 
@@ -291,7 +325,7 @@ export class BackendDaemon {
       try {
           const payload = {
               id: localDevice.Id,
-              clientId: 'client-1',
+              clientId: localDevice.Id,
               name: localDevice.Name,
               metadata: {
                   os: localDevice.OsName,
@@ -354,6 +388,8 @@ export class BackendDaemon {
     // Trigger sync on login success
     ipcMain.on('auth:login-success', () => {
         this.syncDevicesOnLogin();
+        // Connect to realtime after successful login
+        this.connectRealtimeIfAuthenticated();
     });
 
     // Generic proxy for authenticated requests

@@ -22,7 +22,7 @@ class BackendDaemon {
         catch (e) { }
         this.client = axios_1.default.create({
             baseURL: this.baseUrl,
-            timeout: 10000,
+            timeout: 30000,
         });
         this.setupInterceptors();
         this.setupIPC();
