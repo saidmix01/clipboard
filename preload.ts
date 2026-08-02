@@ -106,6 +106,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   selectFile: () => ipcRenderer.invoke('select-file'),
   listFiles: (params: any) => ipcRenderer.invoke('list-files', params),
   uploadFile: (filePath: string) => ipcRenderer.invoke('upload-file', filePath),
+  uploadAvatar: () => ipcRenderer.invoke('upload-avatar'),
   deleteFile: (fileId: string) => ipcRenderer.invoke('delete-file', fileId),
   downloadFile: (fileId: string, fileName: string) => ipcRenderer.invoke('download-file', fileId, fileName),
 

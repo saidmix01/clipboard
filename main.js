@@ -366,15 +366,7 @@ function saveImageDirectly(image, hash) {
                 log.error('Failed to enqueue image for sync:', err);
             });
         }
-        // Notificación nativa del sistema
-        if (Notification.isSupported()) {
-            const notif = new Notification({
-                title: 'CopyFy++',
-                body: 'Imagen guardada en el portapapeles',
-                icon: path.join(__dirname, 'frontend', 'media', '64x64.png')
-            });
-            notif.show();
-        }
+        // Notificación de imagen removida — demasiado frecuente para el usuario
     }
     catch (e) {
         log.error('Error saving image:', e);
@@ -549,6 +541,31 @@ ipcMain.handle('upload-file', async (_, filePath) => {
                 ...form.getHeaders(),
                 'x-device-id': deviceId
             }
+        });
+        return res;
+    }
+    catch (e) {
+        return { success: false, error: e.message };
+    }
+});
+ipcMain.handle('upload-avatar', async () => {
+    try {
+        const { canceled, filePaths } = await dialog.showOpenDialog(mainWindow, {
+            title: 'Select avatar image',
+            filters: [{ name: 'Images', extensions: ['jpg', 'jpeg', 'png', 'gif', 'webp'] }],
+            properties: ['openFile']
+        });
+        if (canceled || !filePaths.length)
+            return { success: false, canceled: true };
+        const filePath = filePaths[0];
+        const backend = BackendDaemon_1.BackendDaemon.getInstance();
+        const form = new FormData();
+        form.append('avatar', fs.createReadStream(filePath));
+        const res = await backend.request({
+            url: '/users/me/avatar',
+            method: 'POST',
+            data: form,
+            headers: form.getHeaders()
         });
         return res;
     }

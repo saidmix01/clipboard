@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import DetailsModal from './DetailsModal'
 import { ComputerDesktopIcon, PlusIcon, CheckCircleIcon } from '@heroicons/react/24/outline'
-import { notifySuccess, notifyError } from '../utils/notify'
+import { notifyError } from '../utils/notify'
 import { useTranslation } from 'react-i18next'
 
 type Props = {
@@ -52,8 +52,6 @@ export default function DeviceSelectionModal({ open, onClose, onSuccess }: Props
       // Update local state immediately to reflect change in UI
       setCurrentDeviceId(device.Id)
       
-      notifySuccess(t('device.apply'))
-      
       // Force reload via parent
       if (onSuccess) onSuccess()
       
@@ -73,7 +71,6 @@ export default function DeviceSelectionModal({ open, onClose, onSuccess }: Props
     try {
       setLoading(true)
       await (window as any).electronAPI?.registerNewDevice?.(newDeviceName)
-      notifySuccess(t('device.created'))
       setView('list')
       setNewDeviceName('')
       loadDevices()

@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react'
 import DetailsModal from './DetailsModal'
 import { ArrowPathIcon, MoonIcon, SunIcon, TrashIcon, InformationCircleIcon, Cog6ToothIcon, ChevronLeftIcon, GlobeAltIcon, ComputerDesktopIcon, CloudArrowUpIcon } from '@heroicons/react/24/outline'
 import { useTranslation } from 'react-i18next'
-import { notify, notifySuccess, notifyError } from '../utils/notify'
+import { notifyError } from '../utils/notify'
 
 type Props = {
   open: boolean
@@ -126,7 +126,6 @@ export default function SettingsMenu({ open, darkMode, onClose, onForceUpdate, o
   const handleSyncNow = async () => {
     try {
       setIsSyncing(true)
-      notify(t('settings.syncing'))
       
       // Verificar que la API existe
       if (!(window as any).electronAPI?.syncNow) {
@@ -144,7 +143,6 @@ export default function SettingsMenu({ open, darkMode, onClose, onForceUpdate, o
       
       if (result) {
         setSyncStats(result)
-        notifySuccess(t('notifications.sync_completed'))
       } else {
         notifyError(t('notifications.sync_failed'))
       }

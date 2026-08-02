@@ -80,6 +80,7 @@ electron_1.contextBridge.exposeInMainWorld('electronAPI', {
     selectFile: () => electron_1.ipcRenderer.invoke('select-file'),
     listFiles: (params) => electron_1.ipcRenderer.invoke('list-files', params),
     uploadFile: (filePath) => electron_1.ipcRenderer.invoke('upload-file', filePath),
+    uploadAvatar: () => electron_1.ipcRenderer.invoke('upload-avatar'),
     deleteFile: (fileId) => electron_1.ipcRenderer.invoke('delete-file', fileId),
     downloadFile: (fileId, fileName) => electron_1.ipcRenderer.invoke('download-file', fileId, fileName),
     onFileUploaded: (cb) => onChannel('file-uploaded', cb),

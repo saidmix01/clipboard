@@ -3,7 +3,7 @@ import ReactCrop, { centerCrop, makeAspectCrop, type Crop, type PixelCrop } from
 import 'react-image-crop/dist/ReactCrop.css'
 import Tesseract from 'tesseract.js'
 import { ClipboardDocumentIcon, ArrowPathIcon } from '@heroicons/react/24/outline'
-import { notifySuccess, notifyError, notify } from '../utils/notify'
+import { notifyError, notify } from '../utils/notify'
 import WindowShell from './WindowShell'
 import { useTranslation } from 'react-i18next'
 
@@ -111,7 +111,6 @@ export default function OCRWindow() {
         setText(result.data.text)
         if (result.data.text) {
              ;(window as any).electronAPI?.copyText?.(result.data.text)
-             notifySuccess(t('ocr.copied'))
         } else {
              notify(t('ocr.no_text_detected'))
         }
@@ -188,8 +187,7 @@ export default function OCRWindow() {
                    <button
                     onClick={() => {
                         ;(window as any).electronAPI?.copyText?.(text)
-                        notifySuccess(t('ocr.copied'))
-                    }}
+                    }}}
                     disabled={!text}
                     className="w-full h-[36px] bg-[color:var(--color-surface)] border border-[color:var(--color-border)] hover:bg-black/5 dark:hover:bg-white/5 rounded-[var(--radius-button)] text-sm font-medium text-[color:var(--color-text)] transition-colors duration-100 flex items-center justify-center gap-2 disabled:opacity-50"
                   >

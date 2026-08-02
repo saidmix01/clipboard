@@ -1,6 +1,6 @@
 import { useEffect, useState, useRef, useCallback } from 'react'
 import type { ReactNode } from 'react'
-import { notify, notifySuccess, notifyError } from './utils/notify'
+import { notifySuccess, notifyError } from './utils/notify'
 import { useTranslation } from 'react-i18next'
 import { DocumentPlusIcon } from '@heroicons/react/24/outline'
 import AppShell from './components/AppShell'
@@ -402,7 +402,6 @@ function App () {
     if ((window as any).electronAPI?.onDevicesSyncComplete) {
       const off = (window as any).electronAPI.onDevicesSyncComplete((_devices: any[]) => {
           setShowDeviceSelection(true)
-          notifySuccess(t('device.sync_complete') || 'Sincronización de dispositivos completada')
       })
       return () => off?.()
     }
@@ -411,8 +410,7 @@ function App () {
   const logout = useCallback(async () => {
     setToken(null)
     await (window as any).electronAPI?.removeConfig?.('session')
-    notifySuccess(t('notifications.session_closed'))
-  }, [t])
+  }, [])
 
   // Expose logout for tray/admin panel usage
   useEffect(() => { (window as any).__copyfy_logout = logout }, [logout])
@@ -421,7 +419,6 @@ function App () {
     const path = await (window as any).electronAPI?.selectFile?.()
     if (!path) return
     
-    notify(t('files.uploading'))
     try {
         const res = await (window as any).electronAPI?.uploadFile?.(path)
         if (res && res.success) {
@@ -588,7 +585,6 @@ function App () {
               setDeletingLoading(true)
               // The backend now broadcasts the update, so we just need to wait for the call to finish
               await (window as any).electronAPI.deleteHistoryItem(itemToDelete.id)
-              notifySuccess(t('notifications.item_deleted'))
               // Manually remove from local state just in case the broadcast is slow or fails
               setDisplayed(prev => prev.filter(i => i.id !== itemToDelete.id))
             } catch {

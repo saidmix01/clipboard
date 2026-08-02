@@ -16,7 +16,7 @@ import {
   CheckCircleIcon,
 } from '@heroicons/react/24/outline'
 import { useTranslation } from 'react-i18next'
-import { notify, notifySuccess, notifyError } from '../utils/notify'
+import { notifySuccess, notifyError } from '../utils/notify'
 import { backendRequest } from '../api/backend'
 
 type TabId = 'general' | 'devices' | 'profile'
@@ -172,13 +172,12 @@ function GeneralTab() {
 
   const handleSyncNow = async () => {
     setIsSyncing(true)
-    notify(t('settings.syncing', 'Syncing...'))
     try {
       const result = await Promise.race([
         (window as any).electronAPI?.syncNow?.(),
         new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 30000))
       ])
-      if (result) { setSyncStats(result); notifySuccess(t('notifications.sync_completed', 'Sync completed')) }
+      if (result) { setSyncStats(result) }
       else notifyError(t('notifications.sync_failed', 'Sync failed'))
     } catch { notifyError(t('notifications.sync_failed', 'Sync failed')) }
     finally { setIsSyncing(false) }
@@ -186,7 +185,6 @@ function GeneralTab() {
 
   const handleClearHistory = async () => {
     await (window as any).electronAPI?.clearHistory?.()
-    notifySuccess(t('notifications.history_cleared', 'History cleared'))
   }
 
   const handleColorChange = async (key: string, val: string) => {
@@ -351,7 +349,6 @@ function DevicesTab() {
       setLoading(true)
       await (window as any).electronAPI?.setActiveDevice?.(device.Id)
       setCurrentDeviceId(device.Id)
-      notifySuccess(t('device.apply'))
     } catch (e) {
       notifyError('Error changing device')
     } finally {
@@ -365,7 +362,6 @@ function DevicesTab() {
     try {
       setLoading(true)
       await (window as any).electronAPI?.registerNewDevice?.(newDeviceName)
-      notifySuccess(t('device.created'))
       setView('list')
       setNewDeviceName('')
       loadDevices()
@@ -455,7 +451,6 @@ function ProfileTab() {
   const [name, setName] = useState('')
   const [password, setPassword] = useState('')
   const [confirmPassword, setConfirmPassword] = useState('')
-  const [avatarFile, setAvatarFile] = useState<File | null>(null)
   const [avatarPreview, setAvatarPreview] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
   const [loadingUser, setLoadingUser] = useState(true)
@@ -471,8 +466,7 @@ function ProfileTab() {
         setUser(payload)
         setName(payload.name || '')
         if (payload.avatarUrl) {
-          // Resolve avatar URL
-          const url = payload.avatarUrl.startsWith('http') ? payload.avatarUrl : `https://backend-copyfy.onrender.com/${payload.avatarUrl.replace(/^\//, '')}`
+          const url = payload.avatarUrl.startsWith('http') ? payload.avatarUrl : `https://backend-copyfy.onrender.com${payload.avatarUrl}`
           setAvatarPreview(url)
         }
       }
@@ -484,13 +478,24 @@ function ProfileTab() {
     }
   }
 
-  const handleAvatarChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0]
-    if (file) {
-      setAvatarFile(file)
-      const reader = new FileReader()
-      reader.onloadend = () => setAvatarPreview(reader.result as string)
-      reader.readAsDataURL(file)
+  const handleAvatarChange = async () => {
+    try {
+      const res = await (window as any).electronAPI?.uploadAvatar?.()
+      if (res?.canceled) return
+      if (res?.success) {
+        // Response is double-wrapped: { success, data: { success, data: { url } } }
+        const innerData = res.data?.data || res.data
+        const avatarUrl = innerData?.url
+        if (avatarUrl) {
+          const fullUrl = avatarUrl.startsWith('http') ? avatarUrl : `https://backend-copyfy.onrender.com${avatarUrl}`
+          setAvatarPreview(fullUrl)
+        }
+        notifySuccess(t('user.update', 'Avatar updated'))
+      } else if (!res?.canceled) {
+        notifyError(res?.error || t('user.error_update', 'Could not update avatar'))
+      }
+    } catch (err: any) {
+      notifyError(t('user.error_update', 'Could not update avatar'))
     }
   }
 
@@ -510,22 +515,9 @@ function ProfileTab() {
         await backendRequest('/users/me', 'PUT', updateData)
       }
 
-      // Avatar upload if file selected
-      if (avatarFile) {
-        // Read file as base64 and send via backend request
-        const reader = new FileReader()
-        const base64Promise = new Promise<string>((resolve) => {
-          reader.onloadend = () => resolve(reader.result as string)
-          reader.readAsDataURL(avatarFile)
-        })
-        const base64 = await base64Promise
-        await backendRequest('/users/me/avatar', 'POST', { avatar: base64, mimeType: avatarFile.type })
-      }
-
       notifySuccess(t('user.update', 'Profile updated'))
       setPassword('')
       setConfirmPassword('')
-      setAvatarFile(null)
       loadUser()
     } catch (err: any) {
       notifyError(t('user.error_update', 'Could not update'))
@@ -565,10 +557,9 @@ function ProfileTab() {
             )}
           </div>
           <div>
-            <label className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium border border-zinc-300 dark:border-zinc-700 rounded-md hover:bg-zinc-100 dark:hover:bg-zinc-800 cursor-pointer transition-colors">
+            <button type="button" onClick={handleAvatarChange} className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium border border-zinc-300 dark:border-zinc-700 rounded-md hover:bg-zinc-100 dark:hover:bg-zinc-800 cursor-pointer transition-colors">
               {t('user.choose_image', 'Choose image')}
-              <input type="file" accept="image/*" onChange={handleAvatarChange} className="hidden" />
-            </label>
+            </button>
             <p className="text-[10px] text-zinc-400 mt-1">{user.email}</p>
           </div>
         </div>

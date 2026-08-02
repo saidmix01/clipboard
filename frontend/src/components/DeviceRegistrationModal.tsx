@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { ComputerDesktopIcon } from '@heroicons/react/24/outline'
-import { notifySuccess, notifyError } from '../utils/notify'
+import { notifyError } from '../utils/notify'
 import { useTranslation } from 'react-i18next'
 
 type Props = {
@@ -49,7 +49,6 @@ export default function DeviceRegistrationModal({ onSuccess }: Props) {
       setLoading(true)
       try {
           await (window as any).electronAPI?.registerNewDevice?.(deviceName)
-          notifySuccess(t('device.registered'))
           setOpen(false)
           onSuccess()
       } catch (err) {
