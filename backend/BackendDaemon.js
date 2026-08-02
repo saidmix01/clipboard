@@ -7,6 +7,7 @@ exports.BackendDaemon = void 0;
 const electron_1 = require("electron");
 const axios_1 = __importDefault(require("axios"));
 const ipc_utils_1 = require("./ipc-utils");
+const RealtimeClient_1 = require("./RealtimeClient");
 // Import existing DB module (JS)
 const db = require('../db');
 class BackendDaemon {
@@ -31,6 +32,7 @@ class BackendDaemon {
         if (!BackendDaemon.instance) {
             BackendDaemon.instance = new BackendDaemon();
             BackendDaemon.instance.initActiveDevice();
+            BackendDaemon.instance.connectRealtimeIfAuthenticated();
         }
         return BackendDaemon.instance;
     }
@@ -46,6 +48,39 @@ class BackendDaemon {
                 if (localId)
                     this.setActiveDevice(localId);
             }
+        }
+    }
+    /**
+     * Connect to Supabase Realtime if we have an access token.
+     * Extracts userId from the JWT payload to subscribe to the user's channel.
+     */
+    connectRealtimeIfAuthenticated() {
+        try {
+            const settings = db.getSettings();
+            if (!settings.accessToken)
+                return;
+            const userId = this.extractUserIdFromToken(settings.accessToken);
+            if (userId) {
+                RealtimeClient_1.RealtimeClient.getInstance().connect(userId);
+            }
+        }
+        catch (err) {
+            console.warn('[BackendDaemon] Failed to connect realtime on startup:', err.message);
+        }
+    }
+    /**
+     * Extract userId from a JWT access token (decode payload without verification).
+     */
+    extractUserIdFromToken(token) {
+        try {
+            const parts = token.split('.');
+            if (parts.length !== 3)
+                return null;
+            const payload = JSON.parse(Buffer.from(parts[1], 'base64').toString());
+            return payload.id || payload.userId || payload.sub || null;
+        }
+        catch {
+            return null;
         }
     }
     getActiveDevice() {
@@ -260,7 +295,7 @@ class BackendDaemon {
         try {
             const payload = {
                 id: localDevice.Id,
-                clientId: 'client-1',
+                clientId: localDevice.Id,
                 name: localDevice.Name,
                 metadata: {
                     os: localDevice.OsName,
@@ -319,6 +354,8 @@ class BackendDaemon {
         // Trigger sync on login success
         electron_1.ipcMain.on('auth:login-success', () => {
             this.syncDevicesOnLogin();
+            // Connect to realtime after successful login
+            this.connectRealtimeIfAuthenticated();
         });
         // Generic proxy for authenticated requests
         electron_1.ipcMain.handle('backend-request', async (_, config) => {

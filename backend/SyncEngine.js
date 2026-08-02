@@ -74,15 +74,18 @@ class SyncEngine {
         if (this.syncInterval) {
             return;
         }
-        console.log('[SyncEngine] Starting hourly sync scheduler');
+        console.log('[SyncEngine] Starting sync scheduler (every 30s fallback)');
         this.performSync().catch(err => {
             console.error('[SyncEngine] Initial sync failed:', err);
         });
+        // 30-second polling as fallback when Supabase Realtime is unavailable.
+        // When realtime IS connected, syncs are triggered instantly by RealtimeClient
+        // and this interval acts only as a safety net.
         this.syncInterval = setInterval(() => {
             this.performSync().catch(err => {
                 console.error('[SyncEngine] Scheduled sync failed:', err);
             });
-        }, 3600000);
+        }, 30000);
     }
     stopScheduler() {
         if (this.syncInterval) {
