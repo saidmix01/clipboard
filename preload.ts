@@ -1,17 +1,25 @@
 import { contextBridge, ipcRenderer, IpcRendererEvent } from 'electron';
 
-// Define types for better safety if needed, but for now we keep it compatible
-// with the existing frontend which expects 'electronAPI' global.
+/**
+ * Helper para crear listeners con cleanup automático.
+ * Evita el memory leak de ipcRenderer.on sin removeListener.
+ */
+function onChannel<T>(channel: string, callback: (data: T) => void): () => void {
+  const listener = (_: IpcRendererEvent, data: T) => callback(data);
+  ipcRenderer.on(channel, listener);
+  return () => ipcRenderer.removeListener(channel, listener);
+}
 
 contextBridge.exposeInMainWorld('electronAPI', {
   // --- Clipboard & Core ---
   onClipboardUpdate: (callback: (data: any) => void) =>
-    ipcRenderer.on('clipboard-update', (_, data) => callback(data)),
+    onChannel('clipboard-update', callback),
+
   getClipboardHistory: (opts: any) => ipcRenderer.invoke('get-clipboard-history', opts),
   copyText: (text: string) => ipcRenderer.send('copy-to-clipboard', text),
   copyImage: (dataUrl: string) => ipcRenderer.send('copy-image', dataUrl),
   pasteText: () => ipcRenderer.send('paste-text'),
-  
+
   // --- History ---
   deleteHistoryItem: (id: string) => ipcRenderer.invoke('delete-history-item', id),
   clearHistory: () => ipcRenderer.invoke('clear-history'),
@@ -23,7 +31,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   closeWindow: () => ipcRenderer.invoke('close-window'),
   getAppVersion: () => ipcRenderer.invoke('get-app-version'),
   getHostname: () => ipcRenderer.invoke('get-hostname'),
-  
+
   // --- Config ---
   getConfig: (key: string) => ipcRenderer.invoke('get-config', key),
   setConfig: (key: string, value: any) => ipcRenderer.invoke('set-config', key, value),
@@ -32,131 +40,113 @@ contextBridge.exposeInMainWorld('electronAPI', {
   setPreferences: (prefs: any) => ipcRenderer.invoke('set-preferences', prefs),
 
   // --- Devices ---
-  getCurrentDevice: () => ipcRenderer.invoke('devices:get-active'), // Updated to use new logic
+  // getActiveDevice es la fuente de verdad — usa BackendDaemon IPC 'devices:get-active'
+  getActiveDevice: () => ipcRenderer.invoke('devices:get-active'),
   getAllDevices: () => ipcRenderer.invoke('get-all-devices'),
   registerNewDevice: (name: string) => ipcRenderer.invoke('register-new-device', name),
-  setActiveDevice: (id: string) => ipcRenderer.invoke('devices:set-active', id), // Updated
-  
-  // New Active Device Logic
-  getActiveDevice: () => ipcRenderer.invoke('devices:get-active'),
-  onDeviceChanged: (callback: (device: any) => void) => {
-      const listener = (_: any, device: any) => callback(device);
-      ipcRenderer.on('device:changed', listener);
-      return () => ipcRenderer.removeListener('device:changed', listener);
-  },
-  onDeviceSyncCompleted: (callback: (device: any) => void) => {
-      const listener = (_: any, device: any) => callback(device);
-      ipcRenderer.on('device:sync-completed', listener);
-      return () => ipcRenderer.removeListener('device:sync-completed', listener);
-  },
+  setActiveDevice: (id: string) => ipcRenderer.invoke('devices:set-active', id),
+
+  onDeviceChanged: (callback: (device: any) => void) =>
+    onChannel('device:changed', callback),
+
+  onDeviceSyncCompleted: (callback: (device: any) => void) =>
+    onChannel('device:sync-completed', callback),
+
   getClipboardItems: () => ipcRenderer.invoke('clipboard:get-items'),
 
-  // Sync
+  // Sync de dispositivos
   notifyLoginSuccess: () => ipcRenderer.send('auth:login-success'),
-  onDevicesSyncStart: (callback: () => void) => {
-      const listener = () => callback();
-      ipcRenderer.on('devices:sync-start', listener);
-      return () => ipcRenderer.removeListener('devices:sync-start', listener);
-  },
-  onDevicesSyncComplete: (callback: (devices: any[]) => void) => {
-      const listener = (_: any, devices: any[]) => callback(devices);
-      ipcRenderer.on('devices:sync-complete', listener);
-      return () => ipcRenderer.removeListener('devices:sync-complete', listener);
-  },
-  
-  // Sync Engine APIs
-  syncNow: () => ipcRenderer.invoke('sync:now'),
-  getSyncStats: () => ipcRenderer.invoke('sync:get-stats'),
-  onSyncStats: (callback: (stats: any) => void) => {
-      const listener = (_: any, stats: any) => callback(stats);
-      ipcRenderer.on('sync:stats', listener);
-      return () => ipcRenderer.removeListener('sync:stats', listener);
-  },
-  onNetworkStatus: (callback: (status: { online: boolean }) => void) => {
-      const listener = (_: any, status: any) => callback(status);
-      ipcRenderer.on('sync:network-status', listener);
-      return () => ipcRenderer.removeListener('sync:network-status', listener);
+
+  onDevicesSyncStart: (callback: () => void): (() => void) => {
+    const listener = () => callback();
+    ipcRenderer.on('devices:sync-start', listener);
+    return () => ipcRenderer.removeListener('devices:sync-start', listener);
   },
 
-  // --- Backend Daemon API (New) ---
+  onDevicesSyncComplete: (callback: (devices: any[]) => void) =>
+    onChannel<any[]>('devices:sync-complete', callback),
+
+  // Sync Engine
+  syncNow: () => ipcRenderer.invoke('sync:now'),
+  getSyncStats: () => ipcRenderer.invoke('sync:get-stats'),
+
+  onSyncStats: (callback: (stats: any) => void) =>
+    onChannel('sync:stats', callback),
+
+  onNetworkStatus: (callback: (status: { online: boolean }) => void) =>
+    onChannel('sync:network-status', callback),
+
+  // --- Backend Daemon API ---
   backend: {
-    // General request method (preferred over direct fetch in renderer)
     request: (config: any) => ipcRenderer.invoke('backend-request', config),
-    
-    // Auth helpers
     getValidToken: () => ipcRenderer.invoke('auth-get-valid-token'),
     refreshToken: () => ipcRenderer.invoke('auth-force-refresh'),
   },
 
-  // --- Legacy / UI Features ---
+  // --- UI Features ---
   openImageViewer: (url: string) => ipcRenderer.send('open-image-viewer', url),
   openOCRWindow: (path: string) => ipcRenderer.send('open-ocr-window', path),
-  onOCRLoadImage: (callback: (path: string) => void) => {
-      ipcRenderer.on('ocr-load-image', (_, path) => callback(path))
+
+  onOCRLoadImage: (callback: (path: string) => void): (() => void) => {
+    const listener = (_: IpcRendererEvent, path: string) => callback(path);
+    ipcRenderer.on('ocr-load-image', listener);
+    return () => ipcRenderer.removeListener('ocr-load-image', listener);
   },
+
   openCodeEditor: (content: string) => ipcRenderer.send('open-code-editor', content),
   signalCodeReady: () => ipcRenderer.send('code-window-ready'),
-  onCodeLoadContent: (callback: (content: string) => void) => {
-      const listener = (_: IpcRendererEvent, content: string) => callback(content)
-      ipcRenderer.on('code-load-content', listener)
-      return () => ipcRenderer.removeListener('code-load-content', listener)
+
+  onCodeLoadContent: (callback: (content: string) => void): (() => void) => {
+    const listener = (_: IpcRendererEvent, content: string) => callback(content);
+    ipcRenderer.on('code-load-content', listener);
+    return () => ipcRenderer.removeListener('code-load-content', listener);
   },
-  // Files API
+
+  // --- Files API ---
   selectFile: () => ipcRenderer.invoke('select-file'),
   listFiles: (params: any) => ipcRenderer.invoke('list-files', params),
   uploadFile: (filePath: string) => ipcRenderer.invoke('upload-file', filePath),
+  uploadAvatar: () => ipcRenderer.invoke('upload-avatar'),
   deleteFile: (fileId: string) => ipcRenderer.invoke('delete-file', fileId),
   downloadFile: (fileId: string, fileName: string) => ipcRenderer.invoke('download-file', fileId, fileName),
-  openFile: (fileId: string) => ipcRenderer.invoke('open-file', fileId),
 
-  onFileUploaded: (cb: (data: any) => void) => {
-    const listener = (_: any, data: any) => cb(data)
-    ipcRenderer.on('file-uploaded', listener)
-    return () => ipcRenderer.removeListener('file-uploaded', listener)
-  },
-  onFileUploadError: (cb: (err: any) => void) => {
-    const listener = (_: any, err: any) => cb(err)
-    ipcRenderer.on('file-upload-error', listener)
-    return () => ipcRenderer.removeListener('file-upload-error', listener)
-  },
-  onFileUploadStatus: (cb: (status: any) => void) => {
-    const listener = (_: any, status: any) => cb(status)
-    ipcRenderer.on('file-upload-status', listener)
-    return () => ipcRenderer.removeListener('file-upload-status', listener)
-  },
-  onDownloadProgress: (cb: (progress: any) => void) => {
-    const listener = (_: any, progress: any) => cb(progress)
-    ipcRenderer.on('download-progress', listener)
-    return () => ipcRenderer.removeListener('download-progress', listener)
-  },
+  onFileUploaded: (cb: (data: any) => void) =>
+    onChannel('file-uploaded', cb),
 
-  // Notification Window specific
-  onNotificationLoadImage: (cb: (img: string) => void) => {
-    const listener = (_: any, img: string) => cb(img)
-    ipcRenderer.on('notification-load-image', listener)
-    return () => ipcRenderer.removeListener('notification-load-image', listener)
-  },
-  onNotificationLoadFile: (cb: (fileInfo: any) => void) => {
-    const listener = (_: any, fileInfo: any) => cb(fileInfo)
-    ipcRenderer.on('notification-load-file', listener)
-    return () => ipcRenderer.removeListener('notification-load-file', listener)
-  },
-  onNotificationError: (cb: (err: string) => void) => {
-      const listener = (_: any, err: string) => cb(err)
-      ipcRenderer.on('notification-error', listener)
-      return () => ipcRenderer.removeListener('notification-error', listener)
-  },
-  signalNotificationReady: () => ipcRenderer.send('notification-window-ready'),
-  sendNotificationAction: (action: string) => ipcRenderer.send('notification-action', action),
-  
-  // App Lifecycle
+  onFileUploadError: (cb: (err: any) => void) =>
+    onChannel('file-upload-error', cb),
+
+  onFileUploadStatus: (cb: (status: any) => void) =>
+    onChannel('file-upload-status', cb),
+
+  onDownloadProgress: (cb: (progress: any) => void) =>
+    onChannel('download-progress', cb),
+
+  // --- Native System Notifications ---
+  showNotification: (opts: { title: string; body: string }) =>
+    ipcRenderer.invoke('show-notification', opts),
+
+  // --- App Lifecycle ---
   signalAppReady: () => ipcRenderer.send('app-ready'),
 
-  // Deprecated / Stubs - REMOVED
-  // syncNow, listDevices, registerDevice, authLogin, setAuthToken, readSession
-  // Use new APIs above instead
+  // --- UI Reset (show/hide window) ---
+  onUiReset: (callback: () => void): (() => void) => {
+    const listener = () => callback();
+    ipcRenderer.on('ui:reset', listener);
+    return () => ipcRenderer.removeListener('ui:reset', listener);
+  },
+
+  // --- Theme & Session (from tray) ---
+  onThemeChanged: (callback: (isDark: boolean) => void) =>
+    onChannel('theme-changed', callback),
+
+  onSessionChanged: (callback: (session: any) => void) =>
+    onChannel('session-changed', callback),
+
+  onPreferencesChanged: (callback: (prefs: any) => void) =>
+    onChannel('preferences-changed', callback),
 });
 
 contextBridge.exposeInMainWorld('copyfy', {
-  getSystemLocale: () => ipcRenderer.invoke('get-system-locale')
+  getSystemLocale: () => ipcRenderer.invoke('get-system-locale'),
 });

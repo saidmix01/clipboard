@@ -12,6 +12,8 @@ import {
   ChevronRightIcon
 } from '@heroicons/react/24/outline'
 
+import { useTranslation } from 'react-i18next'
+
 type FileItem = {
   id: string
   originalName: string
@@ -75,6 +77,7 @@ export default function FileList({
   onDelete, 
   onDownload 
 }: Props) {
+  const { t } = useTranslation()
   const percent = storage ? Math.min(100, Math.max(0, (storage.usedBytes / storage.quotaBytes) * 100)) : 0
   const hasPagination = totalItems > 0 && totalPages > 0
   
@@ -136,7 +139,7 @@ export default function FileList({
          {storage && (
            <div className="mb-2 px-1">
              <div className="flex justify-between text-[10px] text-[color:var(--color-muted)] mb-1">
-               <span>Almacenamiento</span>
+               <span>{t('files.storage')}</span>
                <span>{formatBytes(storage.usedBytes)} de {formatBytes(storage.quotaBytes)}</span>
              </div>
              <div className="h-1.5 w-full bg-[color:var(--color-bg)] rounded-full overflow-hidden border border-[color:var(--color-border)]">
@@ -149,7 +152,7 @@ export default function FileList({
          )}
 
          {(!items || items.length === 0) ? (
-            <div className="flex-1 flex items-center justify-center text-[color:var(--color-muted)] text-xs min-h-[100px]">No hay documentos</div>
+            <div className="flex-1 flex items-center justify-center text-[color:var(--color-muted)] text-xs min-h-[100px]">{t('files.no_files')}</div>
          ) : (
             <>
               {items.map(item => (
@@ -164,10 +167,10 @@ export default function FileList({
                       </div>
                     </div>
                     <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition flex-shrink-0 pl-2">
-                      <button onClick={(e) => { e.stopPropagation(); onDownload(item) }} className="p-2 hover:bg-black/5 dark:hover:bg-white/5 rounded-[var(--radius-button)] text-[color:var(--color-text)] transition" title="Descargar">
+                      <button onClick={(e) => { e.stopPropagation(); onDownload(item) }} className="p-2 hover:bg-black/5 dark:hover:bg-white/5 rounded-[var(--radius-button)] text-[color:var(--color-text)] transition" title={t('files.download')}>
                           <ArrowDownTrayIcon className="w-4 h-4" />
                       </button>
-                      <button onClick={(e) => { e.stopPropagation(); onDelete(item) }} className="p-2 hover:bg-red-500 hover:text-white text-red-500 rounded-[var(--radius-button)] transition" title="Eliminar">
+                      <button onClick={(e) => { e.stopPropagation(); onDelete(item) }} className="p-2 hover:bg-red-500 hover:text-white text-red-500 rounded-[var(--radius-button)] transition" title={t('files.delete')}>
                           <TrashIcon className="w-4 h-4" />
                       </button>
                     </div>
@@ -183,11 +186,11 @@ export default function FileList({
           {/* Información de paginación */}
           <div className="flex items-center justify-between text-[11px] text-[color:var(--color-muted)]">
             <div>
-              Página {currentPage} de {totalPages}
+              {t('files.page_info', { current: currentPage, total: totalPages })}
             </div>
             {onLimitChange && (
               <div className="flex items-center gap-2">
-                <span>Por página:</span>
+                <span>{t('files.per_page')}</span>
                 <select
                   value={limit}
                   onChange={(e) => onLimitChange(Number(e.target.value))}

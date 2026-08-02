@@ -31,7 +31,12 @@
     "font_size": "Font size",
     "language": "Language",
     "lang_en": "English",
-    "lang_es": "Spanish"
+    "lang_es": "Spanish",
+    "danger_zone": "Danger zone",
+    "appearance": "Appearance",
+    "tab_devices": "Devices",
+    "tab_profile": "Profile",
+    "tab_general": "Settings"
   },
   "search_placeholder": "Search in history...",
   "quick_search_placeholder": "Search...",
@@ -66,7 +71,8 @@
     "loading_docs": "Loading documents...",
     "loading": "Loading...",
     "login_required_docs": "You must log in to access documents",
-    "login_button": "Log In"
+    "login_button": "Log In",
+    "close": "Close"
   },
   "auth": {
     "login_title": "Log In",
@@ -83,9 +89,20 @@
     "back": "Back",
     "error_all_fields": "Complete all fields",
     "error_password_length": "Password must be at least 8 characters",
+    "error_password_mismatch": "Passwords do not match",
+    "error_password_short": "Password must be at least 6 characters",
+    "error_email_taken": "Email is already registered",
     "error_connection": "Connection error",
     "error_login": "Login error",
-    "error_register": "Registration error"
+    "error_register": "Registration error",
+    "confirm_password_placeholder": "Confirm password",
+    "register_subtitle": "Create your account to sync",
+    "login_subtitle": "Sign in to sync",
+    "have_account": "Already have an account? Sign in",
+    "no_account": "Don't have an account? Register",
+    "register_success": "Account created",
+    "login_success": "Signed in",
+    "error_credentials": "Invalid credentials"
   },
   "user": {
     "title": "User Data",
@@ -111,12 +128,25 @@
     "apply": "Apply",
     "cancel": "Cancel",
     "back": "Back",
+    "new_device": "New device",
+    "register_title": "Register Device",
+    "register_desc": "To sync your clipboard history, assign a name to this computer.",
+    "name_placeholder": "E.g. Work Laptop",
+    "registering": "Registering...",
+    "continue": "Continue",
+    "registered": "Device registered",
+    "register_error": "Error registering device",
+    "created": "Device created",
+    "create_error": "Error creating device",
     "error_load_devices": "Could not load devices",
-    "error_load_history": "Could not load device history"
+    "error_load_history": "Could not load device history",
+    "syncing_initial": "Syncing device...",
+    "sync_complete": "Device synchronization complete"
   },
   "about": {
     "title": "About Copyfy++",
     "version": "Version",
+    "description": "Clipboard manager with cloud sync",
     "whats_new": "What's New",
     "github": "GitHub",
     "back": "Back"
@@ -135,6 +165,7 @@
     "login": "Log In",
     "register": "Register",
     "filters": "Filters",
+    "filter_all": "All",
     "filter_text": "Text",
     "filter_image": "Image",
     "filter_favorites": "Favorites",
@@ -160,5 +191,64 @@
     "copied": "Copied",
     "no_text_detected": "No text detected",
     "ocr_error": "OCR Error"
+  },
+  "files": {
+    "title": "My Documents",
+    "upload": "Upload",
+    "no_files": "No documents",
+    "storage": "Storage",
+    "download": "Download",
+    "delete": "Delete",
+    "page_info": "Page {{current}} of {{total}}",
+    "per_page": "Per page:",
+    "loading_more": "Loading more results...",
+    "uploading": "Uploading file...",
+    "uploaded": "File uploaded successfully",
+    "upload_error": "Error uploading file: {{msg}}",
+    "deleting": "Deleting...",
+    "deleted": "File deleted",
+    "delete_error": "Error deleting"
+  },
+  "context_menu": {
+    "delete": "Delete"
+  },
+  "onboarding": {
+    "step_1_title": "Welcome to Copyfy",
+    "step_1_body": "Open the app from any window with the global shortcut <b>Alt + X</b>.",
+    "step_1_hint": "The window docks to the right edge and stays on top of other apps.",
+    "step_2_title": "Quick Search (Ctrl + K)",
+    "step_2_body": "Press <b>Ctrl + K</b> to open the quick search and type your query.",
+    "step_2_hint": "Press <b>Escape</b> to close it. Ideal for navigating without the mouse.",
+    "step_3_title": "Sign in or Register",
+    "step_3_body": "Use the bottom Dock to <b>Sign In</b> or <b>Register</b>.",
+    "step_3_hint": "This syncs your clipboard and devices to the cloud.",
+    "step_4_title": "Sync and Devices",
+    "step_4_body": "In <b>Settings</b> you can <b>Sync Now</b> and <b>Switch Device</b>.",
+    "step_4_hint": "The app shows <b>sync progress</b> and automatically uploads/downloads changes.",
+    "step_5_title": "Search, Filter and Favorite",
+    "step_5_body": "Type in the search bar and use the filters on the left.",
+    "step_5_hint": "Star items you use frequently to prioritize them.",
+    "step_6_title": "Copy and Paste Instantly",
+    "step_6_body": "Select with \u2191 \u2193 and press <b>Enter</b> to copy and paste automatically.",
+    "step_6_hint": "Images are also copied and pasted in compatible apps. Includes <b>image viewer</b> with <b>selection OCR</b>.",
+    "step_7_title": "Settings and Sync",
+    "step_7_body": "In <b>Settings</b> you can change theme, sync and manage devices.",
+    "step_7_hint": "If something fails, use \"Sync Now\" to refresh your history.",
+    "step_8_title": "History Management",
+    "step_8_body": "Delete items or clear the entire history from the interface.",
+    "step_8_hint": "The app confirms before deleting, to avoid accidental loss.",
+    "step_of": "Step {{current}} of {{total}}",
+    "back": "Back",
+    "next": "Next",
+    "done": "Got it",
+    "no_show_again": "You won't see this guide again once completed."
+  },
+  "time": {
+    "now": "Now",
+    "mins_ago": "{{mins}} min ago",
+    "hours_ago": "{{hours}}h ago"
+  },
+  "card": {
+    "image_copied": "Copied image"
   }
 }

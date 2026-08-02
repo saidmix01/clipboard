@@ -3,7 +3,7 @@ import ReactCrop, { centerCrop, makeAspectCrop, type Crop, type PixelCrop } from
 import 'react-image-crop/dist/ReactCrop.css'
 import Tesseract from 'tesseract.js'
 import { ClipboardDocumentIcon, ArrowPathIcon } from '@heroicons/react/24/outline'
-import { Toaster, toast } from 'react-hot-toast'
+import { notifyError, notify } from '../utils/notify'
 import WindowShell from './WindowShell'
 import { useTranslation } from 'react-i18next'
 
@@ -110,14 +110,13 @@ export default function OCRWindow() {
         )
         setText(result.data.text)
         if (result.data.text) {
-             navigator.clipboard.writeText(result.data.text)
-             toast.success(t('ocr.copied'))
+             ;(window as any).electronAPI?.copyText?.(result.data.text)
         } else {
-             toast(t('ocr.no_text_detected'))
+             notify(t('ocr.no_text_detected'))
         }
       } catch (e) {
           console.error(e)
-          toast.error(t('ocr.ocr_error'))
+          notifyError(t('ocr.ocr_error'))
       } finally {
           setLoading(false)
       }
@@ -125,7 +124,6 @@ export default function OCRWindow() {
 
   return (
     <WindowShell title={t('ocr.title')}>
-      <Toaster />
       <div className="flex h-full">
           {/* Image Area */}
           <div className="flex-1 bg-[color:var(--color-bg)] overflow-auto flex items-center justify-center p-8 border-r border-[color:var(--color-border)] relative">
@@ -188,8 +186,7 @@ export default function OCRWindow() {
               <div className="p-4 border-t border-[color:var(--color-border)] bg-[color:var(--color-bg)]">
                    <button
                     onClick={() => {
-                        navigator.clipboard.writeText(text)
-                        toast.success(t('ocr.copied'))
+                        ;(window as any).electronAPI?.copyText?.(text)
                     }}
                     disabled={!text}
                     className="w-full h-[36px] bg-[color:var(--color-surface)] border border-[color:var(--color-border)] hover:bg-black/5 dark:hover:bg-white/5 rounded-[var(--radius-button)] text-sm font-medium text-[color:var(--color-text)] transition-colors duration-100 flex items-center justify-center gap-2 disabled:opacity-50"

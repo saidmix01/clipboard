@@ -1,13 +1,15 @@
 {
   "name": "copyfy",
-  "version": "1.2.6",
+  "version": "1.2.7",
   "main": "main.js",
   "scripts": {
     "dev": "concurrently \"npm run dev --prefix frontend\" \"tsc -p tsconfig.main.json --watch\" \"wait-on http://127.0.0.1:5173 && electron .\"",
     "build": "npm run build --prefix frontend",
     "start": "electron .",
     "sql": "electron . --sql-mode",
-    "dist": "electron-builder"
+    "dist": "electron-builder",
+    "dist:store": "npm run build && tsc -p tsconfig.main.json && electron-builder --win appx",
+    "dist:win": "npm run build && tsc -p tsconfig.main.json && electron-builder --win nsis"
   },
   "build": {
     "appId": "SAIDMIX.CopyFy",
@@ -16,11 +18,19 @@
     "artifactName": "${productName}-${version}-${os}-${arch}.${ext}",
     "appx": {
       "identityName": "SAIDMIX.CopyFy",
+      "applicationId": "CopyFy",
       "publisher": "CN=7F54C210-7D42-4E3E-AEB0-BA23C7B9DAAC",
+      "publisherDisplayName": "Said Andres Avendaño",
       "displayName": "CopyFy++",
-      "backgroundColor": "#464646"
+      "backgroundColor": "#464646",
+      "showNameOnTiles": true,
+      "languages": [
+        "es-CO",
+        "en-US"
+      ],
+      "addAutoLaunchExtension": true
     },
-    "buildVersion": "1.2.6.0",
+    "buildVersion": "1.2.7.0",
     "publish": [
       {
         "provider": "github",
@@ -57,7 +67,8 @@
     "win": {
       "icon": "build/icon.ico",
       "target": [
-        "nsis"
+        "nsis",
+        "appx"
       ]
     },
     "mac": {
@@ -96,7 +107,8 @@
     "deb": {
       "depends": [
         "xclip",
-        "libnotify-bin"
+        "libnotify-bin",
+        "xdotool"
       ]
     }
   },
@@ -117,16 +129,11 @@
     "wait-on": "^8.0.3"
   },
   "dependencies": {
-    "axios": "^1.14.0", // Updated from 1.10.0 to safe version 1.14.0 (avoid compromised 1.14.1)
+    "@supabase/supabase-js": "^2.111.0",
+    "axios": "^1.14.0",
     "electron-log": "^5.4.1",
     "electron-updater": "^6.6.2",
     "form-data": "^4.0.5",
     "sql.js": "^1.11.0"
-  },
-  "overrides": {
-    "axios": "1.14.0"
-  },
-  "resolutions": {
-    "axios": "1.14.0"
   }
 }

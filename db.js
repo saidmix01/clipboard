@@ -28,15 +28,6 @@ async function init(app) {
     SQL = await initSqlJs({ locateFile })
   }
 
-  // Force reset if we want to ensure clean state as per instructions? 
-  // User said: "Eliminar completamente la base de datos anterior y crear estas tablas nuevas"
-  // But also "Si la DB no existe, se crea vacía."
-  // To be safe and ensure the NEW schema is used, I should probably check if the old schema exists and if so, maybe backup/delete it?
-  // The user said: "Eliminar completamente la base de datos anterior".
-  // So I will delete the file if it exists and create new?
-  // Or I can just DROP tables.
-  
-  // Let's try to open it first.
   let dbExists = fs.existsSync(dbFilePath)
   
   try {
@@ -198,6 +189,68 @@ function createTables() {
   db.run(`CREATE INDEX IF NOT EXISTS idx_clipboard_device ON ClipboardItem(DeviceId, CreatedAt DESC);`)
   db.run(`CREATE INDEX IF NOT EXISTS idx_clipboard_pending ON ClipboardItem(Pending) WHERE Pending = 1;`)
   db.run(`CREATE INDEX IF NOT EXISTS idx_syncqueue_retry ON SyncQueue(NextRetryAt);`)
+
+  // Índice full-text para búsqueda rápida (FTS4)
+  ensureFtsIndex()
+}
+
+// --- Full-Text Search (FTS4) ---
+// El build de sql.js instalado compila FTS3/FTS4 (no FTS5). Usamos FTS4 con el
+// tokenizer unicode61 (remove_diacritics=1): búsqueda por palabra/prefijo,
+// insensible a mayúsculas y tildes. Indexamos SOLO items de texto no eliminados
+// (las imágenes guardan base64 de varios MB y no aportan texto buscable).
+//
+// La tabla virtual usa el rowid de ClipboardItem como docid, de modo que los
+// triggers pueden mantenerla sincronizada de forma barata (DELETE/INSERT por docid)
+// sin importar por qué ruta del código se modifique ClipboardItem.
+function ensureFtsIndex() {
+  try {
+    db.run(`
+      CREATE VIRTUAL TABLE IF NOT EXISTS ClipboardItem_fts USING fts4(
+        Value,
+        tokenize=unicode61 "remove_diacritics=1"
+      );
+    `)
+
+    // Triggers de sincronización ClipboardItem -> ClipboardItem_fts
+    db.run(`
+      CREATE TRIGGER IF NOT EXISTS clipboard_fts_ai AFTER INSERT ON ClipboardItem
+      WHEN new.Type = 'text' AND new.IsDeleted = 0
+      BEGIN
+        INSERT INTO ClipboardItem_fts(docid, Value) VALUES (new.rowid, new.Value);
+      END;
+    `)
+    db.run(`
+      CREATE TRIGGER IF NOT EXISTS clipboard_fts_ad AFTER DELETE ON ClipboardItem
+      BEGIN
+        DELETE FROM ClipboardItem_fts WHERE docid = old.rowid;
+      END;
+    `)
+    db.run(`
+      CREATE TRIGGER IF NOT EXISTS clipboard_fts_au AFTER UPDATE ON ClipboardItem
+      BEGIN
+        DELETE FROM ClipboardItem_fts WHERE docid = old.rowid;
+        INSERT INTO ClipboardItem_fts(docid, Value)
+          SELECT new.rowid, new.Value
+          WHERE new.Type = 'text' AND new.IsDeleted = 0;
+      END;
+    `)
+
+    // Backfill / auto-reparación: si el índice está vacío o desincronizado
+    // (primera vez, o tras un VACUUM que reasigne rowids) lo reconstruimos.
+    const ftsCount = db.exec("SELECT count(*) FROM ClipboardItem_fts")[0].values[0][0]
+    const itemCount = db.exec("SELECT count(*) FROM ClipboardItem WHERE Type = 'text' AND IsDeleted = 0")[0].values[0][0]
+    if (ftsCount !== itemCount) {
+      db.run("DELETE FROM ClipboardItem_fts")
+      db.run(`
+        INSERT INTO ClipboardItem_fts(docid, Value)
+        SELECT rowid, Value FROM ClipboardItem WHERE Type = 'text' AND IsDeleted = 0;
+      `)
+      console.log(`[DB] FTS index rebuilt (${itemCount} text items indexed)`)
+    }
+  } catch (e) {
+    console.error('[DB] Error setting up FTS index:', e)
+  }
 }
 
 function persist() {
@@ -209,27 +262,6 @@ function persist() {
     console.error('Error persisting DB:', e)
     throw e // Propagar error para que el caller lo maneje
   }
-}
-
-// Versión asíncrona de persist para operaciones no críticas
-async function persistAsync() {
-  if (!dbFilePath || !db) return
-  return new Promise((resolve, reject) => {
-    try {
-      const data = db.export()
-      fs.writeFile(dbFilePath, Buffer.from(data), (err) => {
-        if (err) {
-          console.error('Error persisting DB async:', err)
-          reject(err)
-        } else {
-          resolve()
-        }
-      })
-    } catch (e) {
-      console.error('Error exporting DB:', e)
-      reject(e)
-    }
-  })
 }
 
 // --- CRUD Operations ---
@@ -384,32 +416,80 @@ function getItems(limit = 20, offset = 0, filter = {}) {
         return []
     }
 
-    let query = "SELECT * FROM ClipboardItem WHERE IsDeleted = 0"
+    const searching = !!(filter.search && String(filter.search).trim())
+
+    let query
     const params = []
 
-    if (filter.favorite) {
-      query += " AND IsFavorite = 1"
-    }
-    
-    // Support type filtering in SQL if provided
-    if (filter.type) {
+    if (searching) {
+      // Búsqueda restringida a items de texto: las imágenes guardan data URIs
+      // base64 de varios MB y no tienen texto buscable, escanearlas dispararía
+      // la RAM en el proceso main (sql.js es síncrono).
+      const raw = String(filter.search).trim()
+
+      // Convertimos el término en una consulta FTS por prefijos: cada palabra
+      // (letras/números Unicode) se busca como prefijo. Ej: "fac pen" -> "fac* pen*".
+      const tokens = raw.match(/[\p{L}\p{N}]+/gu) || []
+      const ftsQuery = tokens.map(t => t + '*').join(' ')
+
+      // Decidimos FTS vs LIKE de forma determinista según si el índice tiene
+      // coincidencias para el término completo. Así todas las páginas (offsets)
+      // de una misma búsqueda usan el mismo modo y la paginación es consistente.
+      let useFts = false
+      if (ftsQuery) {
+        try {
+          const cstmt = db.prepare("SELECT count(*) AS n FROM ClipboardItem_fts WHERE ClipboardItem_fts MATCH ?")
+          cstmt.bind([ftsQuery])
+          cstmt.step()
+          useFts = (cstmt.getAsObject().n || 0) > 0
+          cstmt.free()
+        } catch (e) {
+          console.error('[DB] FTS count failed, falling back to LIKE:', e)
+          useFts = false
+        }
+      }
+
+      if (useFts) {
+        // Camino rápido: índice full-text (palabra/prefijo, sin tildes/mayúsculas).
+        query = `SELECT c.Id, c.Value, c.Type, c.IsFavorite, c.CreatedAt, c.IsDeleted, c.DeviceId
+                 FROM ClipboardItem c
+                 JOIN ClipboardItem_fts f ON f.docid = c.rowid
+                 WHERE c.IsDeleted = 0 AND c.Type = 'text' AND ClipboardItem_fts MATCH ?`
+        params.push(ftsQuery)
+        if (filter.favorite) query += " AND c.IsFavorite = 1"
+        if (filter.deviceId) { query += " AND c.DeviceId = ?"; params.push(filter.deviceId) }
+        query += " ORDER BY c.CreatedAt DESC LIMIT ? OFFSET ?"
+      } else {
+        // Red de seguridad: substring literal (LIKE) para términos que el índice
+        // por palabra/prefijo no cubre (ej. trozo en medio de una palabra).
+        query = "SELECT Id, Value, Type, IsFavorite, CreatedAt, IsDeleted, DeviceId FROM ClipboardItem WHERE IsDeleted = 0 AND Type = 'text' AND Value LIKE ?"
+        params.push(`%${raw}%`)
+        if (filter.favorite) query += " AND IsFavorite = 1"
+        if (filter.deviceId) { query += " AND DeviceId = ?"; params.push(filter.deviceId) }
+        query += " ORDER BY CreatedAt DESC LIMIT ? OFFSET ?"
+      }
+      params.push(limit, offset)
+    } else {
+      // Sin búsqueda: listado normal. Seleccionamos solo las columnas necesarias
+      // (evitamos traer Meta u otras columnas pesadas no usadas en normalizeItem).
+      query = "SELECT Id, Value, Type, IsFavorite, CreatedAt, IsDeleted, DeviceId FROM ClipboardItem WHERE IsDeleted = 0"
+
+      if (filter.favorite) {
+        query += " AND IsFavorite = 1"
+      }
+      if (filter.type) {
         query += " AND Type = ?"
         params.push(filter.type)
+      }
+      if (filter.deviceId) {
+        query += " AND DeviceId = ?"
+        params.push(filter.deviceId)
+      }
+
+      query += " ORDER BY CreatedAt DESC LIMIT ? OFFSET ?"
+      params.push(limit, offset)
     }
 
-    if (filter.search) {
-      query += " AND Value LIKE ?"
-      params.push(`%${filter.search}%`)
-    }
-
-    if (filter.deviceId) {
-      query += " AND DeviceId = ?"
-      params.push(filter.deviceId)
-    }
-
-    query += " ORDER BY CreatedAt DESC LIMIT ? OFFSET ?"
-    params.push(limit, offset)
-    
     const stmt = db.prepare(query)
     stmt.bind(params)
     
@@ -443,7 +523,7 @@ function setFavorite(id, isFavorite) {
 
 function deleteItem(id) {
   try {
-    const stmt = db.prepare("UPDATE ClipboardItem SET IsDeleted = 1 WHERE Id = ?")
+    const stmt = db.prepare("UPDATE ClipboardItem SET IsDeleted = 1, Pending = 1 WHERE Id = ?")
     stmt.bind([id])
     stmt.step()
     stmt.free()
@@ -746,7 +826,9 @@ function normalizeItem(row) {
     type: row.Type,
     favorite: !!row.IsFavorite,
     createdAt: row.CreatedAt,
+    updatedAt: row.UpdatedAt,
     isDeleted: !!row.IsDeleted,
+    pending: row.Pending || 0,
     deviceId: row.DeviceId
   }
 }
@@ -839,7 +921,7 @@ function getPendingSyncOperations() {
 
 function getPendingItems(deviceId = null) {
   try {
-    let query = "SELECT * FROM ClipboardItem WHERE Pending = 1 AND IsDeleted = 0"
+    let query = "SELECT * FROM ClipboardItem WHERE Pending = 1"
     const params = []
     
     if (deviceId) {
@@ -847,7 +929,7 @@ function getPendingItems(deviceId = null) {
       params.push(deviceId)
     }
     
-    query += " ORDER BY CreatedAt ASC" // FIFO for sync
+    query += " ORDER BY CreatedAt ASC"
     
     const stmt = db.prepare(query)
     stmt.bind(params)
@@ -891,6 +973,18 @@ function markItemAsSynced(itemId) {
     persist()
   } catch (e) {
     console.error('Error marking item as synced:', e)
+  }
+}
+
+function markItemForSync(itemId) {
+  try {
+    const stmt = db.prepare("UPDATE ClipboardItem SET Pending = 1 WHERE Id = ?")
+    stmt.bind([itemId])
+    stmt.step()
+    stmt.free()
+    persist()
+  } catch (e) {
+    console.error('Error marking item for sync:', e)
   }
 }
 
@@ -1012,9 +1106,9 @@ module.exports = {
   getPendingSyncOperations,
   getPendingItems,
   markItemAsSynced,
+  markItemForSync,
   updateItem,
   markAsConflicted,
   getConflictedItems,
-  clearConflict,
-  persistAsync
+  clearConflict
 }

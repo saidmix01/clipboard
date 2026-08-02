@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import DetailsModal from './DetailsModal'
 import { ComputerDesktopIcon, PlusIcon, CheckCircleIcon } from '@heroicons/react/24/outline'
-import { toast } from 'react-hot-toast'
+import { notifyError } from '../utils/notify'
 import { useTranslation } from 'react-i18next'
 
 type Props = {
@@ -28,13 +28,13 @@ export default function DeviceSelectionModal({ open, onClose, onSuccess }: Props
     try {
       setLoading(true)
       const all = await (window as any).electronAPI?.getAllDevices?.()
-      const current = await (window as any).electronAPI?.getCurrentDevice?.()
+      const current = await (window as any).electronAPI?.getActiveDevice?.()
       
       setDevices(all || [])
       if (current) setCurrentDeviceId(current.Id)
     } catch (e) {
       console.error(e)
-      toast.error(t('device.error_load_devices'))
+      notifyError(t('device.error_load_devices'))
     } finally {
       setLoading(false)
     }
@@ -52,15 +52,13 @@ export default function DeviceSelectionModal({ open, onClose, onSuccess }: Props
       // Update local state immediately to reflect change in UI
       setCurrentDeviceId(device.Id)
       
-      toast.success(t('device.apply'))
-      
       // Force reload via parent
       if (onSuccess) onSuccess()
       
       onClose()
     } catch (e) {
       console.error(e)
-      toast.error('Error changing device')
+      notifyError('Error changing device')
     } finally {
       setLoading(false)
     }
@@ -73,12 +71,11 @@ export default function DeviceSelectionModal({ open, onClose, onSuccess }: Props
     try {
       setLoading(true)
       await (window as any).electronAPI?.registerNewDevice?.(newDeviceName)
-      toast.success('Dispositivo creado')
       setView('list')
       setNewDeviceName('')
       loadDevices()
     } catch (e) {
-      toast.error('Error creating device')
+      notifyError(t('device.create_error'))
     } finally {
       setLoading(false)
     }
@@ -100,7 +97,7 @@ export default function DeviceSelectionModal({ open, onClose, onSuccess }: Props
             <div className="space-y-3">
                 <div className="flex justify-between items-center">
                     <p className="text-sm text-[color:var(--color-muted)]">{t('device.select_label')}</p>
-                    <button onClick={() => setView('create')} className="p-1 rounded-[var(--radius-button)] hover:bg-black/5 dark:hover:bg-white/5 text-[color:var(--color-primary)] transition-colors duration-100" title="Nuevo dispositivo">
+                    <button onClick={() => setView('create')} className="p-1 rounded-[var(--radius-button)] hover:bg-black/5 dark:hover:bg-white/5 text-[color:var(--color-primary)] transition-colors duration-100" title={t('device.new_device')}>
                         <PlusIcon className="w-5 h-5" />
                     </button>
                 </div>
@@ -131,12 +128,12 @@ export default function DeviceSelectionModal({ open, onClose, onSuccess }: Props
             </div>
         ) : (
             <form onSubmit={handleCreate} className="space-y-3">
-                <p className="text-sm text-[color:var(--color-muted)]">Ingresa un nombre para este dispositivo:</p>
+                <p className="text-sm text-[color:var(--color-muted)]">{t('device.register_desc')}</p>
                 <input
                   type="text"
                   value={newDeviceName}
                   onChange={e => setNewDeviceName(e.target.value)}
-                  placeholder="Ej: Laptop Casa"
+                  placeholder={t('device.name_placeholder')}
                   className="w-full px-3 h-[32px] rounded-[var(--radius-input)] border border-[color:var(--color-border)] bg-[color:var(--color-bg)] text-[color:var(--color-text)] focus:outline-none focus:ring-1 focus:ring-[color:var(--color-primary)] text-sm"
                   autoFocus
                 />

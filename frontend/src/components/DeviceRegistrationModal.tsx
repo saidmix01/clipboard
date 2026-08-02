@@ -1,12 +1,14 @@
 import { useState, useEffect } from 'react'
 import { ComputerDesktopIcon } from '@heroicons/react/24/outline'
-import { toast } from 'react-hot-toast'
+import { notifyError } from '../utils/notify'
+import { useTranslation } from 'react-i18next'
 
 type Props = {
   onSuccess: () => void
 }
 
 export default function DeviceRegistrationModal({ onSuccess }: Props) {
+  const { t } = useTranslation()
   const [open, setOpen] = useState(false)
   const [deviceName, setDeviceName] = useState('')
   const [loading, setLoading] = useState(false)
@@ -15,8 +17,7 @@ export default function DeviceRegistrationModal({ onSuccess }: Props) {
     // Check if device is registered
     const checkDevice = async () => {
         try {
-            const device = await (window as any).electronAPI?.getCurrentDevice?.()
-            console.log('Checking device registration:', device)
+            const device = await (window as any).electronAPI?.getActiveDevice?.()
             // Show modal if no device OR if it's the legacy 'local-device'
             if (!device || !device.Id || device.Id === 'local-device') {
                 // Get hostname for suggestion
@@ -48,11 +49,10 @@ export default function DeviceRegistrationModal({ onSuccess }: Props) {
       setLoading(true)
       try {
           await (window as any).electronAPI?.registerNewDevice?.(deviceName)
-          toast.success('Dispositivo registrado')
           setOpen(false)
           onSuccess()
       } catch (err) {
-          toast.error('Error al registrar dispositivo')
+          notifyError(t('device.register_error'))
       } finally {
           setLoading(false)
       }
@@ -68,9 +68,9 @@ export default function DeviceRegistrationModal({ onSuccess }: Props) {
                 <div className="p-3 rounded-full bg-[color:var(--color-bg)]">
                     <ComputerDesktopIcon className="w-8 h-8 text-[color:var(--color-primary)]" />
                 </div>
-                <h2 className="text-lg font-semibold text-[color:var(--color-text)]">Registrar Dispositivo</h2>
+                <h2 className="text-lg font-semibold text-[color:var(--color-text)]">{t('device.register_title')}</h2>
                 <p className="text-sm text-[color:var(--color-muted)]">
-                    Para sincronizar tu historial, asigna un nombre a este equipo.
+                    {t('device.register_desc')}
                 </p>
             </div>
 
@@ -79,7 +79,7 @@ export default function DeviceRegistrationModal({ onSuccess }: Props) {
                   type="text"
                   value={deviceName}
                   onChange={e => setDeviceName(e.target.value)}
-                  placeholder="Ej: Laptop Trabajo"
+                  placeholder={t('device.name_placeholder')}
                   className="w-full px-3 h-[32px] rounded-[var(--radius-input)] border border-[color:var(--color-border)] bg-[color:var(--color-bg)] text-[color:var(--color-text)] focus:outline-none focus:ring-1 focus:ring-[color:var(--color-primary)] text-sm"
                   autoFocus
                 />
@@ -89,7 +89,7 @@ export default function DeviceRegistrationModal({ onSuccess }: Props) {
                   disabled={loading || !deviceName.trim()}
                   className="w-full h-[32px] bg-[color:var(--color-primary)] text-white rounded-[var(--radius-button)] font-medium hover:bg-blue-600 disabled:opacity-50 transition-colors duration-100 text-sm"
                 >
-                    {loading ? 'Registrando...' : 'Continuar'}
+                    {loading ? t('device.registering') : t('device.continue')}
                 </button>
             </form>
         </div>

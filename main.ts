@@ -10,7 +10,6 @@ const {
   Menu,
   shell,
   Notification,
-  powerMonitor,
   protocol,
   dialog
 } = require('electron')
@@ -20,17 +19,12 @@ const os = require('os')
 const crypto = require('crypto')
 const FormData = require('form-data')
 
-// --- Integration Start ---
-// Assuming TypeScript compilation or ts-node
-// If using plain JS, this would be: const { BackendDaemon } = require('./backend/BackendDaemon')
 import { BackendDaemon } from './backend/BackendDaemon';
 import { SyncEngine } from './backend/SyncEngine';
-// --- Integration End ---
+import { normalizeForIPC } from './backend/ipc-utils';
 
 const db = require('./db')
 const { configureAutoLaunch } = require('./autolaunch')
-const electronLog = require('electron-log')
-const { exec, execFile, spawnSync } = require('child_process')
 
 const log = {
   info: (...args: any[]) => console.log('[MAIN]', ...args),
@@ -42,15 +36,17 @@ const log = {
 let mainWindow: any
 let ocrWindow: any = null
 let codeWindow: any = null
-let notificationWindow: any = null
-let pendingNotificationImage: any = null
+let settingsWindow: any = null
 let pendingCodeContent: any = null
 let tray: any
 let isQuitting = false
+let rebuildTrayMenu: (() => void) | null = null
 
 // Set app name and ensure userData exists to avoid Lock file error (Error code: 3)
-app.setName('CopyFy');
-// app.setAppUserModelId('SAIDMIX.CopyFy'); // Optional if needed for notifications
+app.setName('CopyFy++');
+if (process.platform === 'win32') {
+  app.setAppUserModelId('CopyFy++')
+}
 const userDataPath = app.getPath('userData');
 if (!fs.existsSync(userDataPath)) {
     try {
@@ -68,23 +64,17 @@ if (!gotTheLock) {
   app.on('second-instance', (event: any, commandLine: any, workingDirectory: any) => {
     if (mainWindow) {
       if (mainWindow.isMinimized()) mainWindow.restore()
+      positionWindowAtCursor()
       if (!mainWindow.isVisible()) mainWindow.show()
       mainWindow.focus()
     }
   })
 }
 
-// Helper: Normalize item for IPC
-function normalizeForIPC(items: any[]) {
-  return items.map(i => ({
-    id: i.id,
-    value: i.value,
-    type: i.type,
-    favorite: i.favorite,
-    createdAt: i.createdAt,
-    imagePath: i.type === 'image' && i.value.startsWith('[LOCAL_IMAGE]:') ? i.value.replace('[LOCAL_IMAGE]:', '') : null
-  }))
-}
+// Detect if launched at startup (minimized to tray)
+const startHidden = process.argv.includes('--hidden')
+
+// normalizeForIPC importado desde ./backend/ipc-utils
 
 // Helper: Broadcast update to main window with correct filtering
 function broadcastUpdate() {
@@ -108,31 +98,53 @@ function broadcastUpdate() {
     }
 }
 
-let cachedSelectedDeviceId: string | null = null
+
+// Position window near mouse cursor, clamped within the display bounds
+function positionWindowAtCursor() {
+  if (!mainWindow) return
+  const cursorPoint = screen.getCursorScreenPoint()
+  const display = screen.getDisplayNearestPoint(cursorPoint)
+  const { x: wX, y: wY, width: wW, height: wH } = display.workArea
+  const [winWidth, winHeight] = mainWindow.getSize()
+
+  // Center the window on the cursor, then clamp to stay within the display
+  let x = cursorPoint.x - Math.round(winWidth / 2)
+  let y = cursorPoint.y - Math.round(winHeight / 2)
+
+  // Clamp to work area bounds
+  if (x < wX) x = wX
+  if (y < wY) y = wY
+  if (x + winWidth > wX + wW) x = wX + wW - winWidth
+  if (y + winHeight > wY + wH) y = wY + wH - winHeight
+
+  mainWindow.setPosition(x, y)
+}
 
 // Window Creation
 function createWindow() {
   const display = screen.getPrimaryDisplay()
   const screenWidth = display.workArea.width
   const screenHeight = display.workArea.height
-  const windowWidth = 400
-  const finalX = screenWidth - windowWidth
+  const windowWidth = 360
+  const windowHeight = 600
+  const finalX = Math.round((screenWidth - windowWidth) / 2)
+  const finalY = Math.round((screenHeight - windowHeight) / 2)
 
   mainWindow = new BrowserWindow({
     width: windowWidth,
-    height: screenHeight,
+    height: windowHeight,
     x: finalX,
-    y: 0,
+    y: finalY,
     frame: false,
     transparent: true,
-    vibrancy: process.platform === 'darwin' ? 'hud' : undefined,
     backgroundColor: '#00FFFFFF',
     alwaysOnTop: true,
     resizable: false,
     show: false,
     skipTaskbar: true,
+    roundedCorners: true,
     webPreferences: {
-      preload: path.join(__dirname, 'preload.js'), // Point to compiled JS
+      preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
       devTools: !app.isPackaged
@@ -150,13 +162,101 @@ function createWindow() {
   }
 
   mainWindow.once('ready-to-show', () => {
-    const settings = db.getSettings()
-    mainWindow.show()
+    // Clipboard manager: siempre inicia oculto en la bandeja.
+    // El usuario lo muestra con el shortcut global (Alt+X) o clic en tray.
     broadcastUpdate()
   })
+}
 
-  mainWindow.on('blur', () => {
-    // Optional: hide on blur
+let authWindow: any = null
+
+function createAuthWindow() {
+  if (authWindow) {
+    authWindow.focus()
+    return
+  }
+  if (mainWindow && mainWindow.isVisible()) mainWindow.hide()
+
+  const display = screen.getPrimaryDisplay()
+  const width = 320
+  const height = 380
+  const x = Math.round((display.workArea.width - width) / 2)
+  const y = Math.round((display.workArea.height - height) / 2)
+
+  authWindow = new BrowserWindow({
+    width,
+    height,
+    x,
+    y,
+    frame: false,
+    transparent: true,
+    backgroundColor: '#00FFFFFF',
+    resizable: false,
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      devTools: !app.isPackaged
+    }
+  })
+
+  const indexPath = app.isPackaged
+    ? path.join(app.getAppPath(), 'frontend', 'dist', 'index.html')
+    : 'http://127.0.0.1:5173'
+
+  if (app.isPackaged) {
+    authWindow.loadFile(indexPath, { search: 'mode=auth' })
+  } else {
+    authWindow.loadURL(`${indexPath}?mode=auth`)
+  }
+
+  authWindow.on('closed', () => { authWindow = null })
+}
+
+function createSettingsWindow() {
+  if (settingsWindow) {
+    settingsWindow.focus()
+    return
+  }
+  if (mainWindow && mainWindow.isVisible()) mainWindow.hide()
+
+  const display = screen.getPrimaryDisplay()
+  const width = 520
+  const height = 640
+  const x = Math.round((display.workArea.width - width) / 2)
+  const y = Math.round((display.workArea.height - height) / 2)
+
+  settingsWindow = new BrowserWindow({
+    width,
+    height,
+    x,
+    y,
+    title: 'CopyFy++ - Settings',
+    frame: false,
+    transparent: true,
+    backgroundColor: '#00FFFFFF',
+    resizable: false,
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      devTools: !app.isPackaged
+    },
+    autoHideMenuBar: true
+  })
+
+  const indexPath = app.isPackaged
+    ? path.join(app.getAppPath(), 'frontend', 'dist', 'index.html')
+    : 'http://127.0.0.1:5173'
+
+  if (app.isPackaged) {
+    settingsWindow.loadFile(indexPath, { search: 'mode=settings' })
+  } else {
+    settingsWindow.loadURL(`${indexPath}?mode=settings`)
+  }
+
+  settingsWindow.on('closed', () => {
+    settingsWindow = null
   })
 }
 
@@ -275,55 +375,6 @@ function createCodeWindow(codeContent: string) {
     })
 }
 
-function createNotificationWindow() {
-    if (notificationWindow) {
-        notificationWindow.focus()
-        return
-    }
-
-    const display = screen.getPrimaryDisplay()
-    const width = 350
-    const height = 100
-    const x = display.workArea.width - width - 20
-    let y = display.workArea.height - height - 20
-
-    if (process.platform === 'darwin') {
-        y = 40 // macOS: Arriba a la derecha
-    }
-
-    notificationWindow = new BrowserWindow({
-        width, height, x, y,
-        frame: false,
-        transparent: true,
-        alwaysOnTop: true,
-        resizable: false,
-        skipTaskbar: true,
-        webPreferences: {
-            preload: path.join(__dirname, 'preload.js'),
-            contextIsolation: true,
-            nodeIntegration: false,
-            devTools: !app.isPackaged
-        }
-    })
-
-    const indexPath = app.isPackaged
-      ? path.join(app.getAppPath(), 'frontend', 'dist', 'index.html')
-      : 'http://127.0.0.1:5173'
-    
-    const url = `${indexPath}?mode=notification`
-
-    if (app.isPackaged) {
-       notificationWindow.loadFile(indexPath, { search: 'mode=notification' }).then(() => {
-       })
-    } else {
-       notificationWindow.loadURL(url)
-    }
-
-    notificationWindow.on('closed', () => {
-        notificationWindow = null
-    })
-}
-
 // Handshake listener
 ipcMain.on('code-window-ready', (event: any) => {
     if (codeWindow && pendingCodeContent) {
@@ -345,109 +396,36 @@ ipcMain.on('app-ready', () => {
     }
 })
 
-ipcMain.on('notification-window-ready', () => {
-    if (notificationWindow && pendingNotificationImage) {
-        if (pendingNotificationImage.type === 'image') {
-            const dataUrl = pendingNotificationImage.image.toDataURL()
-            notificationWindow.webContents.send('notification-load-image', dataUrl)
-        } else if (pendingNotificationImage.type === 'file') {
-            // Send file info instead of image
-            notificationWindow.webContents.send('notification-load-file', {
-                name: pendingNotificationImage.fileName,
-                path: pendingNotificationImage.filePath
-            })
-        }
-    }
-})
-
-ipcMain.on('notification-action', async (_: any, action: string) => {
-    if (action === 'save' && pendingNotificationImage) {
-        if (pendingNotificationImage.type === 'image') {
-             try {
-                const { image, hash } = pendingNotificationImage
-                const imagesDir = path.join(app.getPath('userData'), 'images')
-                if (!fs.existsSync(imagesDir)) fs.mkdirSync(imagesDir, { recursive: true })
-                const filename = `${Date.now()}-${hash.substring(0,8)}.png`
-                const filePath = path.join(imagesDir, filename)
-                fs.writeFileSync(filePath, image.toPNG())
-                
-                // Usar BackendDaemon para guardar con deviceId
-                const backendDaemon = BackendDaemon.getInstance()
-                const result = backendDaemon.saveClipboardItem(`[LOCAL_IMAGE]:${filePath}`, 'image')
-                
-                if (result) {
-                    broadcastUpdate()
-                    
-                    // Encolar para sincronización
-                    const syncEngine = SyncEngine.getInstance()
-                    syncEngine.enqueueItem(result.id, 'CREATE').catch(err => {
-                        log.error('Failed to enqueue image for sync:', err)
-                    })
-                }
-            } catch(e) {
-                log.error('Error saving image:', e)
-            }
-        } else if (pendingNotificationImage.type === 'file') {
-             try {
-                 const { filePath } = pendingNotificationImage
-                 if (fs.existsSync(filePath)) {
-                     const backend = BackendDaemon.getInstance();
-                     const form = new FormData();
-                     form.append('file', fs.createReadStream(filePath));
-                     
-                     // Get selected device ID
-                     const deviceId = db.getSettings().selectedDeviceId;
-
-                     // Upload immediately using the correct endpoint
-                     const res = await backend.request({
-                         url: '/api/files/upload',
-                         method: 'POST',
-                         data: form,
-                         headers: { 
-                             ...form.getHeaders(),
-                             'x-device-id': deviceId
-                         }
-                     });
-                     
-                     if (res.success) {
-                         if (notificationWindow && !notificationWindow.isDestroyed()) {
-                             notificationWindow.close();
-                         }
-                         // Broadcast update so the list refreshes
-                         broadcastUpdate();
-                         if (mainWindow && !mainWindow.isDestroyed()) {
-                             mainWindow.webContents.send('file-uploaded', res.data);
-                         }
-                     } else {
-                         // Upload failed (e.g. offline)
-                         log.error('Upload failed:', res.error);
-                         if (notificationWindow && !notificationWindow.isDestroyed()) {
-                             // Send error to notification window to display
-                             notificationWindow.webContents.send('notification-error', 'Error al subir: ' + (res.error || 'Sin conexión'));
-                         }
-                     }
-                 }
-             } catch(e: any) {
-                 log.error('Error saving file:', e)
-                 if (notificationWindow && !notificationWindow.isDestroyed()) {
-                     notificationWindow.webContents.send('notification-error', 'Error local: ' + e.message);
-                 }
-             }
-             return; // Don't close window here, handled inside
-        }
-    }
-    
-    // Close for cancel or non-file saves (images close immediately as they save locally)
-    if (notificationWindow && !notificationWindow.isDestroyed()) {
-        notificationWindow.close()
-    }
-    pendingNotificationImage = null;
-})
-
 // Clipboard Watcher
 let lastText = ''
 let lastImageHash = ''
 let clipboardWatcherInterval: NodeJS.Timeout | null = null
+
+// --- Helper: Guardar imagen directamente y mostrar notificación nativa ---
+function saveImageDirectly(image: any, hash: string) {
+  try {
+    const imagesDir = path.join(app.getPath('userData'), 'images')
+    if (!fs.existsSync(imagesDir)) fs.mkdirSync(imagesDir, { recursive: true })
+    const filename = `${Date.now()}-${hash.substring(0,8)}.png`
+    const filePath = path.join(imagesDir, filename)
+    fs.writeFileSync(filePath, image.toPNG())
+
+    const backendDaemon = BackendDaemon.getInstance()
+    const result = backendDaemon.saveClipboardItem(`[LOCAL_IMAGE]:${filePath}`, 'image')
+
+    if (result) {
+      broadcastUpdate()
+      const syncEngine = SyncEngine.getInstance()
+      syncEngine.enqueueItem(result.id, 'CREATE').catch(err => {
+        log.error('Failed to enqueue image for sync:', err)
+      })
+    }
+
+    // Notificación de imagen removida — demasiado frecuente para el usuario
+  } catch (e) {
+    log.error('Error saving image:', e)
+  }
+}
 
 function startClipboardWatcher() {
   // Prevenir múltiples watchers
@@ -484,8 +462,7 @@ function startClipboardWatcher() {
         const hash = crypto.createHash('md5').update(buffer).digest('hex')
         if (hash !== lastImageHash) {
             lastImageHash = hash
-            pendingNotificationImage = { image, hash, type: 'image' }
-            createNotificationWindow()
+            saveImageDirectly(image, hash)
         }
       }
 
@@ -555,21 +532,9 @@ function startClipboardWatcher() {
                        if (isImage) {
                             // If it's an image file, treat it as an IMAGE type so it shows preview and saves to Image tab
                             const image = nativeImage.createFromPath(detectedFilePath);
-                            pendingNotificationImage = { 
-                                image, 
-                                hash: fileHash, 
-                                type: 'image' 
-                            };
-                       } else {
-                            // Otherwise treat as generic document/file
-                            pendingNotificationImage = { 
-                                filePath: detectedFilePath, 
-                                fileName: path.basename(detectedFilePath),
-                                hash: fileHash,
-                                type: 'file'
-                            };
+                            saveImageDirectly(image, fileHash)
                        }
-                       createNotificationWindow();
+                       // Non-image files are ignored by the watcher — user uploads manually
                    }
                }
            } catch(e) {
@@ -652,6 +617,32 @@ ipcMain.handle('upload-file', async (_: any, filePath: string) => {
     }
 });
 
+ipcMain.handle('upload-avatar', async () => {
+    try {
+        const { canceled, filePaths } = await dialog.showOpenDialog(mainWindow, {
+            title: 'Select avatar image',
+            filters: [{ name: 'Images', extensions: ['jpg', 'jpeg', 'png', 'gif', 'webp'] }],
+            properties: ['openFile']
+        });
+        if (canceled || !filePaths.length) return { success: false, canceled: true };
+
+        const filePath = filePaths[0];
+        const backend = BackendDaemon.getInstance();
+        const form = new FormData();
+        form.append('avatar', fs.createReadStream(filePath));
+
+        const res = await backend.request({
+            url: '/users/me/avatar',
+            method: 'POST',
+            data: form,
+            headers: form.getHeaders()
+        });
+        return res;
+    } catch (e: any) {
+        return { success: false, error: e.message };
+    }
+});
+
 ipcMain.handle('delete-file', async (_: any, fileId: string) => {
     const backend = BackendDaemon.getInstance();
     return await backend.request({
@@ -687,25 +678,12 @@ ipcMain.handle('download-file', async (_: any, fileId: string, fileName: string)
 });
 
 ipcMain.handle('get-clipboard-history', (_: any, { limit = 20, offset = 0, filter = {} }: any = {}) => {
-  // Automatically apply selected device filter if not explicitly requesting something else?
-  // User wants strict filtering by selected device.
   const settings = db.getSettings()
-  // log.info(`[IPC] get-clipboard-history settings:`, JSON.stringify(settings))
   
-  // Ensure filter is not overwritten if passed by frontend (e.g. searching)
-  // But we want to enforce device scope.
   if (settings.selectedDeviceId) {
-      // log.info(`[IPC] get-clipboard-history filtering by device: ${settings.selectedDeviceId}`)
       filter.deviceId = settings.selectedDeviceId
-      cachedSelectedDeviceId = settings.selectedDeviceId // Update cache
-  } else if (cachedSelectedDeviceId) {
-      log.warn(`[IPC] using CACHED device id: ${cachedSelectedDeviceId}`)
-      filter.deviceId = cachedSelectedDeviceId
-  } else {
-      log.warn(`[IPC] get-clipboard-history settings.selectedDeviceId IS MISSING/NULL!`)
   }
   const items = db.getItems(limit, offset, filter)
-  // log.info(`[IPC] get-clipboard-history returning ${items.length} items`)
   return normalizeForIPC(items)
 })
 
@@ -744,33 +722,59 @@ ipcMain.on('copy-to-clipboard', (_: any, text: string) => {
   clipboard.writeText(text)
 })
 
+// Muestra una notificación indicando que el pegado automático no está disponible (fallback Linux)
+function notifyLinuxPasteUnavailable() {
+    const settings = db.getSettings()
+    const lang = settings.language || 'en'
+
+    let title = 'CopyFy'
+    let body = ''
+
+    if (lang.toLowerCase().startsWith('es')) {
+        title = 'Pegado automático no disponible'
+        body = 'Usa Ctrl+V o clic derecho -> Pegar para pegar el contenido copiado.'
+    } else {
+        title = 'Auto-paste not available'
+        body = 'Use Ctrl+V or right click -> Paste to paste the copied content.'
+    }
+
+    if (Notification.isSupported()) {
+        new Notification({ title, body }).show()
+    }
+}
+
 ipcMain.on('paste-text', () => {
+    const { execFile } = require('child_process')
+
     if (process.platform === 'win32') {
+        // Windows: helper nativo que envía Ctrl+V a la ventana en primer plano
         const pasteExe = path.join(__dirname, 'helpers', 'paste.exe')
         if (fs.existsSync(pasteExe)) {
-            require('child_process').execFile(pasteExe, (err: any) => {
+            execFile(pasteExe, (err: any) => {
                 if (err) log.error('Paste error:', err)
             })
         }
+    } else if (process.platform === 'darwin') {
+        // macOS: ocultar el popup para devolver el foco a la app anterior y enviar Cmd+V.
+        // Requiere permiso de Accesibilidad (System Settings > Privacy & Security > Accessibility).
+        if (mainWindow && mainWindow.isVisible()) mainWindow.hide()
+        setTimeout(() => {
+            execFile(
+                'osascript',
+                ['-e', 'tell application "System Events" to keystroke "v" using command down'],
+                (err: any) => {
+                    if (err) log.error('macOS auto-paste error (se requiere permiso de Accesibilidad):', err)
+                }
+            )
+        }, 120)
     } else if (process.platform === 'linux') {
-        const settings = db.getSettings()
-        const lang = settings.language || 'en'
-        
-        let title = 'CopyFy'
-        let body = ''
-        
-        if (lang.toLowerCase().startsWith('es')) {
-            title = 'Pegado automático no disponible'
-            body = 'Usa Ctrl+V o clic derecho -> Pegar para pegar el contenido copiado.'
-        } else {
-            title = 'Auto-paste not available'
-            body = 'Use Ctrl+V or right click -> Paste to paste the copied content.'
-        }
-
-        new Notification({
-            title,
-            body
-        }).show()
+        // Linux: intentar xdotool (X11). En Wayland o sin xdotool, mostrar notificación de fallback.
+        if (mainWindow && mainWindow.isVisible()) mainWindow.hide()
+        setTimeout(() => {
+            execFile('xdotool', ['key', '--clearmodifiers', 'ctrl+v'], (err: any) => {
+                if (err) notifyLinuxPasteUnavailable()
+            })
+        }, 120)
     }
 })
 
@@ -804,22 +808,43 @@ ipcMain.handle('set-config', (_: any, key: string, value: string) => {
         try {
             const v = JSON.parse(value)
             db.updateSettings({ AccessToken: v.token, RefreshToken: v.refreshToken })
+            if (rebuildTrayMenu) rebuildTrayMenu()
         } catch(e) {}
     }
     if (key === 'darkMode') {
         db.updateSettings({ IsDarkMode: value === 'true' })
+        if (rebuildTrayMenu) rebuildTrayMenu()
+        // Notify all windows
+        BrowserWindow.getAllWindows().forEach((win: any) => {
+            if (!win.isDestroyed()) {
+                win.webContents.send('theme-changed', value === 'true')
+            }
+        })
     }
 })
 
 ipcMain.handle('remove-config', (_: any, key: string) => {
     if (key === 'session') {
         db.updateSettings({ AccessToken: null, RefreshToken: null })
+        if (rebuildTrayMenu) rebuildTrayMenu()
     }
 })
 
 ipcMain.handle('get-app-version', () => app.getVersion())
 ipcMain.handle('get-system-locale', () => app.getLocale())
 ipcMain.handle('get-hostname', () => os.hostname())
+
+// --- Native System Notifications ---
+ipcMain.handle('show-notification', (_: any, opts: { title: string; body: string }) => {
+  if (Notification.isSupported()) {
+    const notif = new Notification({
+      title: opts.title || 'CopyFy++',
+      body: opts.body || '',
+      icon: path.join(__dirname, 'frontend', 'media', '64x64.png')
+    })
+    notif.show()
+  }
+})
 ipcMain.handle('hide-window', () => mainWindow && mainWindow.hide())
 ipcMain.handle('close-window', () => {
     const win = BrowserWindow.getFocusedWindow()
@@ -853,25 +878,28 @@ ipcMain.handle('set-preferences', (_: any, prefs: any) => {
     if (dbUpdate.GlobalShortcut) {
         ipcMain.emit('update-global-shortcut', null, dbUpdate.GlobalShortcut)
     }
-    
-    return newSettings
-})
 
-ipcMain.handle('get-current-device', () => {
-    // Return explicitly selected device, or fallback to the local one logic?
-    // User wants: "que cuando se cierre la app y se inicie este sea el seleccionado"
-    // So we check AppSettings.SelectedDeviceId first.
-    
-    const settings = db.getSettings()
-    if (settings.selectedDeviceId) {
-        // Find this device info
-        const devices = db.getDevices()
-        const found = devices.find((d: any) => d.Id === settings.selectedDeviceId)
-        if (found) return found
+    if (rebuildTrayMenu) rebuildTrayMenu()
+
+    // Broadcast preference changes to all windows
+    const broadcastData: any = {}
+    if (prefs.colorPrimary) broadcastData.colorPrimary = prefs.colorPrimary
+    if (prefs.colorSecondary) broadcastData.colorSecondary = prefs.colorSecondary
+    if (prefs.colorBg) broadcastData.colorBg = prefs.colorBg
+    if (prefs.colorSurface) broadcastData.colorSurface = prefs.colorSurface
+    if (prefs.colorText) broadcastData.colorText = prefs.colorText
+    if (prefs.fontSize) broadcastData.fontSize = prefs.fontSize
+    if (prefs.language) broadcastData.language = prefs.language
+
+    if (Object.keys(broadcastData).length > 0) {
+      BrowserWindow.getAllWindows().forEach((win: any) => {
+        if (!win.isDestroyed()) {
+          win.webContents.send('preferences-changed', broadcastData)
+        }
+      })
     }
     
-    // Fallback to default behavior (e.g. current machine or last updated)
-    return db.getDevice()
+    return newSettings
 })
 
 ipcMain.handle('get-all-devices', () => {
@@ -879,57 +907,18 @@ ipcMain.handle('get-all-devices', () => {
 })
 
 ipcMain.handle('register-new-device', (_: any, name: string) => {
-    // Note: db.registerDevice now handles duplicate checks and merging automatically
-    // so we can just pass the new info. If ID is not provided, db generates one or reuses existing by name.
-    
-    // However, for explicit creation from UI, we might want to generate an ID if it's "new"
-    // but db.registerDevice handles that too.
-    
     const resId = db.registerDevice({
-        Id: null, // Let DB decide (reuse or create)
+        Id: null,
         OsName: process.platform,
         Name: name,
         VersionApp: app.getVersion()
     })
     
     if (resId) {
-        // Update items to belong to this new device if they were orphans
         db.updateAllItemsDevice(resId)
         return { id: resId, name }
     }
     return null
-})
-
-ipcMain.handle('set-active-device', (_: any, id: string) => {
-    log.info('IPC set-active-device called with:', id)
-    const result = db.setActiveDevice(id)
-    
-    // Verify persistence
-    const settings = db.getSettings()
-    // log.info(`[IPC] db.getSettings() result:`, JSON.stringify(settings))
-    // log.info(`[IPC] Device set to: ${settings.selectedDeviceId} (Requested: ${id})`)
-    
-    // Update cache
-    cachedSelectedDeviceId = id
-
-    // Force a fresh filter application on broadcast
-    if (mainWindow && !mainWindow.isDestroyed()) {
-        const filter: any = {}
-        
-        // Use the ID we just set, because DB might be slow to return it in getSettings() immediately
-        // or there is a race condition.
-        // We TRUST the ID passed to this function.
-        filter.deviceId = id
-        
-        // log.info(`[IPC] Forcing update with device filter: ${filter.deviceId}`)
-        const items = db.getItems(20, 0, filter)
-        // log.info(`[IPC] Found ${items.length} items for device`)
-        
-        mainWindow.webContents.send('clipboard-update', normalizeForIPC(items))
-    }
-    
-    // broadcastUpdate() // Replaced by explicit block above for debugging
-    return result
 })
 
 // App Lifecycle
@@ -941,16 +930,12 @@ app.whenReady().then(async () => {
       app.dock.hide()
   }
   
-  // --- Integration Start ---
-  // Initialize the BackendDaemon which sets up the request handling and IPC
   BackendDaemon.getInstance();
   log.info('Backend Daemon Initialized');
   
-  // Initialize SyncEngine and start hourly scheduler
   const syncEngine = SyncEngine.getInstance();
   syncEngine.startScheduler();
-  log.info('Sync Engine Initialized - Hourly sync enabled');
-  // --- Integration End ---
+  log.info('Sync Engine Initialized');
 
   const device = db.getDevice()
   let deviceId = device ? device.Id : null
@@ -994,14 +979,106 @@ app.whenReady().then(async () => {
   }
 
   if (fs.existsSync(iconPath)) {
-      tray = new Tray(nativeImage.createFromPath(iconPath))
-      const contextMenu = Menu.buildFromTemplate([
-        { label: 'Show', click: () => mainWindow.show() },
-        { label: 'Quit', click: () => { isQuitting = true; app.quit() } }
-      ])
-      tray.setToolTip('Copyfy Local')
-      tray.setContextMenu(contextMenu)
-      tray.on('click', () => mainWindow.isVisible() ? mainWindow.hide() : mainWindow.show())
+      let trayImage = nativeImage.createFromPath(iconPath)
+      // La barra de menú de macOS y la mayoría de bandejas de Linux esperan iconos pequeños.
+      // El icono de origen es de 64px, así que lo reescalamos para que no se vea gigante/borroso.
+      if (process.platform === 'darwin') {
+          trayImage = trayImage.resize({ width: 18, height: 18 })
+      } else if (process.platform === 'linux') {
+          trayImage = trayImage.resize({ width: 22, height: 22 })
+      }
+      tray = new Tray(trayImage)
+
+      const buildTrayMenu = () => {
+        const settings = db.getSettings()
+        const isDark = settings.isDarkMode
+        const hasSession = !!settings.accessToken
+        const lang = settings.language || 'en'
+        const isEn = lang.startsWith('en')
+
+        const template: any[] = [
+          {
+            label: isEn ? 'Show CopyFy++' : 'Mostrar CopyFy++',
+            click: () => {
+              positionWindowAtCursor()
+              mainWindow.show()
+              mainWindow.focus()
+            }
+          },
+          { type: 'separator' },
+          {
+            label: isDark ? (isEn ? 'Light mode' : 'Modo claro') : (isEn ? 'Dark mode' : 'Modo oscuro'),
+            click: () => {
+              const newDark = !isDark
+              db.updateSettings({ IsDarkMode: newDark })
+              if (mainWindow && !mainWindow.isDestroyed()) {
+                mainWindow.webContents.send('theme-changed', newDark)
+              }
+              buildTrayMenu()
+            }
+          },
+          ...(hasSession ? [
+            {
+              label: isEn ? 'Log out' : 'Cerrar sesión',
+              click: async () => {
+                db.updateSettings({ AccessToken: null, RefreshToken: null })
+                if (mainWindow && !mainWindow.isDestroyed()) {
+                  mainWindow.webContents.send('session-changed', null)
+                }
+                buildTrayMenu()
+              }
+            }
+          ] : [
+            {
+              label: isEn ? 'Log in' : 'Iniciar sesión',
+              click: () => { mainWindow.hide(); createAuthWindow() }
+            }
+          ]),
+          { type: 'separator' },
+          {
+            label: isEn ? 'Settings' : 'Configuración',
+            click: () => { mainWindow.hide(); createSettingsWindow() }
+          },
+          {
+            label: isEn ? 'Sync' : 'Sincronizar',
+            click: () => {
+              const se = SyncEngine.getInstance()
+              se.syncNow().catch(() => {})
+            }
+          },
+          { type: 'separator' },
+          {
+            label: isEn ? 'Quit' : 'Salir',
+            click: () => { isQuitting = true; app.quit() }
+          }
+        ]
+
+        const contextMenu = Menu.buildFromTemplate(template)
+        tray.setContextMenu(contextMenu)
+      }
+
+      buildTrayMenu()
+      rebuildTrayMenu = buildTrayMenu
+      tray.setToolTip('CopyFy++')
+
+      // Rebuild tray menu when auth state changes
+      ipcMain.on('auth:login-success', () => {
+        buildTrayMenu()
+        // Notify main window to reload session
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.webContents.send('session-changed', 'logged-in')
+        }
+      })
+
+      tray.on('click', () => {
+          if (mainWindow.isVisible()) {
+              mainWindow.hide()
+          } else {
+              positionWindowAtCursor()
+              mainWindow.show()
+              mainWindow.focus()
+          }
+      })
   }
 
   startClipboardWatcher()
@@ -1015,6 +1092,7 @@ app.whenReady().then(async () => {
           const ret = globalShortcut.register(accelerator, () => {
               if (mainWindow.isVisible()) mainWindow.hide()
               else {
+                  positionWindowAtCursor()
                   mainWindow.show()
                   mainWindow.focus()
               }

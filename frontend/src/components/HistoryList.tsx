@@ -78,7 +78,15 @@ const HistoryList = forwardRef<HistoryListRef, Props>(({ items, search, selected
             // Para claves estables que eviten re-renders innecesarios
             const stableKey = item.id || `${item.value.slice(0, 50)}-${idx}`
             return (
-              <div key={stableKey} ref={el => { itemRefs.current[idx] = el }}>
+              <div
+                key={stableKey}
+                ref={el => { itemRefs.current[idx] = el }}
+                // Virtualización ligera: el motor (Chromium) omite el layout y
+                // pintado de las tarjetas fuera de la ventana visible, acotando
+                // el costo de render y la RAM cuando hay muchos items. Funciona
+                // con alturas variables (texto/imagen/código) sin lógica manual.
+                style={{ contentVisibility: 'auto', containIntrinsicSize: '0 92px' } as React.CSSProperties}
+              >
                 <Card
                   item={item}
                   search={search}
