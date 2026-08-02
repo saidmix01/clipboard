@@ -56,9 +56,12 @@ export default function SettingsWindow() {
           if (prefs.theme) {
             try { theme = typeof prefs.theme === 'string' ? JSON.parse(prefs.theme) : prefs.theme } catch {}
           }
-          if (theme.primary) setColorPrimary(theme.primary)
-          if (theme.secondary) setColorSecondary(theme.secondary)
-          if (theme.fontSize) setFontSize(Number(theme.fontSize))
+          if (theme.primary) { setColorPrimary(theme.primary); document.documentElement.style.setProperty('--color-primary', theme.primary) }
+          if (theme.secondary) { setColorSecondary(theme.secondary); document.documentElement.style.setProperty('--color-secondary', theme.secondary) }
+          if (theme.bg) { document.documentElement.style.setProperty('--color-bg', theme.bg) }
+          if (theme.surface) { document.documentElement.style.setProperty('--color-surface', theme.surface) }
+          if (theme.text) { document.documentElement.style.setProperty('--color-text', theme.text) }
+          if (theme.fontSize) { setFontSize(Number(theme.fontSize)); document.documentElement.style.setProperty('--font-size-card', `${theme.fontSize}px`) }
         }
       } catch {}
 

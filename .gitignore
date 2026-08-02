@@ -2,6 +2,7 @@ node_modules/
 dist/
 .env
 env
-how_compile.md
 cert.pfx
 workers/dist/
+.DS_Store
+*.ipynb

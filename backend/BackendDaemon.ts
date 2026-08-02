@@ -27,32 +27,22 @@ export class BackendDaemon {
 
     this.client = axios.create({
       baseURL: this.baseUrl,
-      timeout: 10000,
+      timeout: 30000,
     });
 
     this.setupInterceptors();
     this.setupIPC();
-    // initActiveDevice se llama desde getInstance() DESPUÉS de asignar instance
-    // para evitar el ciclo: constructor → setActiveDevice → SyncEngine → getInstance() → constructor
   }
 
   public static getInstance(): BackendDaemon {
     if (!BackendDaemon.instance) {
       BackendDaemon.instance = new BackendDaemon();
-      // Llamar initActiveDevice aquí, cuando instance ya está asignado,
-      // así cualquier llamada recursiva a getInstance() retorna la instancia existente
       BackendDaemon.instance.initActiveDevice();
     }
     return BackendDaemon.instance;
   }
 
   private initActiveDevice() {
-    // Logic:
-    // 1. Load devices
-    // 2. Check if one is already active (in AppSettings)
-    // 3. If not, and only 1 device exists -> set it active
-    // 4. If multiple and none active -> wait for user selection (frontend will handle modal)
-    
     const settings = db.getSettings();
     const devices = db.getDevices();
     
@@ -60,8 +50,6 @@ export class BackendDaemon {
         if (devices.length === 1) {
             this.setActiveDevice(devices[0].Id);
         } else if (devices.length === 0) {
-            // Should not happen if ensureLocalDevice was called in main.js
-            // But if it does, main.js ensures at least one local device exists.
             const localId = db.ensureLocalDevice();
             if (localId) this.setActiveDevice(localId);
         }
@@ -81,20 +69,27 @@ export class BackendDaemon {
        if (success) {
            const device = this.getActiveDevice();
            this.broadcast('device:changed', device);
-           // Broadcast items normalizados para el nuevo dispositivo
            const items = this.getItemsByActiveDevice();
            const normalized = items.map(normalizeItemForIPC);
            this.broadcast('clipboard:updated', normalized);
            this.broadcast('clipboard-update', normalized);
 
-           // Trigger sync immediately
+           // Trigger sync — si ya hay uno corriendo, syncNow() retorna inmediatamente
+           // y aun así emitimos device:sync-completed para no bloquear la UI
            try {
                const { SyncEngine } = require('./SyncEngine');
-               SyncEngine.getInstance().syncNow()
-                 .catch((err: any) => console.error('[BackendDaemon] Sync on device change failed:', err))
-                 .finally(() => {
-                     this.broadcast('device:sync-completed', device);
-                 });
+               const engine = SyncEngine.getInstance();
+               
+               // Si ya hay un sync corriendo, no esperar — notificar completed directamente
+               if (engine.getStats().isRunning) {
+                   this.broadcast('device:sync-completed', device);
+               } else {
+                   engine.syncNow()
+                     .catch((err: any) => console.error('[BackendDaemon] Sync on device change failed:', err))
+                     .finally(() => {
+                         this.broadcast('device:sync-completed', device);
+                     });
+               }
            } catch (e) {
                console.error('[BackendDaemon] Failed to trigger sync on device change:', e);
                this.broadcast('device:sync-completed', device);
@@ -140,14 +135,9 @@ export class BackendDaemon {
       windows.forEach(w => w.webContents.send(channel, data));
   }
 
-  /**
-   * Método público para hacer requests autenticados desde SyncEngine
-   */
   public async request(config: AxiosRequestConfig): Promise<any> {
     try {
-      // console.log(`[BackendDaemon] Requesting ${config.method?.toUpperCase()} ${config.url}`);
       const response = await this.client.request(config);
-      // console.log(`[BackendDaemon] Request success: ${response.status}`);
       return {
         success: true,
         data: response.data,
@@ -156,7 +146,6 @@ export class BackendDaemon {
     } catch (error: any) {
       console.error(`[BackendDaemon] Request failed: ${config.method?.toUpperCase()} ${config.url}`, error.message);
       if (error.response) {
-          console.error('[BackendDaemon] Error Data:', JSON.stringify(error.response.data));
           console.error('[BackendDaemon] Error Status:', error.response.status);
       }
       return {
@@ -168,11 +157,7 @@ export class BackendDaemon {
     }
   }
 
-  /**
-   * Configures Axios interceptors to handle Auth headers and Refresh Token flow
-   */
   private setupInterceptors() {
-    // Request Interceptor: Attach Token
     this.client.interceptors.request.use(
       (config) => {
         const settings = db.getSettings();
@@ -184,7 +169,6 @@ export class BackendDaemon {
       (error) => Promise.reject(error)
     );
 
-    // Response Interceptor: Handle 401
     this.client.interceptors.response.use(
       (response) => response,
       async (error) => {
@@ -220,30 +204,23 @@ export class BackendDaemon {
     );
   }
 
-  /**
-   * Executes the refresh token logic safely
-   */
   private async performRefreshToken(): Promise<string> {
     const settings = db.getSettings();
     if (!settings.refreshToken) {
       throw new Error('No refresh token available');
     }
 
-    // Use a clean axios call to avoid interceptor loops
     try {
       const response = await axios.post(`${this.baseUrl}/auth/refresh`, {
         refreshToken: settings.refreshToken,
       });
 
-      // Handle specific response structure: 
-      // { success: true, message: "...", data: { token: "...", refreshToken: "..." } }
       if (response.data && response.data.success && response.data.data) {
           const { token, refreshToken } = response.data.data;
           
-          // Update DB (Single Source of Truth)
           db.updateSettings({
             AccessToken: token,
-            RefreshToken: refreshToken || settings.refreshToken // Keep old if not rotated
+            RefreshToken: refreshToken || settings.refreshToken
           });
 
           return token;
@@ -256,9 +233,6 @@ export class BackendDaemon {
     }
   }
 
-  /**
-   * Retries or rejects queued requests
-   */
   private processQueue(error: any) {
     this.requestQueue.forEach((prom) => {
       if (error) {
@@ -278,7 +252,9 @@ export class BackendDaemon {
   public async syncDevicesOnLogin(silent: boolean = false) {
     const windows = BrowserWindow.getAllWindows();
     const sendToRenderer = (channel: string, data?: any) => {
-        windows.forEach(w => w.webContents.send(channel, data));
+        windows.forEach(w => {
+            if (!w.isDestroyed()) w.webContents.send(channel, data);
+        });
     };
 
     if (!silent) sendToRenderer('devices:sync-start');
@@ -315,7 +291,7 @@ export class BackendDaemon {
       try {
           const payload = {
               id: localDevice.Id,
-              clientId: 'client-1', // TODO: Make dynamic if needed
+              clientId: 'client-1',
               name: localDevice.Name,
               metadata: {
                   os: localDevice.OsName,
@@ -327,7 +303,6 @@ export class BackendDaemon {
           db.markDeviceSynced(localDevice.Id);
       } catch (e: any) {
           console.error(`[BackendDaemon] Failed to create remote device ${localDevice.Id}:`, e.message);
-          // Continue execution, will retry next login
       }
   }
 
@@ -353,9 +328,6 @@ export class BackendDaemon {
           
           if (Array.isArray(remoteDevices)) {
               for (const rd of remoteDevices) {
-                  // Skip if it's the current local device (already handled)
-                  // although registerDevice handles updates, so it's fine.
-                  
                   const deviceInfo = {
                       Id: rd.id,
                       Name: rd.name,
@@ -363,22 +335,15 @@ export class BackendDaemon {
                       VersionApp: rd.metadata?.appversion || '0.0.0'
                   };
                   
-                  // Update or Insert
                   db.registerDevice(deviceInfo);
-                  // Mark as synced since it came from remote
                   db.markDeviceSynced(deviceInfo.Id);
               }
           }
       } catch (e: any) {
           console.error('[BackendDaemon] Failed to fetch remote devices:', e.message);
-          // Do not throw, just log, so the flow continues to "notify"
       }
   }
 
-  /**
-   * Exposes capabilities to Renderer via IPC.
-   * Guard estático previene registro doble si getInstance() se llama durante inicialización.
-   */
   private setupIPC() {
     if (BackendDaemon.ipcRegistered) {
       console.warn('[BackendDaemon] IPC handlers already registered, skipping');

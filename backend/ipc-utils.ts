@@ -1,7 +1,5 @@
 /**
- * ipc-utils.ts
- * Utilidades compartidas para normalizar datos antes de enviarlos al renderer via IPC.
- * Usado por main.ts y BackendDaemon.ts para evitar duplicación y circular imports.
+ * Utilidades para normalizar datos de DB al shape esperado por el renderer via IPC.
  */
 
 export interface IPCClipboardItem {
@@ -13,15 +11,11 @@ export interface IPCClipboardItem {
   imagePath: string | null
 }
 
-/**
- * Normaliza un item de DB (campos PascalCase de sql.js) al shape
- * que espera el renderer (HistoryItem en types.ts).
- */
 export function normalizeItemForIPC(i: any): IPCClipboardItem {
   return {
     id: i.id,
     value: i.value,
-    type: i.type,           // 'text' | 'image' — requerido por HistoryItem
+    type: i.type,
     favorite: i.favorite,
     createdAt: i.createdAt,
     imagePath:
@@ -33,9 +27,6 @@ export function normalizeItemForIPC(i: any): IPCClipboardItem {
   }
 }
 
-/**
- * Normaliza un array de items.
- */
 export function normalizeForIPC(items: any[]): IPCClipboardItem[] {
   return items.map(normalizeItemForIPC)
 }

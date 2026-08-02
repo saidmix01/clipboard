@@ -18,7 +18,6 @@ export default function DeviceRegistrationModal({ onSuccess }: Props) {
     const checkDevice = async () => {
         try {
             const device = await (window as any).electronAPI?.getActiveDevice?.()
-            console.log('Checking device registration:', device)
             // Show modal if no device OR if it's the legacy 'local-device'
             if (!device || !device.Id || device.Id === 'local-device') {
                 // Get hostname for suggestion

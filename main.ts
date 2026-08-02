@@ -10,7 +10,6 @@ const {
   Menu,
   shell,
   Notification,
-  powerMonitor,
   protocol,
   dialog
 } = require('electron')
@@ -20,18 +19,12 @@ const os = require('os')
 const crypto = require('crypto')
 const FormData = require('form-data')
 
-// --- Integration Start ---
-// Assuming TypeScript compilation or ts-node
-// If using plain JS, this would be: const { BackendDaemon } = require('./backend/BackendDaemon')
 import { BackendDaemon } from './backend/BackendDaemon';
 import { SyncEngine } from './backend/SyncEngine';
-import { normalizeItemForIPC, normalizeForIPC } from './backend/ipc-utils';
-// --- Integration End ---
+import { normalizeForIPC } from './backend/ipc-utils';
 
 const db = require('./db')
 const { configureAutoLaunch } = require('./autolaunch')
-const electronLog = require('electron-log')
-const { exec, execFile, spawnSync } = require('child_process')
 
 const log = {
   info: (...args: any[]) => console.log('[MAIN]', ...args),
@@ -50,8 +43,10 @@ let isQuitting = false
 let rebuildTrayMenu: (() => void) | null = null
 
 // Set app name and ensure userData exists to avoid Lock file error (Error code: 3)
-app.setName('CopyFy');
-// app.setAppUserModelId('SAIDMIX.CopyFy'); // Optional if needed for notifications
+app.setName('CopyFy++');
+if (process.platform === 'win32') {
+  app.setAppUserModelId('CopyFy++')
+}
 const userDataPath = app.getPath('userData');
 if (!fs.existsSync(userDataPath)) {
     try {
@@ -76,7 +71,7 @@ if (!gotTheLock) {
   })
 }
 
-// normalizeItemForIPC y normalizeForIPC importados desde ./backend/ipc-utils
+// normalizeForIPC importado desde ./backend/ipc-utils
 
 // Helper: Broadcast update to main window with correct filtering
 function broadcastUpdate() {
@@ -100,7 +95,6 @@ function broadcastUpdate() {
     }
 }
 
-let cachedSelectedDeviceId: string | null = null
 
 // Position window near mouse cursor, clamped within the display bounds
 function positionWindowAtCursor() {
@@ -165,13 +159,8 @@ function createWindow() {
   }
 
   mainWindow.once('ready-to-show', () => {
-    const settings = db.getSettings()
     mainWindow.show()
     broadcastUpdate()
-  })
-
-  mainWindow.on('blur', () => {
-    // Optional: hide on blur
   })
 }
 
@@ -667,25 +656,12 @@ ipcMain.handle('download-file', async (_: any, fileId: string, fileName: string)
 });
 
 ipcMain.handle('get-clipboard-history', (_: any, { limit = 20, offset = 0, filter = {} }: any = {}) => {
-  // Automatically apply selected device filter if not explicitly requesting something else?
-  // User wants strict filtering by selected device.
   const settings = db.getSettings()
-  // log.info(`[IPC] get-clipboard-history settings:`, JSON.stringify(settings))
   
-  // Ensure filter is not overwritten if passed by frontend (e.g. searching)
-  // But we want to enforce device scope.
   if (settings.selectedDeviceId) {
-      // log.info(`[IPC] get-clipboard-history filtering by device: ${settings.selectedDeviceId}`)
       filter.deviceId = settings.selectedDeviceId
-      cachedSelectedDeviceId = settings.selectedDeviceId // Update cache
-  } else if (cachedSelectedDeviceId) {
-      log.warn(`[IPC] using CACHED device id: ${cachedSelectedDeviceId}`)
-      filter.deviceId = cachedSelectedDeviceId
-  } else {
-      log.warn(`[IPC] get-clipboard-history settings.selectedDeviceId IS MISSING/NULL!`)
   }
   const items = db.getItems(limit, offset, filter)
-  // log.info(`[IPC] get-clipboard-history returning ${items.length} items`)
   return normalizeForIPC(items)
 })
 
@@ -822,7 +798,6 @@ ipcMain.handle('show-notification', (_: any, opts: { title: string; body: string
   }
 })
 ipcMain.handle('hide-window', () => mainWindow && mainWindow.hide())
-ipcMain.handle('open-settings', () => createSettingsWindow())
 ipcMain.handle('close-window', () => {
     const win = BrowserWindow.getFocusedWindow()
     if (win && win !== mainWindow) win.close()
@@ -879,38 +854,24 @@ ipcMain.handle('set-preferences', (_: any, prefs: any) => {
     return newSettings
 })
 
-// NOTA: 'devices:get-active' y 'devices:set-active' están registrados en
-// BackendDaemon.setupIPC() — son los únicos que usa el preload. Los handlers
-// 'get-current-device' y 'set-active-device' han sido eliminados (código muerto).
-
 ipcMain.handle('get-all-devices', () => {
     return db.getDevices()
 })
 
 ipcMain.handle('register-new-device', (_: any, name: string) => {
-    // Note: db.registerDevice now handles duplicate checks and merging automatically
-    // so we can just pass the new info. If ID is not provided, db generates one or reuses existing by name.
-    
-    // However, for explicit creation from UI, we might want to generate an ID if it's "new"
-    // but db.registerDevice handles that too.
-    
     const resId = db.registerDevice({
-        Id: null, // Let DB decide (reuse or create)
+        Id: null,
         OsName: process.platform,
         Name: name,
         VersionApp: app.getVersion()
     })
     
     if (resId) {
-        // Update items to belong to this new device if they were orphans
         db.updateAllItemsDevice(resId)
         return { id: resId, name }
     }
     return null
 })
-
-// Handler eliminado: 'set-active-device' era código muerto.
-// El preload llama 'devices:set-active' → manejado en BackendDaemon.setupIPC().
 
 // App Lifecycle
 app.whenReady().then(async () => {
@@ -921,16 +882,12 @@ app.whenReady().then(async () => {
       app.dock.hide()
   }
   
-  // --- Integration Start ---
-  // Initialize the BackendDaemon which sets up the request handling and IPC
   BackendDaemon.getInstance();
   log.info('Backend Daemon Initialized');
   
-  // Initialize SyncEngine and start hourly scheduler
   const syncEngine = SyncEngine.getInstance();
   syncEngine.startScheduler();
-  log.info('Sync Engine Initialized - Hourly sync enabled');
-  // --- Integration End ---
+  log.info('Sync Engine Initialized');
 
   const device = db.getDevice()
   let deviceId = device ? device.Id : null

@@ -39,8 +39,6 @@ electron_1.contextBridge.exposeInMainWorld('electronAPI', {
     getAllDevices: () => electron_1.ipcRenderer.invoke('get-all-devices'),
     registerNewDevice: (name) => electron_1.ipcRenderer.invoke('register-new-device', name),
     setActiveDevice: (id) => electron_1.ipcRenderer.invoke('devices:set-active', id),
-    // Alias para compatibilidad con código existente — apunta al mismo handler
-    getCurrentDevice: () => electron_1.ipcRenderer.invoke('devices:get-active'),
     onDeviceChanged: (callback) => onChannel('device:changed', callback),
     onDeviceSyncCompleted: (callback) => onChannel('device:sync-completed', callback),
     getClipboardItems: () => electron_1.ipcRenderer.invoke('clipboard:get-items'),
@@ -84,17 +82,10 @@ electron_1.contextBridge.exposeInMainWorld('electronAPI', {
     uploadFile: (filePath) => electron_1.ipcRenderer.invoke('upload-file', filePath),
     deleteFile: (fileId) => electron_1.ipcRenderer.invoke('delete-file', fileId),
     downloadFile: (fileId, fileName) => electron_1.ipcRenderer.invoke('download-file', fileId, fileName),
-    openFile: (fileId) => electron_1.ipcRenderer.invoke('open-file', fileId),
     onFileUploaded: (cb) => onChannel('file-uploaded', cb),
     onFileUploadError: (cb) => onChannel('file-upload-error', cb),
     onFileUploadStatus: (cb) => onChannel('file-upload-status', cb),
     onDownloadProgress: (cb) => onChannel('download-progress', cb),
-    // --- Notification Window ---
-    onNotificationLoadImage: (cb) => onChannel('notification-load-image', cb),
-    onNotificationLoadFile: (cb) => onChannel('notification-load-file', cb),
-    onNotificationError: (cb) => onChannel('notification-error', cb),
-    signalNotificationReady: () => electron_1.ipcRenderer.send('notification-window-ready'),
-    sendNotificationAction: (action) => electron_1.ipcRenderer.send('notification-action', action),
     // --- Native System Notifications ---
     showNotification: (opts) => electron_1.ipcRenderer.invoke('show-notification', opts),
     // --- App Lifecycle ---

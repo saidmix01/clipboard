@@ -28,15 +28,6 @@ async function init(app) {
     SQL = await initSqlJs({ locateFile })
   }
 
-  // Force reset if we want to ensure clean state as per instructions? 
-  // User said: "Eliminar completamente la base de datos anterior y crear estas tablas nuevas"
-  // But also "Si la DB no existe, se crea vacía."
-  // To be safe and ensure the NEW schema is used, I should probably check if the old schema exists and if so, maybe backup/delete it?
-  // The user said: "Eliminar completamente la base de datos anterior".
-  // So I will delete the file if it exists and create new?
-  // Or I can just DROP tables.
-  
-  // Let's try to open it first.
   let dbExists = fs.existsSync(dbFilePath)
   
   try {
@@ -271,27 +262,6 @@ function persist() {
     console.error('Error persisting DB:', e)
     throw e // Propagar error para que el caller lo maneje
   }
-}
-
-// Versión asíncrona de persist para operaciones no críticas
-async function persistAsync() {
-  if (!dbFilePath || !db) return
-  return new Promise((resolve, reject) => {
-    try {
-      const data = db.export()
-      fs.writeFile(dbFilePath, Buffer.from(data), (err) => {
-        if (err) {
-          console.error('Error persisting DB async:', err)
-          reject(err)
-        } else {
-          resolve()
-        }
-      })
-    } catch (e) {
-      console.error('Error exporting DB:', e)
-      reject(e)
-    }
-  })
 }
 
 // --- CRUD Operations ---
@@ -553,7 +523,7 @@ function setFavorite(id, isFavorite) {
 
 function deleteItem(id) {
   try {
-    const stmt = db.prepare("UPDATE ClipboardItem SET IsDeleted = 1 WHERE Id = ?")
+    const stmt = db.prepare("UPDATE ClipboardItem SET IsDeleted = 1, Pending = 1 WHERE Id = ?")
     stmt.bind([id])
     stmt.step()
     stmt.free()
@@ -856,7 +826,9 @@ function normalizeItem(row) {
     type: row.Type,
     favorite: !!row.IsFavorite,
     createdAt: row.CreatedAt,
+    updatedAt: row.UpdatedAt,
     isDeleted: !!row.IsDeleted,
+    pending: row.Pending || 0,
     deviceId: row.DeviceId
   }
 }
@@ -949,7 +921,7 @@ function getPendingSyncOperations() {
 
 function getPendingItems(deviceId = null) {
   try {
-    let query = "SELECT * FROM ClipboardItem WHERE Pending = 1 AND IsDeleted = 0"
+    let query = "SELECT * FROM ClipboardItem WHERE Pending = 1"
     const params = []
     
     if (deviceId) {
@@ -957,7 +929,7 @@ function getPendingItems(deviceId = null) {
       params.push(deviceId)
     }
     
-    query += " ORDER BY CreatedAt ASC" // FIFO for sync
+    query += " ORDER BY CreatedAt ASC"
     
     const stmt = db.prepare(query)
     stmt.bind(params)
@@ -1001,6 +973,18 @@ function markItemAsSynced(itemId) {
     persist()
   } catch (e) {
     console.error('Error marking item as synced:', e)
+  }
+}
+
+function markItemForSync(itemId) {
+  try {
+    const stmt = db.prepare("UPDATE ClipboardItem SET Pending = 1 WHERE Id = ?")
+    stmt.bind([itemId])
+    stmt.step()
+    stmt.free()
+    persist()
+  } catch (e) {
+    console.error('Error marking item for sync:', e)
   }
 }
 
@@ -1122,9 +1106,9 @@ module.exports = {
   getPendingSyncOperations,
   getPendingItems,
   markItemAsSynced,
+  markItemForSync,
   updateItem,
   markAsConflicted,
   getConflictedItems,
-  clearConflict,
-  persistAsync
+  clearConflict
 }

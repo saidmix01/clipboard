@@ -54,32 +54,39 @@ export default function SettingsMenu({ open, darkMode, onClose, onForceUpdate, o
                 setShortcutModifier(mods[0])
             }
           }
-          if (prefs?.colorPrimary) setColorPrimary(prefs.colorPrimary)
+
+          // Parse theme from JSON string
+          let theme: any = {}
+          if (prefs?.theme) {
+            try { theme = typeof prefs.theme === 'string' ? JSON.parse(prefs.theme) : prefs.theme } catch {}
+          }
+
+          if (theme.primary) setColorPrimary(theme.primary)
           else {
             const v = getComputedStyle(document.documentElement).getPropertyValue('--color-primary').trim()
             if (v) setColorPrimary(v)
           }
-          if (prefs?.colorSecondary) setColorSecondary(prefs.colorSecondary)
+          if (theme.secondary) setColorSecondary(theme.secondary)
           else {
             const v = getComputedStyle(document.documentElement).getPropertyValue('--color-secondary').trim()
             if (v) setColorSecondary(v)
           }
-          if (prefs?.colorBg) setColorBg(prefs.colorBg)
+          if (theme.bg) setColorBg(theme.bg)
           else {
             const v = getComputedStyle(document.documentElement).getPropertyValue('--color-bg').trim()
             if (v) setColorBg(v)
           }
-          if (prefs?.colorSurface) setColorSurface(prefs.colorSurface)
+          if (theme.surface) setColorSurface(theme.surface)
           else {
             const v = getComputedStyle(document.documentElement).getPropertyValue('--color-surface').trim()
             if (v) setColorSurface(v)
           }
-          if (prefs?.colorText) setColorText(prefs.colorText)
+          if (theme.text) setColorText(theme.text)
           else {
             const v = getComputedStyle(document.documentElement).getPropertyValue('--color-text').trim()
             if (v) setColorText(v)
           }
-          if (prefs?.fontSize) setFontSize(Number(prefs.fontSize))
+          if (theme.fontSize) setFontSize(Number(theme.fontSize))
           else {
             const v = getComputedStyle(document.documentElement).getPropertyValue('--font-size-card').trim()
             const n = parseInt(v)

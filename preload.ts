@@ -46,9 +46,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
   registerNewDevice: (name: string) => ipcRenderer.invoke('register-new-device', name),
   setActiveDevice: (id: string) => ipcRenderer.invoke('devices:set-active', id),
 
-  // Alias para compatibilidad con código existente — apunta al mismo handler
-  getCurrentDevice: () => ipcRenderer.invoke('devices:get-active'),
-
   onDeviceChanged: (callback: (device: any) => void) =>
     onChannel('device:changed', callback),
 
@@ -111,7 +108,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
   uploadFile: (filePath: string) => ipcRenderer.invoke('upload-file', filePath),
   deleteFile: (fileId: string) => ipcRenderer.invoke('delete-file', fileId),
   downloadFile: (fileId: string, fileName: string) => ipcRenderer.invoke('download-file', fileId, fileName),
-  openFile: (fileId: string) => ipcRenderer.invoke('open-file', fileId),
 
   onFileUploaded: (cb: (data: any) => void) =>
     onChannel('file-uploaded', cb),

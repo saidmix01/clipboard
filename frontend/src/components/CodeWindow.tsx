@@ -30,14 +30,12 @@ export default function CodeWindow() {
 
     // Setup listener
     const cleanup = (window as any).electronAPI?.onCodeLoadContent?.((text: string) => {
-        console.log('Received content:', text.substring(0, 50) + '...')
         setContent(text)
         detectLanguage(text)
     })
     
     // Signal ready
     setTimeout(() => {
-        console.log('Signaling ready...')
         ;(window as any).electronAPI?.signalCodeReady?.()
     }, 500)
     

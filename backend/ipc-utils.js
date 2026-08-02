@@ -1,21 +1,15 @@
 "use strict";
 /**
- * ipc-utils.ts
- * Utilidades compartidas para normalizar datos antes de enviarlos al renderer via IPC.
- * Usado por main.ts y BackendDaemon.ts para evitar duplicación y circular imports.
+ * Utilidades para normalizar datos de DB al shape esperado por el renderer via IPC.
  */
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.normalizeItemForIPC = normalizeItemForIPC;
 exports.normalizeForIPC = normalizeForIPC;
-/**
- * Normaliza un item de DB (campos PascalCase de sql.js) al shape
- * que espera el renderer (HistoryItem en types.ts).
- */
 function normalizeItemForIPC(i) {
     return {
         id: i.id,
         value: i.value,
-        type: i.type, // 'text' | 'image' — requerido por HistoryItem
+        type: i.type,
         favorite: i.favorite,
         createdAt: i.createdAt,
         imagePath: i.type === 'image' &&
@@ -25,9 +19,6 @@ function normalizeItemForIPC(i) {
             : null
     };
 }
-/**
- * Normaliza un array de items.
- */
 function normalizeForIPC(items) {
     return items.map(normalizeItemForIPC);
 }

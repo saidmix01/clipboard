@@ -58,26 +58,17 @@ function App () {
           // Also set legacy stub if needed, though backend request handles it via main process
           ;(window as any).electronAPI?.setAuthToken?.(session.token)
           
-          // Fetch user profile from backend since local storage only has tokens now
+          // Fetch user profile
           try {
-             // We use the raw fetch here or backendRequest? 
-             // backendRequest uses IPC to Main -> Axios
              const userData: any = await backendRequest('/users/me')
-             // Response might be { success: true, data: { user: ... } } or just the user object depending on API
-             // Based on UserModal, it seems response is { data: { user: ... } } or { user: ... }
-             // UserModal: const payload = (data && typeof data === 'object' ? (data.data ?? data) : {}) as any
-             // backendRequest returns response.data directly.
-             
              const payload = (userData && typeof userData === 'object' ? (userData.data ?? userData) : {}) as any
              const u = payload?.user
              
              if (u && u.avatarUrl) {
-                // Avatar available for future use
+                // Avatar available — could be shown in TopBar
              }
           } catch (err) {
-             console.error('Failed to load user profile', err)
-             // If 401, it might be cleared by now or we should clear it
-             // But backendDaemon handles refresh.
+             // Non-critical — user profile fetch failure doesn't block the app
           }
         }
       }
@@ -126,7 +117,6 @@ function App () {
     setListLoading(true)
     try {
         const res = await (window as any).electronAPI?.listFiles?.()
-        console.log("Fetch files response:", res) // Debug
         
         if (res && typeof res === 'object') {
             let targetData = res;
@@ -151,8 +141,6 @@ function App () {
                 setStorage(targetData.storage)
             }
         } else {
-            // Handle undefined or null response
-            console.warn("listFiles returned invalid response:", res);
             setFiles([]);
         }
     } catch (e) {
@@ -456,17 +444,16 @@ function App () {
 
   const confirmDeleteFile = async () => {
       if (!fileToDelete) return
-      const toastId = toast.loading(t('files.deleting'))
       try {
           const res = await (window as any).electronAPI?.deleteFile?.(fileToDelete.id)
           if (res && res.success) {
-              toast.success(t('files.deleted'), { id: toastId })
+              notifySuccess(t('files.deleted'))
               setFiles(prev => prev.filter(f => f.id !== fileToDelete.id))
           } else {
-              toast.error(t('files.delete_error'), { id: toastId })
+              notifyError(t('files.delete_error'))
           }
       } catch (e) {
-          toast.error(t('files.delete_error'), { id: toastId })
+          notifyError(t('files.delete_error'))
       } finally {
           setFileToDelete(null)
       }
@@ -524,11 +511,6 @@ function App () {
             onCopy={(item) => {
               const isImage = item.value.startsWith('data:image') || item.value.startsWith('[LOCAL_IMAGE]:') || !!(item as any).imagePath
               if (isImage) {
-                // Keep direct copy on card click? Or should card click also open OCR?
-                // User said "al dar clic en el ojo del item ... abrir otra ventana"
-                // The Card component's onCopy is the main click handler.
-                // But the user specifically said "clic en el ojo".
-                // So onCopy (main click) should probably just copy the image as before.
                 ;(window as any).electronAPI?.copyImage?.(item.value)
                 ;(window as any).electronAPI?.pasteText?.()
                 setTimeout(() => { ;(window as any).electronAPI?.hideWindow?.() }, 100)
@@ -606,11 +588,11 @@ function App () {
               setDeletingLoading(true)
               // The backend now broadcasts the update, so we just need to wait for the call to finish
               await (window as any).electronAPI.deleteHistoryItem(itemToDelete.id)
-              toast.success(t('notifications.item_deleted'))
+              notifySuccess(t('notifications.item_deleted'))
               // Manually remove from local state just in case the broadcast is slow or fails
               setDisplayed(prev => prev.filter(i => i.id !== itemToDelete.id))
             } catch {
-              toast.error(t('notifications.delete_error'))
+              notifyError(t('notifications.delete_error'))
             }
           }
           setItemToDelete(null)

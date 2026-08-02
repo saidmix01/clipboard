@@ -1,22 +1,16 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-const { app, BrowserWindow, globalShortcut, clipboard, ipcMain, screen, nativeImage, Tray, Menu, shell, Notification, powerMonitor, protocol, dialog } = require('electron');
+const { app, BrowserWindow, globalShortcut, clipboard, ipcMain, screen, nativeImage, Tray, Menu, shell, Notification, protocol, dialog } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
 const crypto = require('crypto');
 const FormData = require('form-data');
-// --- Integration Start ---
-// Assuming TypeScript compilation or ts-node
-// If using plain JS, this would be: const { BackendDaemon } = require('./backend/BackendDaemon')
 const BackendDaemon_1 = require("./backend/BackendDaemon");
 const SyncEngine_1 = require("./backend/SyncEngine");
 const ipc_utils_1 = require("./backend/ipc-utils");
-// --- Integration End ---
 const db = require('./db');
 const { configureAutoLaunch } = require('./autolaunch');
-const electronLog = require('electron-log');
-const { exec, execFile, spawnSync } = require('child_process');
 const log = {
     info: (...args) => console.log('[MAIN]', ...args),
     error: (...args) => console.error('[MAIN]', ...args),
@@ -27,15 +21,15 @@ let mainWindow;
 let ocrWindow = null;
 let codeWindow = null;
 let settingsWindow = null;
-let notificationWindow = null;
-let pendingNotificationImage = null;
 let pendingCodeContent = null;
 let tray;
 let isQuitting = false;
 let rebuildTrayMenu = null;
 // Set app name and ensure userData exists to avoid Lock file error (Error code: 3)
-app.setName('CopyFy');
-// app.setAppUserModelId('SAIDMIX.CopyFy'); // Optional if needed for notifications
+app.setName('CopyFy++');
+if (process.platform === 'win32') {
+    app.setAppUserModelId('CopyFy++');
+}
 const userDataPath = app.getPath('userData');
 if (!fs.existsSync(userDataPath)) {
     try {
@@ -62,7 +56,7 @@ else {
         }
     });
 }
-// normalizeItemForIPC y normalizeForIPC importados desde ./backend/ipc-utils
+// normalizeForIPC importado desde ./backend/ipc-utils
 // Helper: Broadcast update to main window with correct filtering
 function broadcastUpdate() {
     if (mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents) {
@@ -82,7 +76,6 @@ function broadcastUpdate() {
         }
     }
 }
-let cachedSelectedDeviceId = null;
 // Position window near mouse cursor, clamped within the display bounds
 function positionWindowAtCursor() {
     if (!mainWindow)
@@ -144,12 +137,8 @@ function createWindow() {
         mainWindow.loadURL(indexPath);
     }
     mainWindow.once('ready-to-show', () => {
-        const settings = db.getSettings();
         mainWindow.show();
         broadcastUpdate();
-    });
-    mainWindow.on('blur', () => {
-        // Optional: hide on blur
     });
 }
 let authWindow = null;
@@ -334,48 +323,6 @@ function createCodeWindow(codeContent) {
         pendingCodeContent = null;
     });
 }
-function createNotificationWindow() {
-    if (notificationWindow) {
-        notificationWindow.focus();
-        return;
-    }
-    const display = screen.getPrimaryDisplay();
-    const width = 350;
-    const height = 100;
-    const x = display.workArea.width - width - 20;
-    let y = display.workArea.height - height - 20;
-    if (process.platform === 'darwin') {
-        y = 40; // macOS: Arriba a la derecha
-    }
-    notificationWindow = new BrowserWindow({
-        width, height, x, y,
-        frame: false,
-        transparent: true,
-        alwaysOnTop: true,
-        resizable: false,
-        skipTaskbar: true,
-        webPreferences: {
-            preload: path.join(__dirname, 'preload.js'),
-            contextIsolation: true,
-            nodeIntegration: false,
-            devTools: !app.isPackaged
-        }
-    });
-    const indexPath = app.isPackaged
-        ? path.join(app.getAppPath(), 'frontend', 'dist', 'index.html')
-        : 'http://127.0.0.1:5173';
-    const url = `${indexPath}?mode=notification`;
-    if (app.isPackaged) {
-        notificationWindow.loadFile(indexPath, { search: 'mode=notification' }).then(() => {
-        });
-    }
-    else {
-        notificationWindow.loadURL(url);
-    }
-    notificationWindow.on('closed', () => {
-        notificationWindow = null;
-    });
-}
 // Handshake listener
 ipcMain.on('code-window-ready', (event) => {
     if (codeWindow && pendingCodeContent) {
@@ -394,106 +341,42 @@ ipcMain.on('app-ready', () => {
         });
     }
 });
-ipcMain.on('notification-window-ready', () => {
-    if (notificationWindow && pendingNotificationImage) {
-        if (pendingNotificationImage.type === 'image') {
-            const dataUrl = pendingNotificationImage.image.toDataURL();
-            notificationWindow.webContents.send('notification-load-image', dataUrl);
-        }
-        else if (pendingNotificationImage.type === 'file') {
-            // Send file info instead of image
-            notificationWindow.webContents.send('notification-load-file', {
-                name: pendingNotificationImage.fileName,
-                path: pendingNotificationImage.filePath
-            });
-        }
-    }
-});
-ipcMain.on('notification-action', async (_, action) => {
-    if (action === 'save' && pendingNotificationImage) {
-        if (pendingNotificationImage.type === 'image') {
-            try {
-                const { image, hash } = pendingNotificationImage;
-                const imagesDir = path.join(app.getPath('userData'), 'images');
-                if (!fs.existsSync(imagesDir))
-                    fs.mkdirSync(imagesDir, { recursive: true });
-                const filename = `${Date.now()}-${hash.substring(0, 8)}.png`;
-                const filePath = path.join(imagesDir, filename);
-                fs.writeFileSync(filePath, image.toPNG());
-                // Usar BackendDaemon para guardar con deviceId
-                const backendDaemon = BackendDaemon_1.BackendDaemon.getInstance();
-                const result = backendDaemon.saveClipboardItem(`[LOCAL_IMAGE]:${filePath}`, 'image');
-                if (result) {
-                    broadcastUpdate();
-                    // Encolar para sincronización
-                    const syncEngine = SyncEngine_1.SyncEngine.getInstance();
-                    syncEngine.enqueueItem(result.id, 'CREATE').catch(err => {
-                        log.error('Failed to enqueue image for sync:', err);
-                    });
-                }
-            }
-            catch (e) {
-                log.error('Error saving image:', e);
-            }
-        }
-        else if (pendingNotificationImage.type === 'file') {
-            try {
-                const { filePath } = pendingNotificationImage;
-                if (fs.existsSync(filePath)) {
-                    const backend = BackendDaemon_1.BackendDaemon.getInstance();
-                    const form = new FormData();
-                    form.append('file', fs.createReadStream(filePath));
-                    // Get selected device ID
-                    const deviceId = db.getSettings().selectedDeviceId;
-                    // Upload immediately using the correct endpoint
-                    const res = await backend.request({
-                        url: '/api/files/upload',
-                        method: 'POST',
-                        data: form,
-                        headers: {
-                            ...form.getHeaders(),
-                            'x-device-id': deviceId
-                        }
-                    });
-                    if (res.success) {
-                        if (notificationWindow && !notificationWindow.isDestroyed()) {
-                            notificationWindow.close();
-                        }
-                        // Broadcast update so the list refreshes
-                        broadcastUpdate();
-                        if (mainWindow && !mainWindow.isDestroyed()) {
-                            mainWindow.webContents.send('file-uploaded', res.data);
-                        }
-                    }
-                    else {
-                        // Upload failed (e.g. offline)
-                        log.error('Upload failed:', res.error);
-                        if (notificationWindow && !notificationWindow.isDestroyed()) {
-                            // Send error to notification window to display
-                            notificationWindow.webContents.send('notification-error', 'Error al subir: ' + (res.error || 'Sin conexión'));
-                        }
-                    }
-                }
-            }
-            catch (e) {
-                log.error('Error saving file:', e);
-                if (notificationWindow && !notificationWindow.isDestroyed()) {
-                    notificationWindow.webContents.send('notification-error', 'Error local: ' + e.message);
-                }
-            }
-            return; // Don't close window here, handled inside
-        }
-    }
-    // Close for cancel or non-file saves (images close immediately as they save locally)
-    if (notificationWindow && !notificationWindow.isDestroyed()) {
-        notificationWindow.close();
-    }
-    pendingNotificationImage = null;
-});
 // Clipboard Watcher
 let lastText = '';
 let lastImageHash = '';
 let clipboardWatcherInterval = null;
+// --- Helper: Guardar imagen directamente y mostrar notificación nativa ---
+function saveImageDirectly(image, hash) {
+    try {
+        const imagesDir = path.join(app.getPath('userData'), 'images');
+        if (!fs.existsSync(imagesDir))
+            fs.mkdirSync(imagesDir, { recursive: true });
+        const filename = `${Date.now()}-${hash.substring(0, 8)}.png`;
+        const filePath = path.join(imagesDir, filename);
+        fs.writeFileSync(filePath, image.toPNG());
+        const backendDaemon = BackendDaemon_1.BackendDaemon.getInstance();
+        const result = backendDaemon.saveClipboardItem(`[LOCAL_IMAGE]:${filePath}`, 'image');
+        if (result) {
+            broadcastUpdate();
+            const syncEngine = SyncEngine_1.SyncEngine.getInstance();
+            syncEngine.enqueueItem(result.id, 'CREATE').catch(err => {
+                log.error('Failed to enqueue image for sync:', err);
+            });
+        }
+        // Notificación nativa del sistema
+        if (Notification.isSupported()) {
+            const notif = new Notification({
+                title: 'CopyFy++',
+                body: 'Imagen guardada en el portapapeles',
+                icon: path.join(__dirname, 'frontend', 'media', '64x64.png')
+            });
+            notif.show();
+        }
+    }
+    catch (e) {
+        log.error('Error saving image:', e);
+    }
+}
 function startClipboardWatcher() {
     // Prevenir múltiples watchers
     if (clipboardWatcherInterval) {
@@ -592,10 +475,7 @@ function startClipboardWatcher() {
                                 const image = nativeImage.createFromPath(detectedFilePath);
                                 saveImageDirectly(image, fileHash);
                             }
-                            else {
-                                // Otherwise treat as generic document/file
-                                saveFileDirectly(detectedFilePath, path.basename(detectedFilePath));
-                            }
+                            // Non-image files are ignored by the watcher — user uploads manually
                         }
                     }
                 }
@@ -705,26 +585,11 @@ ipcMain.handle('download-file', async (_, fileId, fileName) => {
     return res;
 });
 ipcMain.handle('get-clipboard-history', (_, { limit = 20, offset = 0, filter = {} } = {}) => {
-    // Automatically apply selected device filter if not explicitly requesting something else?
-    // User wants strict filtering by selected device.
     const settings = db.getSettings();
-    // log.info(`[IPC] get-clipboard-history settings:`, JSON.stringify(settings))
-    // Ensure filter is not overwritten if passed by frontend (e.g. searching)
-    // But we want to enforce device scope.
     if (settings.selectedDeviceId) {
-        // log.info(`[IPC] get-clipboard-history filtering by device: ${settings.selectedDeviceId}`)
         filter.deviceId = settings.selectedDeviceId;
-        cachedSelectedDeviceId = settings.selectedDeviceId; // Update cache
-    }
-    else if (cachedSelectedDeviceId) {
-        log.warn(`[IPC] using CACHED device id: ${cachedSelectedDeviceId}`);
-        filter.deviceId = cachedSelectedDeviceId;
-    }
-    else {
-        log.warn(`[IPC] get-clipboard-history settings.selectedDeviceId IS MISSING/NULL!`);
     }
     const items = db.getItems(limit, offset, filter);
-    // log.info(`[IPC] get-clipboard-history returning ${items.length} items`)
     return (0, ipc_utils_1.normalizeForIPC)(items);
 });
 ipcMain.handle('delete-history-item', (_, id) => {
@@ -855,7 +720,6 @@ ipcMain.handle('show-notification', (_, opts) => {
     }
 });
 ipcMain.handle('hide-window', () => mainWindow && mainWindow.hide());
-ipcMain.handle('open-settings', () => createSettingsWindow());
 ipcMain.handle('close-window', () => {
     const win = BrowserWindow.getFocusedWindow();
     if (win && win !== mainWindow)
@@ -921,32 +785,22 @@ ipcMain.handle('set-preferences', (_, prefs) => {
     }
     return newSettings;
 });
-// NOTA: 'devices:get-active' y 'devices:set-active' están registrados en
-// BackendDaemon.setupIPC() — son los únicos que usa el preload. Los handlers
-// 'get-current-device' y 'set-active-device' han sido eliminados (código muerto).
 ipcMain.handle('get-all-devices', () => {
     return db.getDevices();
 });
 ipcMain.handle('register-new-device', (_, name) => {
-    // Note: db.registerDevice now handles duplicate checks and merging automatically
-    // so we can just pass the new info. If ID is not provided, db generates one or reuses existing by name.
-    // However, for explicit creation from UI, we might want to generate an ID if it's "new"
-    // but db.registerDevice handles that too.
     const resId = db.registerDevice({
-        Id: null, // Let DB decide (reuse or create)
+        Id: null,
         OsName: process.platform,
         Name: name,
         VersionApp: app.getVersion()
     });
     if (resId) {
-        // Update items to belong to this new device if they were orphans
         db.updateAllItemsDevice(resId);
         return { id: resId, name };
     }
     return null;
 });
-// Handler eliminado: 'set-active-device' era código muerto.
-// El preload llama 'devices:set-active' → manejado en BackendDaemon.setupIPC().
 // App Lifecycle
 app.whenReady().then(async () => {
     await db.init(app);
@@ -954,15 +808,11 @@ app.whenReady().then(async () => {
     if (process.platform === 'darwin' && app.dock) {
         app.dock.hide();
     }
-    // --- Integration Start ---
-    // Initialize the BackendDaemon which sets up the request handling and IPC
     BackendDaemon_1.BackendDaemon.getInstance();
     log.info('Backend Daemon Initialized');
-    // Initialize SyncEngine and start hourly scheduler
     const syncEngine = SyncEngine_1.SyncEngine.getInstance();
     syncEngine.startScheduler();
-    log.info('Sync Engine Initialized - Hourly sync enabled');
-    // --- Integration End ---
+    log.info('Sync Engine Initialized');
     const device = db.getDevice();
     let deviceId = device ? device.Id : null;
     if (deviceId) {
