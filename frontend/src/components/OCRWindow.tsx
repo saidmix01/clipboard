@@ -187,7 +187,7 @@ export default function OCRWindow() {
                    <button
                     onClick={() => {
                         ;(window as any).electronAPI?.copyText?.(text)
-                    }}}
+                    }}
                     disabled={!text}
                     className="w-full h-[36px] bg-[color:var(--color-surface)] border border-[color:var(--color-border)] hover:bg-black/5 dark:hover:bg-white/5 rounded-[var(--radius-button)] text-sm font-medium text-[color:var(--color-text)] transition-colors duration-100 flex items-center justify-center gap-2 disabled:opacity-50"
                   >
