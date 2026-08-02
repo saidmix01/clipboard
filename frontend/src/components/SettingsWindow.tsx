@@ -22,7 +22,7 @@ import { backendRequest } from '../api/backend'
 type TabId = 'general' | 'devices' | 'profile'
 
 export default function SettingsWindow() {
-  const { t, i18n } = useTranslation()
+  const { t } = useTranslation()
   const [activeTab, setActiveTab] = useState<TabId>('general')
   const [appVersion, setAppVersion] = useState('')
 
