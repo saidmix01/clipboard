@@ -33,7 +33,10 @@
     "lang_en": "English",
     "lang_es": "Spanish",
     "danger_zone": "Danger zone",
-    "appearance": "Appearance"
+    "appearance": "Appearance",
+    "tab_devices": "Devices",
+    "tab_profile": "Profile",
+    "tab_general": "Settings"
   },
   "search_placeholder": "Search in history...",
   "quick_search_placeholder": "Search...",
