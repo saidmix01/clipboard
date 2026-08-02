@@ -107,7 +107,8 @@
     "deb": {
       "depends": [
         "xclip",
-        "libnotify-bin"
+        "libnotify-bin",
+        "xdotool"
       ]
     }
   },
