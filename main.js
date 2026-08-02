@@ -642,33 +642,58 @@ ipcMain.on('copy-to-clipboard', (_, text) => {
     lastText = text;
     clipboard.writeText(text);
 });
+// Muestra una notificación indicando que el pegado automático no está disponible (fallback Linux)
+function notifyLinuxPasteUnavailable() {
+    const settings = db.getSettings();
+    const lang = settings.language || 'en';
+    let title = 'CopyFy';
+    let body = '';
+    if (lang.toLowerCase().startsWith('es')) {
+        title = 'Pegado automático no disponible';
+        body = 'Usa Ctrl+V o clic derecho -> Pegar para pegar el contenido copiado.';
+    }
+    else {
+        title = 'Auto-paste not available';
+        body = 'Use Ctrl+V or right click -> Paste to paste the copied content.';
+    }
+    if (Notification.isSupported()) {
+        new Notification({ title, body }).show();
+    }
+}
 ipcMain.on('paste-text', () => {
+    const { execFile } = require('child_process');
     if (process.platform === 'win32') {
+        // Windows: helper nativo que envía Ctrl+V a la ventana en primer plano
         const pasteExe = path.join(__dirname, 'helpers', 'paste.exe');
         if (fs.existsSync(pasteExe)) {
-            require('child_process').execFile(pasteExe, (err) => {
+            execFile(pasteExe, (err) => {
                 if (err)
                     log.error('Paste error:', err);
             });
         }
     }
+    else if (process.platform === 'darwin') {
+        // macOS: ocultar el popup para devolver el foco a la app anterior y enviar Cmd+V.
+        // Requiere permiso de Accesibilidad (System Settings > Privacy & Security > Accessibility).
+        if (mainWindow && mainWindow.isVisible())
+            mainWindow.hide();
+        setTimeout(() => {
+            execFile('osascript', ['-e', 'tell application "System Events" to keystroke "v" using command down'], (err) => {
+                if (err)
+                    log.error('macOS auto-paste error (se requiere permiso de Accesibilidad):', err);
+            });
+        }, 120);
+    }
     else if (process.platform === 'linux') {
-        const settings = db.getSettings();
-        const lang = settings.language || 'en';
-        let title = 'CopyFy';
-        let body = '';
-        if (lang.toLowerCase().startsWith('es')) {
-            title = 'Pegado automático no disponible';
-            body = 'Usa Ctrl+V o clic derecho -> Pegar para pegar el contenido copiado.';
-        }
-        else {
-            title = 'Auto-paste not available';
-            body = 'Use Ctrl+V or right click -> Paste to paste the copied content.';
-        }
-        new Notification({
-            title,
-            body
-        }).show();
+        // Linux: intentar xdotool (X11). En Wayland o sin xdotool, mostrar notificación de fallback.
+        if (mainWindow && mainWindow.isVisible())
+            mainWindow.hide();
+        setTimeout(() => {
+            execFile('xdotool', ['key', '--clearmodifiers', 'ctrl+v'], (err) => {
+                if (err)
+                    notifyLinuxPasteUnavailable();
+            });
+        }, 120);
     }
 });
 ipcMain.on('copy-image', (_, dataUrl) => {
@@ -870,7 +895,16 @@ app.whenReady().then(async () => {
         iconPath = path.join(__dirname, 'frontend', 'media', '64x64.png'); // fallback
     }
     if (fs.existsSync(iconPath)) {
-        tray = new Tray(nativeImage.createFromPath(iconPath));
+        let trayImage = nativeImage.createFromPath(iconPath);
+        // La barra de menú de macOS y la mayoría de bandejas de Linux esperan iconos pequeños.
+        // El icono de origen es de 64px, así que lo reescalamos para que no se vea gigante/borroso.
+        if (process.platform === 'darwin') {
+            trayImage = trayImage.resize({ width: 18, height: 18 });
+        }
+        else if (process.platform === 'linux') {
+            trayImage = trayImage.resize({ width: 22, height: 22 });
+        }
+        tray = new Tray(trayImage);
         const buildTrayMenu = () => {
             const settings = db.getSettings();
             const isDark = settings.isDarkMode;
