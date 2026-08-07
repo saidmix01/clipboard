@@ -30,7 +30,7 @@
       ],
       "addAutoLaunchExtension": true
     },
-    "buildVersion": "1.2.7.0",
+    "buildVersion": "1.2.8.0",
     "publish": [
       {
         "provider": "github",

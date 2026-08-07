@@ -12,12 +12,8 @@ const ipc_utils_1 = require("./backend/ipc-utils");
 const { autoUpdater } = require('electron-updater');
 const db = require('./db');
 const { configureAutoLaunch } = require('./autolaunch');
-const log = {
-    info: (...args) => console.log('[MAIN]', ...args),
-    error: (...args) => console.error('[MAIN]', ...args),
-    warn: (...args) => console.warn('[MAIN]', ...args),
-    debug: () => { }
-};
+const log = require('electron-log');
+log.transports.file.level = 'info';
 let mainWindow;
 let ocrWindow = null;
 let codeWindow = null;

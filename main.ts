@@ -27,12 +27,8 @@ const { autoUpdater } = require('electron-updater');
 const db = require('./db')
 const { configureAutoLaunch } = require('./autolaunch')
 
-const log = {
-  info: (...args: any[]) => console.log('[MAIN]', ...args),
-  error: (...args: any[]) => console.error('[MAIN]', ...args),
-  warn: (...args: any[]) => console.warn('[MAIN]', ...args),
-  debug: () => {}
-}
+const log = require('electron-log')
+log.transports.file.level = 'info'
 
 let mainWindow: any
 let ocrWindow: any = null
