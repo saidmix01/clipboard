@@ -15,7 +15,7 @@ electron_1.contextBridge.exposeInMainWorld('electronAPI', {
     onClipboardUpdate: (callback) => onChannel('clipboard-update', callback),
     getClipboardHistory: (opts) => electron_1.ipcRenderer.invoke('get-clipboard-history', opts),
     copyText: (text) => electron_1.ipcRenderer.send('copy-to-clipboard', text),
-    copyImage: (dataUrl) => electron_1.ipcRenderer.send('copy-image', dataUrl),
+    copyImage: (dataUrl) => electron_1.ipcRenderer.invoke('copy-image', dataUrl),
     pasteText: () => electron_1.ipcRenderer.send('paste-text'),
     // --- History ---
     deleteHistoryItem: (id) => electron_1.ipcRenderer.invoke('delete-history-item', id),

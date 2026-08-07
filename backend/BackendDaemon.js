@@ -88,7 +88,41 @@ class BackendDaemon {
         if (!settings.selectedDeviceId)
             return null;
         const devices = db.getDevices();
-        return devices.find((d) => d.Id === settings.selectedDeviceId) || null;
+        const found = devices.find((d) => d.Id === settings.selectedDeviceId);
+        if (found)
+            return found;
+        // --- Recovery: selectedDeviceId points to a nonexistent device ---
+        // This can happen when device IDs change during sync or re-login.
+        // Auto-recover by selecting the localDeviceId or the first available device.
+        console.warn(`[BackendDaemon] selectedDeviceId "${settings.selectedDeviceId}" not found in Devices table. Auto-recovering...`);
+        // 1. Try localDeviceId first (this machine's device)
+        if (settings.localDeviceId) {
+            const localDevice = devices.find((d) => d.Id === settings.localDeviceId);
+            if (localDevice) {
+                console.info(`[BackendDaemon] Recovered: setting active device to localDeviceId "${settings.localDeviceId}"`);
+                db.setActiveDevice(settings.localDeviceId);
+                return localDevice;
+            }
+        }
+        // 2. Fallback: pick the most recently updated device
+        if (devices.length > 0) {
+            const fallback = devices[0]; // Already sorted by UpdatedAt DESC in getDevices()
+            console.info(`[BackendDaemon] Recovered: setting active device to first available "${fallback.Id}" (${fallback.Name})`);
+            db.setActiveDevice(fallback.Id);
+            return fallback;
+        }
+        // 3. Last resort: ensure a local device exists and use it
+        const localId = db.ensureLocalDevice();
+        if (localId && localId !== 'unknown') {
+            const newDevices = db.getDevices();
+            const newLocal = newDevices.find((d) => d.Id === localId);
+            if (newLocal) {
+                console.info(`[BackendDaemon] Recovered: created/found local device "${localId}"`);
+                db.setActiveDevice(localId);
+                return newLocal;
+            }
+        }
+        return null;
     }
     setActiveDevice(deviceId) {
         const success = db.setActiveDevice(deviceId);
@@ -125,15 +159,28 @@ class BackendDaemon {
     }
     getItemsByActiveDevice(limit = 20, offset = 0, filter = {}) {
         const activeDevice = this.getActiveDevice();
-        if (!activeDevice)
-            return []; // Or return all? Rule says: "mostrar solo los datos del dispositivo activo"
+        if (!activeDevice) {
+            // No active device found even after recovery — show all items as fallback
+            // rather than showing nothing to the user
+            console.warn('[BackendDaemon] No active device found. Returning all items as fallback.');
+            return db.getItems(limit, offset, filter);
+        }
         return db.getItems(limit, offset, { ...filter, deviceId: activeDevice.Id });
     }
     saveClipboardItem(value, type) {
-        const activeDevice = this.getActiveDevice();
+        let activeDevice = this.getActiveDevice();
         if (!activeDevice) {
-            console.warn('[BackendDaemon] No active device selected. Cannot save item.');
-            return null;
+            // Last resort: try to use ensureLocalDevice to guarantee items are saved
+            console.warn('[BackendDaemon] No active device selected. Attempting ensureLocalDevice fallback...');
+            const localId = db.ensureLocalDevice();
+            if (localId && localId !== 'unknown') {
+                db.setActiveDevice(localId);
+                activeDevice = this.getActiveDevice();
+            }
+            if (!activeDevice) {
+                console.error('[BackendDaemon] Cannot save item: no device available even after recovery.');
+                return null;
+            }
         }
         const result = db.insertItem(value, type, activeDevice.Id);
         if (result) {

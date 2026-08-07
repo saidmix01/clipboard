@@ -505,10 +505,10 @@ function App () {
             onToggleFavorite={(item) => {
               (window as any).electronAPI?.toggleFavorite?.({ id: item.id, isFavorite: !item.favorite })
             }}
-            onCopy={(item) => {
+            onCopy={async (item) => {
               const isImage = item.value.startsWith('data:image') || item.value.startsWith('[LOCAL_IMAGE]:') || !!(item as any).imagePath
               if (isImage) {
-                ;(window as any).electronAPI?.copyImage?.(item.value)
+                await (window as any).electronAPI?.copyImage?.(item.value)
                 ;(window as any).electronAPI?.pasteText?.()
                 setTimeout(() => { ;(window as any).electronAPI?.hideWindow?.() }, 100)
               } else {

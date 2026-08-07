@@ -26,12 +26,24 @@ export default function SettingsWindow() {
   const [activeTab, setActiveTab] = useState<TabId>('general')
   const [appVersion, setAppVersion] = useState('')
 
+  // Load dark mode on mount and listen for theme changes from main process
   useEffect(() => {
     const load = async () => {
       const version = await (window as any).electronAPI?.getAppVersion?.()
       if (version) setAppVersion(version)
+      
+      const stored = await (window as any).electronAPI?.getConfig?.('darkMode')
+      document.documentElement.setAttribute('data-theme', stored === 'true' ? 'dark' : 'light')
     }
     load()
+  }, [])
+
+  // Listen for theme changes broadcast from main process (tray toggle, other windows)
+  useEffect(() => {
+    const off = (window as any).electronAPI?.onThemeChanged?.((isDark: boolean) => {
+      document.documentElement.setAttribute('data-theme', isDark ? 'dark' : 'light')
+    })
+    return () => off?.()
   }, [])
 
   const closeWindow = () => {
@@ -152,10 +164,20 @@ function GeneralTab() {
     return () => unsub?.()
   }, [])
 
+  // Listen for external theme changes (from tray or main window)
+  useEffect(() => {
+    const off = (window as any).electronAPI?.onThemeChanged?.((isDark: boolean) => {
+      setDarkMode(isDark)
+      document.documentElement.setAttribute('data-theme', isDark ? 'dark' : 'light')
+    })
+    return () => off?.()
+  }, [])
+
   const toggleDark = () => {
     const next = !darkMode
     setDarkMode(next)
     document.documentElement.setAttribute('data-theme', next ? 'dark' : 'light')
+    // Use set-config which broadcasts 'theme-changed' to all windows
     ;(window as any).electronAPI?.setConfig?.('darkMode', next.toString())
   }
 

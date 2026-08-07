@@ -19,6 +19,14 @@ export default function WindowShell({ children, title, onClose }: Props) {
     loadTheme()
   }, [])
 
+  // Listen for theme changes from main process
+  useEffect(() => {
+    const off = (window as any).electronAPI?.onThemeChanged?.((isDark: boolean) => {
+      setDarkMode(isDark)
+    })
+    return () => off?.()
+  }, [])
+
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', darkMode ? 'dark' : 'light')
   }, [darkMode])

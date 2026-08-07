@@ -75,6 +75,8 @@ class SyncEngine {
             return;
         }
         console.log('[SyncEngine] Starting sync scheduler (every 30s fallback)');
+        // Refresh pending count from DB on startup
+        this.refreshPendingCount();
         this.performSync().catch(err => {
             console.error('[SyncEngine] Initial sync failed:', err);
         });
@@ -99,8 +101,23 @@ class SyncEngine {
     getStats() {
         return { ...this.stats };
     }
+    /**
+     * Recalculate itemsPending from the actual DB state.
+     * Ensures the displayed count is always accurate.
+     */
+    refreshPendingCount() {
+        try {
+            const settings = db.getSettings();
+            const deviceId = settings.selectedDeviceId || null;
+            const pendingItems = db.getPendingItems(deviceId);
+            this.stats.itemsPending = pendingItems.length;
+        }
+        catch (e) {
+            console.error('[SyncEngine] Error refreshing pending count:', e);
+        }
+    }
     async enqueueItem(itemId, operation) {
-        this.stats.itemsPending++;
+        this.refreshPendingCount();
         this.broadcastStats();
     }
     async performSync() {
@@ -119,6 +136,8 @@ class SyncEngine {
         this.broadcastStats();
         try {
             await this.pushLocalChanges();
+            // Refresh pending count from DB after push to get the real number
+            this.refreshPendingCount();
             const pullSuccess = await this.pullRemoteChanges();
             await this.resolveConflicts();
             if (pullSuccess) {
@@ -170,7 +189,6 @@ class SyncEngine {
                     if (result.value === 'synced') {
                         db.markItemAsSynced(item.id);
                         this.stats.itemsSynced++;
-                        this.stats.itemsPending = Math.max(0, this.stats.itemsPending - 1);
                         processed++;
                     }
                     // 'skipped' means image not found — already marked synced inside pushSingleItem
