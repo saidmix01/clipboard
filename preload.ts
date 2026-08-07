@@ -17,7 +17,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   getClipboardHistory: (opts: any) => ipcRenderer.invoke('get-clipboard-history', opts),
   copyText: (text: string) => ipcRenderer.send('copy-to-clipboard', text),
-  copyImage: (dataUrl: string) => ipcRenderer.send('copy-image', dataUrl),
+  copyImage: (dataUrl: string) => ipcRenderer.invoke('copy-image', dataUrl),
   pasteText: () => ipcRenderer.send('paste-text'),
 
   // --- History ---

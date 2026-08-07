@@ -24,6 +24,14 @@ export default function AuthWindow() {
     load()
   }, [])
 
+  // Listen for theme changes from main process
+  useEffect(() => {
+    const off = (window as any).electronAPI?.onThemeChanged?.((isDark: boolean) => {
+      document.documentElement.setAttribute('data-theme', isDark ? 'dark' : 'light')
+    })
+    return () => off?.()
+  }, [])
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     setError(null)

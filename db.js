@@ -157,6 +157,17 @@ function createTables() {
       }
   } catch (e) {}
 
+  // Migration: Add StartMinimized column
+  try {
+      const info = db.exec("PRAGMA table_info(AppSettings)")[0].values;
+      const hasCol = info.some(col => col[1] === 'StartMinimized');
+      if (!hasCol) {
+          db.run("ALTER TABLE AppSettings ADD COLUMN StartMinimized BOOLEAN DEFAULT 0")
+      }
+  } catch (e) {
+      console.error('Migration error for StartMinimized:', e)
+  }
+
   // Add Meta column to ClipboardItem for conflict resolution
   try {
       const info = db.exec("PRAGMA table_info(ClipboardItem)")[0].values;
@@ -582,6 +593,7 @@ function updateSettings(settings) {
     if (settings.GlobalShortcut !== undefined) { fields.push("GlobalShortcut = ?"); values.push(settings.GlobalShortcut); }
     if (settings.SelectedDeviceId !== undefined) { fields.push("SelectedDeviceId = ?"); values.push(settings.SelectedDeviceId); }
     if (settings.LocalDeviceId !== undefined) { fields.push("LocalDeviceId = ?"); values.push(settings.LocalDeviceId); }
+    if (settings.StartMinimized !== undefined) { fields.push("StartMinimized = ?"); values.push(settings.StartMinimized ? 1 : 0); }
     
     if (fields.length === 0) return current
 
@@ -850,7 +862,8 @@ function normalizeSettings(row) {
         uiScale: getVal('UiScale'),
         globalShortcut: getVal('GlobalShortcut') || 'Alt+X',
         selectedDeviceId: getVal('SelectedDeviceId'),
-        localDeviceId: getVal('LocalDeviceId')
+        localDeviceId: getVal('LocalDeviceId'),
+        startMinimized: !!getVal('StartMinimized')
     }
 }
 

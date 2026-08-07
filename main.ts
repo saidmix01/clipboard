@@ -88,7 +88,17 @@ function broadcastUpdate() {
             filter.deviceId = settings.selectedDeviceId
         }
         
-        const items = db.getItems(20, 0, filter)
+        let items = db.getItems(20, 0, filter)
+        
+        // Safety fallback: if device filter returns 0 items but DB has items, drop the filter
+        if (items.length === 0 && filter.deviceId) {
+            const allItems = db.getItems(1, 0, {})
+            if (allItems.length > 0) {
+                log.warn(`[Main] broadcastUpdate: device filter "${filter.deviceId}" returned 0 items but DB has data. Dropping filter.`)
+                items = db.getItems(20, 0, {})
+            }
+        }
+        
         log.info(`[Main] broadcastUpdate sending ${items.length} items (Device: ${filter.deviceId || 'ALL'})`)
         
         try {
@@ -163,9 +173,15 @@ function createWindow() {
   }
 
   mainWindow.once('ready-to-show', () => {
-    // Clipboard manager: siempre inicia oculto en la bandeja.
-    // El usuario lo muestra con el shortcut global (Alt+X) o clic en tray.
     broadcastUpdate()
+    // Show the window on startup unless user chose to start minimized
+    // or the app was launched with --hidden (e.g., auto-launch at login)
+    const settings = db.getSettings()
+    if (!startHidden && !settings.startMinimized) {
+      positionWindowAtCursor()
+      mainWindow.show()
+      mainWindow.focus()
+    }
   })
 }
 
@@ -684,7 +700,18 @@ ipcMain.handle('get-clipboard-history', (_: any, { limit = 20, offset = 0, filte
   if (settings.selectedDeviceId) {
       filter.deviceId = settings.selectedDeviceId
   }
-  const items = db.getItems(limit, offset, filter)
+  let items = db.getItems(limit, offset, filter)
+  
+  // Safety fallback: if device filter at page 0 returns 0 items but DB has data, drop device filter
+  if (items.length === 0 && offset === 0 && filter.deviceId) {
+      const allItems = db.getItems(1, 0, {})
+      if (allItems.length > 0) {
+          log.warn(`[Main] get-clipboard-history: device filter "${filter.deviceId}" returned 0 items but DB has data. Dropping device filter.`)
+          delete filter.deviceId
+          items = db.getItems(limit, offset, filter)
+      }
+  }
+  
   return normalizeForIPC(items)
 })
 
@@ -779,15 +806,37 @@ ipcMain.on('paste-text', () => {
     }
 })
 
-ipcMain.on('copy-image', (_: any, dataUrl: string) => {
-    if (dataUrl.startsWith('[LOCAL_IMAGE]:')) {
-        const p = dataUrl.replace('[LOCAL_IMAGE]:', '')
-        if (fs.existsSync(p)) {
-            const img = nativeImage.createFromPath(p)
-            clipboard.writeImage(img)
-            const hash = crypto.createHash('md5').update(img.toDataURL()).digest('hex')
-            lastImageHash = hash
+ipcMain.handle('copy-image', (_: any, dataUrl: string) => {
+    try {
+        if (dataUrl.startsWith('[LOCAL_IMAGE]:')) {
+            const p = dataUrl.replace('[LOCAL_IMAGE]:', '')
+            if (fs.existsSync(p)) {
+                const img = nativeImage.createFromPath(p)
+                clipboard.writeImage(img)
+                const hash = crypto.createHash('md5').update(img.getBitmap()).digest('hex')
+                lastImageHash = hash
+                // Update lastText to current clipboard text to prevent watcher from
+                // re-saving stale text that may remain alongside the image
+                lastText = clipboard.readText() || ''
+                return true
+            }
+        } else if (dataUrl.startsWith('data:image')) {
+            // Handle base64 data URI images
+            const img = nativeImage.createFromDataURL(dataUrl)
+            if (!img.isEmpty()) {
+                clipboard.writeImage(img)
+                const hash = crypto.createHash('md5').update(img.getBitmap()).digest('hex')
+                lastImageHash = hash
+                // Update lastText to current clipboard text to prevent watcher from
+                // re-saving stale text that may remain alongside the image
+                lastText = clipboard.readText() || ''
+                return true
+            }
         }
+        return false
+    } catch (e) {
+        log.error('[Main] copy-image error:', e)
+        return false
     }
 })
 
@@ -862,6 +911,7 @@ ipcMain.handle('set-preferences', (_: any, prefs: any) => {
     if (prefs.isDarkMode !== undefined) dbUpdate.IsDarkMode = prefs.isDarkMode
     if (prefs.language) dbUpdate.Language = prefs.language
     if (prefs.globalShortcut) dbUpdate.GlobalShortcut = prefs.globalShortcut
+    if (prefs.startMinimized !== undefined) dbUpdate.StartMinimized = prefs.startMinimized
     
     if (prefs.colorPrimary || prefs.colorSecondary || prefs.colorBg || prefs.colorSurface || prefs.colorText || prefs.fontSize) {
         const currentTheme = JSON.parse(db.getSettings().theme || '{}')
